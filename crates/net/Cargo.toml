@@ -1,0 +1,26 @@
+[package]
+name = "ncp-net"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "HTTPS fetch + streaming SHA-256 verification for the NetcodePlus launcher."
+
+[lints]
+workspace = true
+
+[dependencies]
+ncp-manifest = { path = "../manifest" }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+tokio = { workspace = true }
+futures-util = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true }
+wiremock = { workspace = true }
+tempfile = { workspace = true }

@@ -13,10 +13,11 @@
 
 use std::path::{Path, PathBuf};
 
+use serde::{Deserialize, Serialize};
 use tracing::{debug, trace};
 
 /// A validated UT4 install on the local machine.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UtInstall {
     /// The top-level directory containing `Engine/`, `UnrealTournament/`, etc.
     pub root: PathBuf,

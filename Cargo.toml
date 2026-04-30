@@ -12,6 +12,7 @@ members = [
     "crates/manifest",
     "crates/planner",
     "crates/host",
+    "crates/net",
 ]
 
 [workspace.package]
@@ -43,7 +44,17 @@ minisign-verify = "0.2"
 # Atomic file replace for state-file writes (host crate).
 tempfile = "3"
 
+# Network + streaming hashing (net crate).
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
+sha2 = "0.10"
+tokio = { version = "1", default-features = false, features = ["rt-multi-thread", "macros", "fs", "io-util"] }
+futures-util = { version = "0.3", default-features = false, features = ["std"] }
+url = "2"
+
 # Dev-only: full minisign for signing test fixtures. Lives in
 # workspace.dependencies so the version is pinned in one place even
 # though only [dev-dependencies] sections reference it.
 minisign = "0.9"
+
+# Dev-only: HTTP server fixture for net crate tests.
+wiremock = "0.6"
