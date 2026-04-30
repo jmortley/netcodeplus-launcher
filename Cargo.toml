@@ -26,3 +26,20 @@ unsafe_code = "deny"
 
 [workspace.lints.clippy]
 all = { level = "warn", priority = -1 }
+
+# Centralised dependency versions for the workspace. Crates pull these in
+# via `<dep> = { workspace = true }` in their own Cargo.toml.
+[workspace.dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+chrono = { version = "0.4", default-features = false, features = ["serde", "clock"] }
+semver = { version = "1", features = ["serde"] }
+thiserror = "2"
+tracing = "0.1"
+hex = "0.4"
+minisign-verify = "0.2"
+
+# Dev-only: full minisign for signing test fixtures. Lives in
+# workspace.dependencies so the version is pinned in one place even
+# though only [dev-dependencies] sections reference it.
+minisign = "0.9"

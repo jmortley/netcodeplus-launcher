@@ -1,0 +1,286 @@
+//! Manifest schema types.
+//!
+//! All types here are pure data — no I/O, no clock access. The only
+//! moving part is the [`Sha256Digest`] wrapper, which carries its own
+//! hex encoding/decoding.
+
+use std::collections::HashMap;
+use std::fmt;
+
+use chrono::{DateTime, Utc};
+use semver::{Version, VersionReq};
+use serde::de::{self, Deserializer, Visitor};
+use serde::{Deserialize, Serialize, Serializer};
+use thiserror::Error;
+
+/// Schema version this crate understands.
+///
+/// A manifest carrying any other [`Manifest::schema_version`] is
+/// rejected by [`crate::Manifest::load_and_verify`].
+pub const SUPPORTED_SCHEMA_VERSION: u32 = 1;
+
+/// Top-level signed manifest.
+///
+/// Always produced and consumed via
+/// [`crate::Manifest::load_and_verify`]; constructing one in memory
+/// (e.g. in tests) is also fine but skips signature checking.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Manifest {
+    /// On-wire schema version. Currently fixed at
+    /// [`SUPPORTED_SCHEMA_VERSION`].
+    pub schema_version: u32,
+
+    /// Wall-clock time at which the publishing tool produced the
+    /// manifest. Used for diagnostics; the launcher does not enforce
+    /// `generated_at <= now`, since clock skew between publisher and
+    /// client is normal.
+    pub generated_at: DateTime<Utc>,
+
+    /// Wall-clock time after which the manifest must not be acted
+    /// upon, even if its signature is still cryptographically valid.
+    /// This bounds the window during which an attacker who has
+    /// captured a stale-but-signed manifest can replay it.
+    pub expires_at: DateTime<Utc>,
+
+    /// Minimum launcher version required to interpret the manifest.
+    /// A launcher older than this must refuse to apply the manifest
+    /// and prompt the user to upgrade the launcher first.
+    pub min_launcher_version: Version,
+
+    /// Map from channel name (e.g. `"stable"`, `"testing"`) to channel
+    /// contents. A launcher chooses one channel at runtime and ignores
+    /// the others.
+    pub channels: HashMap<String, Channel>,
+}
+
+/// One update channel inside a [`Manifest`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Channel {
+    /// The paks belonging to this channel, keyed by stable internal
+    /// id (e.g. `"ncutplus"`, `"elimplus"`).
+    ///
+    /// The id is what [`ManifestPak::depends_on`] entries refer to and
+    /// what the launcher uses to track a logical pak across filename
+    /// changes.
+    pub paks: HashMap<String, ManifestPak>,
+}
+
+/// A single pak entry within a [`Channel`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestPak {
+    /// Semantic version of this pak release.
+    pub version: Version,
+
+    /// Filename written into the UT4 paks/plugins directory.
+    pub pak_filename: String,
+
+    /// HTTPS URL the pak bytes can be downloaded from.
+    ///
+    /// This URL is **untrusted** — integrity comes from
+    /// [`Self::sha256`] inside the signed manifest, never from TLS or
+    /// from the host's reputation.
+    pub url: String,
+
+    /// SHA-256 digest of the pak bytes.
+    ///
+    /// The launcher refuses to install a pak whose downloaded bytes
+    /// do not produce this digest.
+    pub sha256: Sha256Digest,
+
+    /// Declared size in bytes.
+    ///
+    /// A download whose `Content-Length` (or observed body length)
+    /// differs from this should be aborted before hashing — protects
+    /// against trivial resource-exhaustion attempts that serve
+    /// gigabytes for a pak meant to be megabytes.
+    pub size_bytes: u64,
+
+    /// Engine load order; higher numbers override lower at game
+    /// runtime.
+    pub load_order: u32,
+
+    /// `true` ⇒ the launcher refuses to launch the game without this
+    /// pak; `false` ⇒ the user can opt out.
+    pub required: bool,
+
+    /// Other paks (by stable id, within the same channel) this pak
+    /// requires, with a [`semver::VersionReq`] constraint each.
+    /// Empty when there are no inter-pak dependencies.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub depends_on: HashMap<String, VersionReq>,
+}
+
+/// Typed wrapper around a 32-byte SHA-256 digest.
+///
+/// Serialises as a 64-character lowercase hex string when emitted as
+/// JSON, and refuses to deserialise from any string of the wrong
+/// length or with non-hex characters. Round-tripping always
+/// canonicalises to lowercase.
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub struct Sha256Digest([u8; 32]);
+
+impl Sha256Digest {
+    /// Wrap a raw 32-byte digest.
+    #[must_use]
+    pub const fn from_bytes(bytes: [u8; 32]) -> Self {
+        Self(bytes)
+    }
+
+    /// Borrow the underlying bytes.
+    #[must_use]
+    pub const fn as_bytes(&self) -> &[u8; 32] {
+        &self.0
+    }
+
+    /// Decode a 64-character hex string (upper or lower case) into a
+    /// digest.
+    ///
+    /// # Errors
+    ///
+    /// - [`HexError::WrongLength`] if the input is not exactly 64
+    ///   characters long.
+    /// - [`HexError::InvalidHex`] if any character is not a valid hex
+    ///   digit.
+    pub fn from_hex(s: &str) -> Result<Self, HexError> {
+        if s.len() != 64 {
+            return Err(HexError::WrongLength { got: s.len() });
+        }
+        let mut out = [0u8; 32];
+        hex::decode_to_slice(s, &mut out).map_err(|err| HexError::InvalidHex(err.to_string()))?;
+        Ok(Self(out))
+    }
+}
+
+impl fmt::Display for Sha256Digest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for byte in &self.0 {
+            write!(f, "{byte:02x}")?;
+        }
+        Ok(())
+    }
+}
+
+impl fmt::Debug for Sha256Digest {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_tuple("Sha256Digest")
+            .field(&self.to_string())
+            .finish()
+    }
+}
+
+impl Serialize for Sha256Digest {
+    fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        serializer.collect_str(self)
+    }
+}
+
+impl<'de> Deserialize<'de> for Sha256Digest {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct HexVisitor;
+        impl Visitor<'_> for HexVisitor {
+            type Value = Sha256Digest;
+            fn expecting(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+                f.write_str("a 64-character hex SHA-256 digest")
+            }
+            fn visit_str<E: de::Error>(self, v: &str) -> Result<Self::Value, E> {
+                Sha256Digest::from_hex(v).map_err(de::Error::custom)
+            }
+        }
+        deserializer.deserialize_str(HexVisitor)
+    }
+}
+
+/// Errors produced when parsing a hex SHA-256 string.
+#[derive(Debug, Clone, Error, PartialEq, Eq)]
+pub enum HexError {
+    /// The input was not exactly 64 characters long.
+    #[error("expected 64 hex chars, got {got}")]
+    WrongLength {
+        /// The actual length of the offending input.
+        got: usize,
+    },
+    /// One or more characters were not valid hex digits.
+    #[error("invalid hex: {0}")]
+    InvalidHex(String),
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn from_hex_round_trip_lowercase() {
+        let s = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+        let d = Sha256Digest::from_hex(s).unwrap();
+        assert_eq!(d.to_string(), s);
+    }
+
+    #[test]
+    fn from_hex_accepts_uppercase_and_canonicalises_to_lower() {
+        let upper = "ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789ABCDEF0123456789";
+        let lower = "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789";
+        let from_upper = Sha256Digest::from_hex(upper).unwrap();
+        let from_lower = Sha256Digest::from_hex(lower).unwrap();
+        assert_eq!(from_upper, from_lower);
+        assert_eq!(from_upper.to_string(), lower);
+    }
+
+    #[test]
+    fn from_hex_rejects_short_input() {
+        assert_eq!(
+            Sha256Digest::from_hex("abcd").unwrap_err(),
+            HexError::WrongLength { got: 4 },
+        );
+    }
+
+    #[test]
+    fn from_hex_rejects_long_input() {
+        let too_long = "a".repeat(65);
+        assert_eq!(
+            Sha256Digest::from_hex(&too_long).unwrap_err(),
+            HexError::WrongLength { got: 65 },
+        );
+    }
+
+    #[test]
+    fn from_hex_rejects_non_hex_chars() {
+        let bad = "z".repeat(64);
+        assert!(matches!(
+            Sha256Digest::from_hex(&bad).unwrap_err(),
+            HexError::InvalidHex(_)
+        ));
+    }
+
+    #[test]
+    fn serde_round_trip() {
+        let d = Sha256Digest::from_bytes([42u8; 32]);
+        let json = serde_json::to_string(&d).unwrap();
+        assert_eq!(
+            json,
+            "\"2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a2a\""
+        );
+        let parsed: Sha256Digest = serde_json::from_str(&json).unwrap();
+        assert_eq!(parsed, d);
+    }
+
+    #[test]
+    fn deserialize_rejects_wrong_length() {
+        let json = "\"abcd\"";
+        let err = serde_json::from_str::<Sha256Digest>(json).unwrap_err();
+        assert!(err.to_string().contains("64"), "got: {err}");
+    }
+
+    #[test]
+    fn deserialize_rejects_non_hex() {
+        let json = format!("\"{}\"", "z".repeat(64));
+        let err = serde_json::from_str::<Sha256Digest>(&json).unwrap_err();
+        assert!(err.to_string().to_lowercase().contains("hex"), "got: {err}");
+    }
+
+    #[test]
+    fn debug_includes_hex() {
+        let d = Sha256Digest::from_bytes([0u8; 32]);
+        let s = format!("{d:?}");
+        assert!(s.contains("00000000"), "got: {s}");
+    }
+}
