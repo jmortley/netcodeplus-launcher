@@ -12,5 +12,11 @@ description = "Pure update planning logic for the NetcodePlus launcher."
 workspace = true
 
 [dependencies]
+ncp-manifest = { path = "../manifest" }
+serde = { workspace = true }
+semver = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
 
 [dev-dependencies]
+chrono = { workspace = true }

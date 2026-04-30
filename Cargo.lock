@@ -2188,6 +2188,14 @@ dependencies = [
 [[package]]
 name = "ncp-planner"
 version = "0.1.0"
+dependencies = [
+ "chrono",
+ "ncp-manifest",
+ "semver",
+ "serde",
+ "thiserror 2.0.18",
+ "tracing",
+]
 
 [[package]]
 name = "ndk"
