@@ -40,7 +40,7 @@ impl Default for ClientConfig {
 
 fn default_user_agent() -> String {
     format!(
-        "netcodeplus-launcher/{} (+https://github.com/netcodeplus/netcodeplus-launcher)",
+        "netcodeplus-launcher/{} (+https://github.com/jmortley/netcodeplus-launcher)",
         env!("CARGO_PKG_VERSION")
     )
 }
