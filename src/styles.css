@@ -2,15 +2,96 @@
   font-family: ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   font-size: 15px;
   line-height: 1.5;
-  color-scheme: dark light;
+  color-scheme: dark;
   color: #e6e6e6;
   background-color: #0f1115;
 }
 
 body {
   margin: 0;
+  min-height: 100vh;
+  display: flex;
+  align-items: flex-start;
+  justify-content: center;
   padding: 2rem;
+  box-sizing: border-box;
+}
+
+/* ---- background layers ---- */
+
+.bg-stack {
+  position: fixed;
+  inset: 0;
+  z-index: -2;
+  overflow: hidden;
+  background-color: #0f1115;
+}
+
+.bg-layer {
+  position: absolute;
+  inset: 0;
+  background-size: cover;
+  background-position: center;
+  background-repeat: no-repeat;
+  opacity: 0;
+  animation: bg-fade 24s infinite;
+  /* Each image stays visible ~7s; ~1s cross-fade between. Three images,
+     staggered by 8s each, give a 24s loop. */
+}
+
+.bg-layer:nth-child(1) {
+  animation-delay: 0s;
+}
+.bg-layer:nth-child(2) {
+  animation-delay: 8s;
+}
+.bg-layer:nth-child(3) {
+  animation-delay: 16s;
+}
+
+@keyframes bg-fade {
+  0% {
+    opacity: 0;
+  }
+  4% {
+    opacity: 1;
+  }
+  33% {
+    opacity: 1;
+  }
+  37% {
+    opacity: 0;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+
+.bg-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: linear-gradient(
+    135deg,
+    rgba(15, 17, 21, 0.86),
+    rgba(15, 17, 21, 0.55) 45%,
+    rgba(15, 17, 21, 0.86)
+  );
+  pointer-events: none;
+}
+
+/* ---- card content ---- */
+
+main {
+  width: 100%;
   max-width: 720px;
+  background: rgba(20, 23, 30, 0.92);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-radius: 8px;
+  padding: 2rem;
+  box-shadow: 0 16px 48px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
 }
 
 header {
@@ -42,7 +123,7 @@ h2 {
 }
 
 .status {
-  background: #1a1d24;
+  background: rgba(15, 17, 21, 0.6);
   border: 1px solid #2a2d33;
   border-radius: 6px;
   padding: 1rem;
@@ -114,4 +195,16 @@ footer {
   margin-top: 3rem;
   padding-top: 1rem;
   border-top: 1px solid #2a2d33;
+}
+
+/* ---- accessibility ---- */
+
+@media (prefers-reduced-motion: reduce) {
+  .bg-layer {
+    animation: none;
+  }
+  /* Show only the first background; no rotation. */
+  .bg-layer:nth-child(1) {
+    opacity: 1;
+  }
 }
