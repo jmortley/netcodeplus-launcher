@@ -1,0 +1,28 @@
+# Workspace root for the NetcodePlus launcher.
+#
+# Members:
+#   - src-tauri        Tauri 2.x desktop shell (binary).
+#   - crates/manifest  Signed manifest schema and verification (no I/O).
+#   - crates/planner   Pure update planning logic (no I/O).
+
+[workspace]
+resolver = "2"
+members = [
+    "src-tauri",
+    "crates/manifest",
+    "crates/planner",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Apache-2.0"
+repository = "https://github.com/netcodeplus/netcodeplus-launcher"
+authors = ["NetcodePlus contributors"]
+
+[workspace.lints.rust]
+unsafe_code = "deny"
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }

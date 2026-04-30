@@ -1,0 +1,16 @@
+[package]
+name = "ncp-planner"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Pure update planning logic for the NetcodePlus launcher."
+
+[lints]
+workspace = true
+
+[dependencies]
+
+[dev-dependencies]
