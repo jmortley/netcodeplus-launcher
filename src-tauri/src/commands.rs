@@ -19,14 +19,16 @@ pub fn detect_install() -> Option<UtInstall> {
     ncp_host::detect()
 }
 
-/// Validate that `path` looks like a UT4 install.
+/// Validate that `path` (or one of its ancestors — so picking the
+/// `Engine/Binaries/Win64/` subfolder still works) is a UT4 install.
 ///
-/// Used after a folder picker; returns `null` for any path that
-/// does not contain `UnrealTournament/Binaries/Win64/UnrealTournament.exe`
-/// and `UnrealTournament/Content/Paks/`.
+/// Returns `null` for any path that does not contain
+/// `Engine/Binaries/Win64/UE4-Win64-Shipping.exe` plus
+/// `UnrealTournament/Content/Paks/` somewhere up the tree.
 #[tauri::command]
 pub fn check_install(path: String) -> Option<UtInstall> {
-    ncp_host::check_install(Path::new(&path))
+    let mod_paks_dir = ncp_host::default_mod_paks_dir()?;
+    ncp_host::check_install(Path::new(&path), mod_paks_dir)
 }
 
 /// Launcher version (from `Cargo.toml`).

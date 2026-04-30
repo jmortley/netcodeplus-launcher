@@ -2284,6 +2284,7 @@ dependencies = [
 name = "ncp-host"
 version = "0.1.0"
 dependencies = [
+ "dirs",
  "ncp-manifest",
  "ncp-planner",
  "semver",

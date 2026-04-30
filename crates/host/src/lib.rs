@@ -19,5 +19,5 @@ pub mod install;
 pub mod state;
 
 pub use crate::error::{Result, StateError};
-pub use crate::install::{check_install, detect, UtInstall};
+pub use crate::install::{check_install, default_mod_paks_dir, detect, UtInstall};
 pub use crate::state::{LauncherState, DEFAULT_CHANNEL};

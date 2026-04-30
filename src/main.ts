@@ -4,7 +4,9 @@ import { open } from "@tauri-apps/plugin-dialog";
 interface UtInstall {
   root: string;
   executable: string;
-  paks_dir: string;
+  launch_args: string[];
+  content_paks_dir: string;
+  mod_paks_dir: string;
 }
 
 const installStatus = document.getElementById("install-status")!;
@@ -21,19 +23,26 @@ function escape(value: string): string {
 
 function renderInstall(install: UtInstall | null) {
   if (install) {
+    const args = install.launch_args.map(escape).join(" ");
     installStatus.innerHTML = `
       <div class="ok">UT4 install detected.</div>
       <dl>
         <dt>Root</dt><dd>${escape(install.root)}</dd>
         <dt>Executable</dt><dd>${escape(install.executable)}</dd>
-        <dt>Paks dir</dt><dd>${escape(install.paks_dir)}</dd>
+        <dt>Launch args</dt><dd><code>${args}</code></dd>
+        <dt>Content paks</dt><dd>${escape(install.content_paks_dir)}</dd>
+        <dt>Mod paks (write target)</dt><dd>${escape(install.mod_paks_dir)}</dd>
       </dl>
     `;
   } else {
     installStatus.innerHTML = `
       <div class="warn">
         No UT4 install autodetected.
-        Click <em>Pick install folder</em> below to choose one manually.
+        Click <em>Pick install folder</em> below and choose your
+        <code>UnrealTournament</code> directory (the one that contains
+        <code>Engine/</code> and <code>UnrealTournament/</code>).
+        Picking a deeper subfolder is fine — the launcher walks up to
+        find the real root.
       </div>
     `;
   }
@@ -79,8 +88,9 @@ async function pickDir() {
     if (!result) {
       installStatus.innerHTML = `
         <div class="warn">
-          The folder <code>${escape(dirPath)}</code> does not look like a UT4 install
-          (missing <code>UnrealTournament.exe</code> or the <code>Paks/</code> directory).
+          The folder <code>${escape(dirPath)}</code> does not look like a UT4 install.
+          Expected to find <code>Engine/Binaries/Win64/UE4-Win64-Shipping.exe</code>
+          and <code>UnrealTournament/Content/Paks/</code> at or above this path.
         </div>
       `;
       return;

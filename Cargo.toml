@@ -44,6 +44,10 @@ minisign-verify = "0.2"
 # Atomic file replace for state-file writes (host crate).
 tempfile = "3"
 
+# Platform-aware standard directory lookups (Documents folder for the
+# UT4 mod-paks dir).
+dirs = "6"
+
 # Network + streaming hashing (net crate).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 sha2 = "0.10"
