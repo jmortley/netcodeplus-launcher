@@ -1,0 +1,67 @@
+# cargo-audit configuration.
+#
+# Ignored advisories below are reviewed and accepted. Each entry
+# documents *why* — re-evaluate when the underlying dep is updated,
+# or before any production / public release.
+#
+# To re-check an entry, look it up at https://rustsec.org/advisories/<ID>
+
+[advisories]
+ignore = [
+    # ---- gtk-rs GTK3 bindings: unmaintained ----
+    #
+    # All transitive via Tauri's `wry` Linux backend, which still
+    # uses GTK3. Migration to GTK4 is on the Tauri/wry roadmap but
+    # not yet shipped. These advisories only affect Linux builds;
+    # our v1 target is Windows. Re-check when upgrading Tauri.
+    "RUSTSEC-2024-0411",  # gdkwayland-sys
+    "RUSTSEC-2024-0412",  # gdk
+    "RUSTSEC-2024-0413",  # atk
+    "RUSTSEC-2024-0414",  # gdkx11-sys
+    "RUSTSEC-2024-0415",  # gtk
+    "RUSTSEC-2024-0416",  # atk-sys
+    "RUSTSEC-2024-0417",  # gdkx11
+    "RUSTSEC-2024-0418",  # gdk-sys
+    "RUSTSEC-2024-0419",  # gtk3-macros
+    "RUSTSEC-2024-0420",  # gtk-sys
+
+    # ---- glib soundness bug in VariantStrIter ----
+    #
+    # RUSTSEC-2024-0429: unsoundness in `Iterator` /
+    # `DoubleEndedIterator` for `glib::VariantStrIter`. We don't use
+    # glib directly; it's a transitive dep on the GTK chain (Linux
+    # only). Our code never touches `VariantStrIter`. Re-check when
+    # Tauri pulls in a fixed glib.
+    "RUSTSEC-2024-0429",
+
+    # ---- proc-macro-error: unmaintained ----
+    #
+    # Deep transitive (via tauri-codegen's macro stack). Author
+    # archived the repo. Replacement (`proc-macro-error2`) exists
+    # but Tauri hasn't migrated yet.
+    "RUSTSEC-2024-0370",
+
+    # ---- fxhash: unmaintained ----
+    #
+    # Transitive. Replacements exist (rustc-hash); waiting for the
+    # depending crate to migrate.
+    "RUSTSEC-2025-0057",
+
+    # ---- unic-* UCD utilities: unmaintained ----
+    #
+    # Transitive via the URL/IDNA parsing stack. The whole `unic`
+    # family was archived; the ecosystem has been migrating to
+    # `icu_*` crates for a while.
+    "RUSTSEC-2025-0075",  # unic-char-range
+    "RUSTSEC-2025-0080",  # unic-common
+    "RUSTSEC-2025-0081",  # unic-char-property
+    "RUSTSEC-2025-0098",  # unic-ucd-version
+    "RUSTSEC-2025-0100",  # unic-ucd-ident
+
+    # ---- rand soundness bug with custom env_logger ----
+    #
+    # RUSTSEC-2026-0097: rand is unsound when combined with a custom
+    # logger that calls back into `rand::rng()`. We don't use either
+    # rand or env_logger directly; transitive only.
+    "RUSTSEC-2026-0097",
+]
