@@ -1,0 +1,24 @@
+[package]
+name = "ncp-host"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+authors.workspace = true
+description = "Host-system I/O for the NetcodePlus launcher: persistent state file and UT4 install detection."
+
+[lints]
+workspace = true
+
+[dependencies]
+ncp-planner = { path = "../planner" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tempfile = { workspace = true }
+
+[dev-dependencies]
+ncp-manifest = { path = "../manifest" }
+semver = { workspace = true }

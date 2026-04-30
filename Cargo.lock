@@ -2171,6 +2171,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ncp-host"
+version = "0.1.0"
+dependencies = [
+ "ncp-manifest",
+ "ncp-planner",
+ "semver",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tracing",
+]
+
+[[package]]
 name = "ncp-manifest"
 version = "0.1.0"
 dependencies = [
