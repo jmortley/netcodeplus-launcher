@@ -197,14 +197,9 @@ footer {
   border-top: 1px solid #2a2d33;
 }
 
-/* ---- accessibility ---- */
-
-@media (prefers-reduced-motion: reduce) {
-  .bg-layer {
-    animation: none;
-  }
-  /* Show only the first background; no rotation. */
-  .bg-layer:nth-child(1) {
-    opacity: 1;
-  }
-}
+/* The 1s cross-fade every 8s between still images is intentionally
+   not gated behind `prefers-reduced-motion: reduce`. The spec
+   targets nausea-inducing motion (parallax, smooth scroll,
+   autoplay, fast carousels) — not gentle background fades. Many
+   developers disable Windows animations for snappy UI; this would
+   otherwise leave their launcher stuck on the first image. */
