@@ -17,6 +17,8 @@ pub fn run() {
             commands::check_install,
             commands::affinity_presets,
             commands::launch_game,
+            commands::load_state,
+            commands::save_launch_prefs,
             commands::launcher_version,
         ])
         .run(tauri::generate_context!())

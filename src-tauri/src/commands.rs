@@ -4,11 +4,13 @@
 //! the workspace crates to the webview. Errors are stringified at the
 //! boundary because the webview only handles Display-formatted messages.
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use ncp_host::{
-    AffinityPreset, DetectSource, DetectedInstall, LaunchOptions, LaunchProfile, Priority,
+    AffinityPreset, DetectSource, DetectedInstall, LaunchOptions, LaunchProfile, LauncherState,
+    Priority,
 };
+use tauri::Manager;
 
 /// Enumerate all UT4 *play* installs on this machine.
 ///
@@ -74,6 +76,54 @@ pub fn launch_game(
         affinity_mask,
     };
     ncp_host::launch(Path::new(&executable), &args, &opts).map_err(|e| e.to_string())
+}
+
+/// Path to the persistent launcher state file in the per-app config dir.
+fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
+    Ok(dir.join("state.json"))
+}
+
+/// Load persisted launcher state (defaults on first run).
+#[tauri::command]
+pub fn load_state(app: tauri::AppHandle) -> Result<LauncherState, String> {
+    let path = state_path(&app)?;
+    ncp_host::state::read(&path)
+        .map(Option::unwrap_or_default)
+        .map_err(|e| e.to_string())
+}
+
+/// Persist the user's launch preferences (chosen install, profile,
+/// priority, affinity) so they are restored on the next run.
+#[tauri::command]
+pub fn save_launch_prefs(
+    app: tauri::AppHandle,
+    install_path: Option<String>,
+    profile_label: Option<String>,
+    priority: String,
+    affinity_mask_hex: Option<String>,
+) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.install_path = install_path.map(PathBuf::from);
+    state.launch_profile_label = profile_label;
+    state.launch_priority = if priority.eq_ignore_ascii_case("high") {
+        Priority::High
+    } else {
+        Priority::Normal
+    };
+    // Validate the mask parses, but persist the (trimmed) hex string;
+    // empty/None means "all cores".
+    state.affinity_mask_hex = match affinity_mask_hex {
+        Some(s) if !s.trim().is_empty() => {
+            ncp_host::parse_mask_hex(&s).map_err(|e| format!("invalid affinity mask: {e}"))?;
+            Some(s.trim().to_string())
+        }
+        _ => None,
+    };
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
 }
 
 /// Launcher version (from `Cargo.toml`). Surfaced in the UI for bug reports.

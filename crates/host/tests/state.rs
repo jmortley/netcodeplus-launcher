@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 
-use ncp_host::{state, LauncherState, StateError};
+use ncp_host::{state, LauncherState, Priority, StateError};
 use ncp_manifest::Sha256Digest;
 use ncp_planner::{LocalInstall, LocalPak};
 use semver::Version;
@@ -40,6 +40,9 @@ fn sample_state() -> LauncherState {
         channel: "stable".to_string(),
         local_install: LocalInstall { paks },
         opted_out,
+        launch_profile_label: Some("Unreal Tournament 4 UU".to_string()),
+        launch_priority: Priority::High,
+        affinity_mask_hex: Some("FFC".to_string()),
     }
 }
 

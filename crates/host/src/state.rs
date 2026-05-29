@@ -22,6 +22,7 @@ use tempfile::NamedTempFile;
 use tracing::debug;
 
 use crate::error::{Result, StateError};
+use crate::launch::Priority;
 
 /// Default channel name selected on first run.
 pub const DEFAULT_CHANNEL: &str = "stable";
@@ -50,6 +51,21 @@ pub struct LauncherState {
     /// Optional pak ids the user has opted out of.
     #[serde(default)]
     pub opted_out: HashSet<String>,
+
+    /// Display label of the launch profile the user last chose, so it
+    /// can be re-selected on the next run.
+    #[serde(default)]
+    pub launch_profile_label: Option<String>,
+
+    /// Process priority to launch the game with.
+    #[serde(default)]
+    pub launch_priority: Priority,
+
+    /// CPU affinity as an uppercase hex string (no `0x`). `None` or empty
+    /// = all cores. Stored as a string, not `u64`, so masks wider than
+    /// 2^53 survive the JSON ↔ JS-number round-trip in the webview.
+    #[serde(default)]
+    pub affinity_mask_hex: Option<String>,
 }
 
 fn default_channel() -> String {
@@ -63,6 +79,9 @@ impl Default for LauncherState {
             channel: default_channel(),
             local_install: LocalInstall::default(),
             opted_out: HashSet::new(),
+            launch_profile_label: None,
+            launch_priority: Priority::default(),
+            affinity_mask_hex: None,
         }
     }
 }

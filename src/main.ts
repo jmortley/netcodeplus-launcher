@@ -29,15 +29,25 @@ interface AffinityPreset {
   mask_hex: string;
 }
 
+interface LauncherState {
+  install_path: string | null;
+  launch_profile_label: string | null;
+  launch_priority: "normal" | "high";
+  affinity_mask_hex: string | null;
+}
+
 const installStatus = document.getElementById("install-status")!;
 const pickButton = document.getElementById("pick-dir") as HTMLButtonElement;
 const versionLabel = document.getElementById("version")!;
 
-const state: {
-  installs: DetectedInstall[];
-  presets: AffinityPreset[];
-  selInstall: number;
-} = { installs: [], presets: [], selInstall: 0 };
+const state = {
+  installs: [] as DetectedInstall[],
+  presets: [] as AffinityPreset[],
+  selInstall: 0,
+  profileLabel: null as string | null,
+  priority: "normal" as "normal" | "high",
+  affinityHex: "", // "" = all cores
+};
 
 function escape(value: string): string {
   return value
@@ -69,47 +79,19 @@ function netcodeplusBadge(status: NetcodePlusStatus): string {
   }
 }
 
-/** Prefer a profile that isn't the dx12 variant as the default selection. */
-function defaultProfileIndex(di: DetectedInstall): number {
-  const i = di.profiles.findIndex((p) => !p.args.some((a) => /-dx12/i.test(a)));
-  return i >= 0 ? i : 0;
+/** Index of the currently-selected install's profile, honoring a saved
+ * choice, else preferring a non-dx12 variant. */
+function selectedProfileIndex(di: DetectedInstall): number {
+  if (state.profileLabel) {
+    const saved = di.profiles.findIndex((p) => p.label === state.profileLabel);
+    if (saved >= 0) return saved;
+  }
+  const nonDx12 = di.profiles.findIndex((p) => !p.args.some((a) => /-dx12/i.test(a)));
+  return nonDx12 >= 0 ? nonDx12 : 0;
 }
 
-function optionList(items: string[], selected: number): string {
-  return items
-    .map((label, i) => `<option value="${i}"${i === selected ? " selected" : ""}>${escape(label)}</option>`)
-    .join("");
-}
-
-function launchControls(di: DetectedInstall): string {
-  const profOpts = di.profiles.map(
-    (p, i) => `<option value="${i}"${i === defaultProfileIndex(di) ? " selected" : ""}>${escape(p.label)}</option>`,
-  ).join("");
-  const affOpts =
-    state.presets
-      .map((p) => `<option value="${escape(p.mask_hex)}">${escape(p.label)}</option>`)
-      .join("") + `<option value="__custom__">Custom…</option>`;
-  return `
-    <div class="controls">
-      <label>Launch profile
-        <select id="profile-sel">${profOpts}</select>
-      </label>
-      <label>Priority
-        <select id="priority-sel">
-          <option value="normal" selected>Normal</option>
-          <option value="high">High</option>
-        </select>
-      </label>
-      <label>CPU affinity
-        <select id="affinity-sel">${affOpts}</select>
-      </label>
-      <label id="affinity-hex-wrap" style="display:none">Mask (hex)
-        <input id="affinity-hex" type="text" placeholder="e.g. FFC" spellcheck="false" />
-      </label>
-      <button id="launch-btn" type="button">Launch UT4</button>
-      <div id="launch-status" class="launch-status"></div>
-    </div>
-  `;
+function eqHex(a: string, b: string): boolean {
+  return a.toUpperCase() === b.toUpperCase();
 }
 
 function render() {
@@ -124,16 +106,37 @@ function render() {
   }
   if (state.selInstall >= state.installs.length) state.selInstall = 0;
   const di = state.installs[state.selInstall];
+  const profIdx = selectedProfileIndex(di);
+  state.profileLabel = di.profiles[profIdx]?.label ?? null;
 
   const installPicker =
     state.installs.length > 1
       ? `<label>Install
-           <select id="install-sel">${optionList(
-             state.installs.map((d) => d.install.root),
-             state.selInstall,
-           )}</select>
+           <select id="install-sel">${state.installs
+             .map(
+               (d, i) =>
+                 `<option value="${i}"${i === state.selInstall ? " selected" : ""}>${escape(
+                   d.install.root,
+                 )}</option>`,
+             )
+             .join("")}</select>
          </label>`
       : "";
+
+  const profOpts = di.profiles
+    .map((p, i) => `<option value="${i}"${i === profIdx ? " selected" : ""}>${escape(p.label)}</option>`)
+    .join("");
+
+  const customAffinity = !state.presets.some((p) => eqHex(p.mask_hex, state.affinityHex));
+  const affOpts =
+    state.presets
+      .map(
+        (p) =>
+          `<option value="${escape(p.mask_hex)}"${
+            !customAffinity && eqHex(p.mask_hex, state.affinityHex) ? " selected" : ""
+          }>${escape(p.label)}</option>`,
+      )
+      .join("") + `<option value="__custom__"${customAffinity ? " selected" : ""}>Custom…</option>`;
 
   const heading =
     state.installs.length === 1
@@ -148,7 +151,23 @@ function render() {
       <div class="src">${sourceText(di.source)}</div>
       <div class="ncp">${netcodeplusBadge(di.netcodeplus)}</div>
     </div>
-    ${launchControls(di)}
+    <div class="controls">
+      <label>Launch profile<select id="profile-sel">${profOpts}</select></label>
+      <label>Priority
+        <select id="priority-sel">
+          <option value="normal"${state.priority === "normal" ? " selected" : ""}>Normal</option>
+          <option value="high"${state.priority === "high" ? " selected" : ""}>High</option>
+        </select>
+      </label>
+      <label>CPU affinity<select id="affinity-sel">${affOpts}</select></label>
+      <label id="affinity-hex-wrap" style="display:${customAffinity ? "" : "none"}">Mask (hex)
+        <input id="affinity-hex" type="text" placeholder="e.g. FFC" spellcheck="false" value="${
+          customAffinity ? escape(state.affinityHex) : ""
+        }" />
+      </label>
+      <button id="launch-btn" type="button">Launch UT4</button>
+      <div id="launch-status" class="launch-status"></div>
+    </div>
   `;
   wire();
 }
@@ -157,45 +176,89 @@ function wire() {
   const installSel = document.getElementById("install-sel") as HTMLSelectElement | null;
   installSel?.addEventListener("change", () => {
     state.selInstall = Number(installSel.value);
+    state.profileLabel = null; // let the new install pick its default
     render();
+    persist();
+  });
+
+  const profileSel = document.getElementById("profile-sel") as HTMLSelectElement | null;
+  profileSel?.addEventListener("change", () => {
+    const di = state.installs[state.selInstall];
+    state.profileLabel = di.profiles[Number(profileSel.value)]?.label ?? null;
+    persist();
+  });
+
+  const prioritySel = document.getElementById("priority-sel") as HTMLSelectElement | null;
+  prioritySel?.addEventListener("change", () => {
+    state.priority = prioritySel.value as "normal" | "high";
+    persist();
   });
 
   const affSel = document.getElementById("affinity-sel") as HTMLSelectElement | null;
   const hexWrap = document.getElementById("affinity-hex-wrap");
+  const hexInput = document.getElementById("affinity-hex") as HTMLInputElement | null;
   affSel?.addEventListener("change", () => {
-    if (hexWrap) hexWrap.style.display = affSel.value === "__custom__" ? "" : "none";
+    if (affSel.value === "__custom__") {
+      if (hexWrap) hexWrap.style.display = "";
+      state.affinityHex = hexInput?.value.trim() ?? "";
+      hexInput?.focus();
+    } else {
+      if (hexWrap) hexWrap.style.display = "none";
+      state.affinityHex = affSel.value;
+    }
+    persist();
+  });
+  hexInput?.addEventListener("change", () => {
+    state.affinityHex = hexInput.value.trim();
+    persist();
   });
 
   const btn = document.getElementById("launch-btn") as HTMLButtonElement | null;
   btn?.addEventListener("click", () => void launch());
 }
 
+function persist() {
+  const di = state.installs[state.selInstall];
+  if (!di) return;
+  void invoke("save_launch_prefs", {
+    installPath: di.install.root,
+    profileLabel: state.profileLabel,
+    priority: state.priority,
+    affinityMaskHex: state.affinityHex || null,
+  }).catch((err) => console.error("save_launch_prefs failed:", err));
+}
+
 async function launch() {
   const di = state.installs[state.selInstall];
-  const profileSel = document.getElementById("profile-sel") as HTMLSelectElement;
-  const prioritySel = document.getElementById("priority-sel") as HTMLSelectElement;
-  const affSel = document.getElementById("affinity-sel") as HTMLSelectElement;
-  const hexInput = document.getElementById("affinity-hex") as HTMLInputElement | null;
+  const profile =
+    di.profiles.find((p) => p.label === state.profileLabel) ?? di.profiles[selectedProfileIndex(di)];
   const status = document.getElementById("launch-status")!;
-
-  const profile = di.profiles[Number(profileSel.value)];
-  const affinityMaskHex =
-    affSel.value === "__custom__" ? (hexInput?.value.trim() ?? "") : affSel.value;
 
   status.textContent = "Launching…";
   try {
     await invoke("launch_game", {
       executable: di.install.executable,
       args: profile.args,
-      priority: prioritySel.value,
-      affinityMaskHex,
+      priority: state.priority,
+      affinityMaskHex: state.affinityHex || null,
     });
-    status.innerHTML = `<span class="ok">Launched: ${escape(profile.label)} (${escape(prioritySel.value)} priority${
-      affinityMaskHex ? `, affinity ${escape(affinityMaskHex)}` : ""
+    persist();
+    status.innerHTML = `<span class="ok">Launched: ${escape(profile.label)} (${escape(state.priority)} priority${
+      state.affinityHex ? `, affinity ${escape(state.affinityHex)}` : ""
     })</span>`;
   } catch (err) {
     status.innerHTML = `<span class="warn">Launch failed: ${escape(String(err))}</span>`;
     console.error("launch_game failed:", err);
+  }
+}
+
+function applyPrefs(prefs: LauncherState) {
+  state.priority = prefs.launch_priority === "high" ? "high" : "normal";
+  state.affinityHex = prefs.affinity_mask_hex ?? "";
+  state.profileLabel = prefs.launch_profile_label;
+  if (prefs.install_path) {
+    const i = state.installs.findIndex((d) => d.install.root === prefs.install_path);
+    if (i >= 0) state.selInstall = i;
   }
 }
 
@@ -208,19 +271,21 @@ async function showVersion() {
   }
 }
 
-async function loadInstalls() {
+async function loadAll() {
   try {
-    const [installs, presets] = await Promise.all([
+    const [installs, presets, prefs] = await Promise.all([
       invoke<DetectedInstall[]>("detect_installs"),
       invoke<AffinityPreset[]>("affinity_presets"),
+      invoke<LauncherState>("load_state"),
     ]);
     state.installs = installs;
     state.presets = presets;
     state.selInstall = 0;
+    applyPrefs(prefs);
     render();
   } catch (err) {
     installStatus.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
-    console.error("detect_installs failed:", err);
+    console.error("startup load failed:", err);
   }
 }
 
@@ -248,7 +313,9 @@ async function pickDir() {
     }
     state.installs = [result];
     state.selInstall = 0;
+    state.profileLabel = null;
     render();
+    persist();
   } catch (err) {
     installStatus.innerHTML = `<div class="warn">Validation failed: ${escape(String(err))}</div>`;
     console.error("check_install failed:", err);
@@ -257,4 +324,4 @@ async function pickDir() {
 
 pickButton.addEventListener("click", () => void pickDir());
 void showVersion();
-void loadInstalls();
+void loadAll();
