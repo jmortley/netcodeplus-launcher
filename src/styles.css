@@ -310,3 +310,16 @@ footer {
 .ut4-pick:hover {
   background: #1d4ed8;
 }
+
+.discord-btns {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+}
+#join-utpugs {
+  background: #5865f2;
+}
+#join-utpugs:hover {
+  background: #4752c4;
+}

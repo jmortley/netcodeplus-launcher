@@ -22,6 +22,7 @@ pub fn run() {
             commands::save_ut4stats_link,
             commands::ut4stats_search,
             commands::ut4stats_summary,
+            commands::open_external,
             commands::launcher_version,
         ])
         .run(tauri::generate_context!())

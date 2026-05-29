@@ -481,6 +481,18 @@ async function pickDir() {
   }
 }
 
+// ---- community / discord --------------------------------------------------
+
+const UTPUGS_DISCORD = "https://discord.gg/utpugs";
+const ICTF_DISCORD = "https://discord.gg/EcUMZjFY3q";
+
+function openExternal(url: string) {
+  void invoke("open_external", { url }).catch((err) => console.error("open_external failed:", err));
+}
+
+document.getElementById("join-utpugs")?.addEventListener("click", () => openExternal(UTPUGS_DISCORD));
+document.getElementById("join-ictf")?.addEventListener("click", () => openExternal(ICTF_DISCORD));
+
 pickButton.addEventListener("click", () => void pickDir());
 void showVersion();
 void loadAll();
