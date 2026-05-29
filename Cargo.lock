@@ -2489,6 +2489,7 @@ name = "netcodeplus-launcher"
 version = "0.1.0"
 dependencies = [
  "ncp-host",
+ "ncp-net",
  "serde",
  "serde_json",
  "tauri",

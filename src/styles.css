@@ -255,3 +255,58 @@ footer {
   min-height: 1.2rem;
   font-size: 0.9rem;
 }
+
+/* ---- ut4stats player panel ---- */
+
+.stat-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.6rem;
+  margin-bottom: 0.5rem;
+}
+.ratings {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  margin-bottom: 0.5rem;
+}
+.recent {
+  list-style: none;
+  padding: 0;
+  margin: 0.25rem 0 0;
+  font-size: 0.85rem;
+}
+.recent li {
+  padding: 0.15rem 0;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+}
+.link-btn {
+  background: none;
+  color: #6ea8fe;
+  padding: 0;
+  margin: 0 0 0 auto;
+  font-size: 0.8rem;
+  text-decoration: underline;
+}
+.link-btn:hover {
+  background: none;
+  color: #9ec5ff;
+}
+#ut4-results {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  max-height: 12rem;
+  overflow-y: auto;
+}
+.ut4-pick {
+  background: rgba(15, 17, 21, 0.8);
+  color: #e6e6e6;
+  border: 1px solid #2a2d33;
+  text-align: left;
+  margin: 0;
+  padding: 0.4rem 0.6rem;
+}
+.ut4-pick:hover {
+  background: #1d4ed8;
+}

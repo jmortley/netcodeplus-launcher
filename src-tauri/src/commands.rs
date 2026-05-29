@@ -126,6 +126,65 @@ pub fn save_launch_prefs(
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
 }
 
+/// Save (or clear, by passing null) the linked ut4stats.com player.
+#[tauri::command]
+pub fn save_ut4stats_link(
+    app: tauri::AppHandle,
+    playerid: Option<String>,
+    playername: Option<String>,
+) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.ut4stats_playerid = playerid.filter(|s| !s.is_empty());
+    state.ut4stats_playername = playername.filter(|s| !s.is_empty());
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
+const UT4STATS_BASE: &str = "https://ut4stats.com";
+const UT4STATS_MAX: u64 = 256 * 1024;
+
+/// Percent-encode a query-string value (keeps the RFC 3986 unreserved set).
+fn encode_q(s: &str) -> String {
+    s.bytes()
+        .map(|b| match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                (b as char).to_string()
+            }
+            _ => format!("%{b:02X}"),
+        })
+        .collect()
+}
+
+/// Search ut4stats.com players by name via the site's public
+/// `/api/player_search/` endpoint. Returns the raw JSON (`[{id, name}, …]`).
+#[tauri::command]
+pub async fn ut4stats_search(query: String) -> Result<String, String> {
+    if query.trim().len() < 2 {
+        return Ok("[]".to_string());
+    }
+    let url = format!(
+        "{UT4STATS_BASE}/api/player_search/?q={}",
+        encode_q(query.trim())
+    );
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::fetch_text(&client, &url, UT4STATS_MAX)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// Fetch a player's stats summary from ut4stats.com's public
+/// `/api/player_summary/<id>/` endpoint. Returns the raw JSON.
+#[tauri::command]
+pub async fn ut4stats_summary(playerid: String) -> Result<String, String> {
+    let url = format!("{UT4STATS_BASE}/api/player_summary/{playerid}/");
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::fetch_text(&client, &url, UT4STATS_MAX)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Launcher version (from `Cargo.toml`). Surfaced in the UI for bug reports.
 #[tauri::command]
 pub fn launcher_version() -> &'static str {

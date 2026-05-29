@@ -66,6 +66,16 @@ pub struct LauncherState {
     /// 2^53 survive the JSON ↔ JS-number round-trip in the webview.
     #[serde(default)]
     pub affinity_mask_hex: Option<String>,
+
+    /// ut4stats.com player id the user linked (one-time), for fetching
+    /// their stats panel. `None` = not linked.
+    #[serde(default)]
+    pub ut4stats_playerid: Option<String>,
+
+    /// Display name of the linked ut4stats player (cached for the UI so
+    /// it can show "linked as X" without a network round-trip).
+    #[serde(default)]
+    pub ut4stats_playername: Option<String>,
 }
 
 fn default_channel() -> String {
@@ -82,6 +92,8 @@ impl Default for LauncherState {
             launch_profile_label: None,
             launch_priority: Priority::default(),
             affinity_mask_hex: None,
+            ut4stats_playerid: None,
+            ut4stats_playername: None,
         }
     }
 }

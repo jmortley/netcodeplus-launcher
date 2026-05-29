@@ -19,6 +19,9 @@ pub fn run() {
             commands::launch_game,
             commands::load_state,
             commands::save_launch_prefs,
+            commands::save_ut4stats_link,
+            commands::ut4stats_search,
+            commands::ut4stats_summary,
             commands::launcher_version,
         ])
         .run(tauri::generate_context!())

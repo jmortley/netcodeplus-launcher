@@ -43,6 +43,8 @@ fn sample_state() -> LauncherState {
         launch_profile_label: Some("Unreal Tournament 4 UU".to_string()),
         launch_priority: Priority::High,
         affinity_mask_hex: Some("FFC".to_string()),
+        ut4stats_playerid: Some("76561190000000000".to_string()),
+        ut4stats_playername: Some("phantaci".to_string()),
     }
 }
 
