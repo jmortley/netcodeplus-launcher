@@ -203,3 +203,55 @@ footer {
    autoplay, fast carousels) — not gentle background fades. Many
    developers disable Windows animations for snappy UI; this would
    otherwise leave their launcher stuck on the first image. */
+
+/* ---- install card + launch controls ---- */
+
+.install-card {
+  margin: 0.5rem 0 1rem;
+}
+
+.install-card .src {
+  color: #888;
+  font-size: 0.85rem;
+  margin: 0.15rem 0 0.4rem;
+}
+
+.controls {
+  display: flex;
+  flex-direction: column;
+  gap: 0.6rem;
+  margin-top: 0.5rem;
+}
+
+.controls label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  color: #999;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.controls select,
+.controls input {
+  font-family: inherit;
+  font-size: 0.9rem;
+  padding: 0.4rem 0.5rem;
+  background: rgba(15, 17, 21, 0.8);
+  color: #e6e6e6;
+  border: 1px solid #2a2d33;
+  border-radius: 4px;
+  text-transform: none;
+  letter-spacing: normal;
+  max-width: 28rem;
+}
+
+.controls #launch-btn {
+  align-self: flex-start;
+}
+
+.launch-status {
+  min-height: 1.2rem;
+  font-size: 0.9rem;
+}

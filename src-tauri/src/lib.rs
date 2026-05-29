@@ -13,8 +13,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .invoke_handler(tauri::generate_handler![
-            commands::detect_install,
+            commands::detect_installs,
             commands::check_install,
+            commands::affinity_presets,
+            commands::launch_game,
             commands::launcher_version,
         ])
         .run(tauri::generate_context!())

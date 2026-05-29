@@ -48,6 +48,11 @@ tempfile = "3"
 # UT4 mod-paks dir).
 dirs = "6"
 
+# Windows .lnk (shell link) parsing, for resolving desktop shortcuts to
+# the play install. Pure Rust — keeps the host crate `unsafe_code = deny`
+# (the alternative, the `windows` crate's IShellLink, needs unsafe COM).
+lnk = "0.6"
+
 # Network + streaming hashing (net crate).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 sha2 = "0.10"

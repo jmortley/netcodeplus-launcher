@@ -20,6 +20,11 @@ tracing = { workspace = true }
 tempfile = { workspace = true }
 dirs = { workspace = true }
 
+# .lnk parsing is only used on Windows (desktop-shortcut detection);
+# other targets fall back to directory probing + the folder picker.
+[target.'cfg(windows)'.dependencies]
+lnk = { workspace = true }
+
 [dev-dependencies]
 ncp-manifest = { path = "../manifest" }
 semver = { workspace = true }
