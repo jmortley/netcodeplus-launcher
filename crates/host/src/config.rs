@@ -458,9 +458,21 @@ impl IniFile {
             out.push('\n');
         }
         for s in &self.sections {
+            // Enforce exactly one blank line before each section header (UE4
+            // convention). Trailing blank lines are trimmed from each body
+            // below and re-inserted here, so spacing stays consistent even
+            // for sections the launcher created.
+            if !out.is_empty() && !out.ends_with("\n\n") {
+                out.push('\n');
+            }
             out.push_str(&s.header);
             out.push('\n');
-            for l in &s.body {
+            let end = s
+                .body
+                .iter()
+                .rposition(|l| !l.trim().is_empty())
+                .map_or(0, |i| i + 1);
+            for l in &s.body[..end] {
                 out.push_str(l);
                 out.push('\n');
             }
@@ -621,8 +633,35 @@ Protocol=https
 
     #[test]
     fn render_round_trips_an_untouched_file() {
+        // SAMPLE is already blank-separated with no trailing blanks, so the
+        // normalising renderer reproduces it exactly.
         let f = IniFile::parse(SAMPLE);
         assert_eq!(f.render(), SAMPLE);
+    }
+
+    #[test]
+    fn render_inserts_blank_line_between_adjacent_sections() {
+        let f = IniFile::parse("[A]\nk=v\n[B]\nx=y\n");
+        assert_eq!(f.render(), "[A]\nk=v\n\n[B]\nx=y\n");
+    }
+
+    #[test]
+    fn rendered_sections_are_each_blank_separated() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Engine.ini");
+        std::fs::write(&ini, SAMPLE).unwrap();
+        repair_master_server(&ini).unwrap();
+        let out = std::fs::read_to_string(&ini).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        for (i, line) in lines.iter().enumerate() {
+            if i > 0 && line.starts_with('[') {
+                assert_eq!(
+                    lines[i - 1],
+                    "",
+                    "section `{line}` not preceded by a blank line"
+                );
+            }
+        }
     }
 
     #[test]
