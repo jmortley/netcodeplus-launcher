@@ -21,4 +21,4 @@ mod fetch;
 pub use crate::client::{Client, ClientConfig};
 pub use crate::download::{download, DownloadOutcome};
 pub use crate::error::{NetError, Result};
-pub use crate::fetch::{fetch_bytes, fetch_text, DEFAULT_MAX_MANIFEST_BYTES};
+pub use crate::fetch::{fetch_bytes, fetch_text, post_json, DEFAULT_MAX_MANIFEST_BYTES};

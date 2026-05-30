@@ -76,6 +76,12 @@ pub struct LauncherState {
     /// it can show "linked as X" without a network round-trip).
     #[serde(default)]
     pub ut4stats_playername: Option<String>,
+
+    /// Per-user PUG token issued by the bot's `/launchertoken` command and
+    /// pasted in once. Sent as the `launcher-token` header so the bot can
+    /// resolve the player and queue them. `None` = not set.
+    #[serde(default)]
+    pub launcher_token: Option<String>,
 }
 
 fn default_channel() -> String {
@@ -94,6 +100,7 @@ impl Default for LauncherState {
             affinity_mask_hex: None,
             ut4stats_playerid: None,
             ut4stats_playername: None,
+            launcher_token: None,
         }
     }
 }

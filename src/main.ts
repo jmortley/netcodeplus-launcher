@@ -36,6 +36,7 @@ interface LauncherState {
   affinity_mask_hex: string | null;
   ut4stats_playerid: string | null;
   ut4stats_playername: string | null;
+  launcher_token: string | null;
 }
 
 interface PlayerSearchResult {
@@ -67,6 +68,7 @@ const state = {
   affinityHex: "",
   linkedId: null as string | null,
   linkedName: null as string | null,
+  launcherToken: null as string | null,
 };
 
 function escape(value: string): string {
@@ -327,6 +329,7 @@ async function linkPlayer(id: string, name: string) {
   } catch (err) {
     console.error("save_ut4stats_link failed:", err);
   }
+  renderPug();
   await fetchSummary(id);
 }
 
@@ -339,6 +342,7 @@ async function unlink() {
     console.error("save_ut4stats_link (unlink) failed:", err);
   }
   renderLinkUI();
+  renderPug();
 }
 
 async function fetchSummary(id: string) {
@@ -414,6 +418,7 @@ function applyPrefs(prefs: LauncherState) {
   state.profileLabel = prefs.launch_profile_label;
   state.linkedId = prefs.ut4stats_playerid;
   state.linkedName = prefs.ut4stats_playername;
+  state.launcherToken = prefs.launcher_token;
   if (prefs.install_path) {
     const i = state.installs.findIndex((d) => d.install.root === prefs.install_path);
     if (i >= 0) state.selInstall = i;
@@ -442,6 +447,7 @@ async function loadAll() {
     applyPrefs(prefs);
     render();
     renderStats();
+    renderPug();
   } catch (err) {
     installStatus.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
     console.error("startup load failed:", err);
@@ -492,6 +498,68 @@ function openExternal(url: string) {
 
 document.getElementById("join-utpugs")?.addEventListener("click", () => openExternal(UTPUGS_DISCORD));
 document.getElementById("join-ictf")?.addEventListener("click", () => openExternal(ICTF_DISCORD));
+
+// ---- in-launcher PUG join (UT4IGBot) --------------------------------------
+
+const pugControls = document.getElementById("pug-controls")!;
+
+async function pug(action: "joinpug" | "leavepug" | "listpug") {
+  const status = document.getElementById("pug-status");
+  if (status) status.textContent = action === "listpug" ? "Checking queue…" : "Working…";
+  try {
+    const raw = await invoke<string>("pug_action", { action, token: state.launcherToken ?? "" });
+    let msg = raw;
+    try {
+      msg = (JSON.parse(raw) as { message?: string }).message ?? raw;
+    } catch {
+      /* response wasn't JSON; show it raw */
+    }
+    if (status) status.textContent = msg;
+  } catch (err) {
+    if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("pug_action failed:", err);
+  }
+}
+
+async function saveLauncherToken(token: string | null) {
+  state.launcherToken = token;
+  try {
+    await invoke("save_launcher_token", { token });
+  } catch (err) {
+    console.error("save_launcher_token failed:", err);
+  }
+  renderPug();
+}
+
+function renderPug() {
+  if (!state.launcherToken) {
+    pugControls.innerHTML = `
+      <p>To queue PUGs here, run <code>/launchertoken</code> in the UTPugs Discord and paste the token it DMs you:</p>
+      <div class="controls">
+        <label>Launcher token
+          <input id="pug-token" type="password" placeholder="paste your /launchertoken value" spellcheck="false" autocomplete="off" />
+        </label>
+        <button id="pug-token-save" type="button">Save token</button>
+      </div>`;
+    document.getElementById("pug-token-save")?.addEventListener("click", () => {
+      const v = (document.getElementById("pug-token") as HTMLInputElement).value.trim();
+      if (v) void saveLauncherToken(v);
+    });
+    return;
+  }
+  pugControls.innerHTML = `
+    <p>Queue for iCTF <button id="pug-token-clear" type="button" class="link-btn">change token</button></p>
+    <div class="discord-btns">
+      <button id="pug-join" type="button">Join iCTF PUG</button>
+      <button id="pug-leave" type="button">Leave</button>
+      <button id="pug-refresh" type="button">Queue status</button>
+    </div>
+    <div id="pug-status" class="launch-status"></div>`;
+  document.getElementById("pug-join")?.addEventListener("click", () => void pug("joinpug"));
+  document.getElementById("pug-leave")?.addEventListener("click", () => void pug("leavepug"));
+  document.getElementById("pug-refresh")?.addEventListener("click", () => void pug("listpug"));
+  document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
+}
 
 pickButton.addEventListener("click", () => void pickDir());
 void showVersion();

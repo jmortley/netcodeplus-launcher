@@ -76,3 +76,55 @@ pub async fn fetch_bytes(client: &Client, url: &str, max_bytes: u64) -> Result<V
     debug!(url = %url, bytes = buf.len(), "fetched body");
     Ok(buf)
 }
+
+/// POST `body` as JSON with extra request `headers`, validate `2xx`, and
+/// read up to `max_bytes` of the (UTF-8) response. Intended for small
+/// control endpoints (e.g. the PUG bot's action API), not bulk transfer.
+///
+/// # Errors
+///
+/// - [`NetError::Http`] on transport / TLS / DNS failures.
+/// - [`NetError::HttpStatus`] for any non-success response.
+/// - [`NetError::ResponseTooLarge`] if the body grows past `max_bytes`.
+/// - [`NetError::NotUtf8`] if the bytes read are not valid UTF-8.
+pub async fn post_json(
+    client: &Client,
+    url: &str,
+    headers: &[(&str, &str)],
+    body: String,
+    max_bytes: u64,
+) -> Result<String> {
+    let mut req = client
+        .inner
+        .post(url)
+        .header("content-type", "application/json")
+        .body(body);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    let response = req.send().await?;
+    let status = response.status();
+    if !status.is_success() {
+        return Err(NetError::HttpStatus {
+            url: url.to_string(),
+            status: status.as_u16(),
+        });
+    }
+
+    let mut buf: Vec<u8> = Vec::new();
+    let mut stream = response.bytes_stream();
+    use futures_util::StreamExt;
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk?;
+        if buf.len() as u64 + chunk.len() as u64 > max_bytes {
+            return Err(NetError::ResponseTooLarge {
+                url: url.to_string(),
+                max: max_bytes,
+            });
+        }
+        buf.extend_from_slice(&chunk);
+    }
+    String::from_utf8(buf).map_err(|_| NetError::NotUtf8 {
+        url: url.to_string(),
+    })
+}

@@ -23,6 +23,8 @@ pub fn run() {
             commands::ut4stats_search,
             commands::ut4stats_summary,
             commands::open_external,
+            commands::pug_action,
+            commands::save_launcher_token,
             commands::launcher_version,
         ])
         .run(tauri::generate_context!())

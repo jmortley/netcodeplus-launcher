@@ -142,6 +142,19 @@ pub fn save_ut4stats_link(
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
 }
 
+/// Save (or clear, by passing null) the per-user PUG launcher token.
+#[tauri::command]
+pub fn save_launcher_token(app: tauri::AppHandle, token: Option<String>) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.launcher_token = token
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
 const UT4STATS_BASE: &str = "https://ut4stats.com";
 const UT4STATS_MAX: u64 = 256 * 1024;
 
@@ -211,6 +224,34 @@ pub fn open_external(url: String) -> Result<(), String> {
             .map_err(|e| e.to_string())?;
     }
     Ok(())
+}
+
+/// UT4IGBot launcher PUG endpoint (FastAPI on :9999).
+const BOT_PUG_URL: &str = "http://ut4stats.com:9999/launcher_pug_action";
+
+/// Send a PUG queue action (`joinpug` / `leavepug` / `listpug`) to the bot,
+/// authenticated by the player's per-user `token` (issued by the bot's
+/// `/launchertoken` command). The bot resolves the player from the token, so
+/// the launcher sends NO `ut4_id` -- a token only ever queues its owner.
+/// Returns the bot's status message JSON for the UI to display.
+#[tauri::command]
+pub async fn pug_action(action: String, token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err(
+            "Set your launcher token first (run /launchertoken in the UTPugs Discord).".into(),
+        );
+    }
+    let body = serde_json::json!({ "action": action, "mode": "ictf" }).to_string();
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(
+        &client,
+        BOT_PUG_URL,
+        &[("launcher-token", token.trim())],
+        body,
+        64 * 1024,
+    )
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Launcher version (from `Cargo.toml`). Surfaced in the UI for bug reports.
