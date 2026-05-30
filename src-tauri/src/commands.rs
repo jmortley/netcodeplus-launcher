@@ -61,6 +61,7 @@ pub fn launch_game(
     args: Vec<String>,
     priority: String,
     affinity_mask_hex: Option<String>,
+    window_action: String,
 ) -> Result<(), String> {
     let affinity_mask = match affinity_mask_hex {
         Some(s) => {
@@ -78,10 +79,17 @@ pub fn launch_game(
     };
     ncp_host::launch(Path::new(&executable), &args, &opts).map_err(|e| e.to_string())?;
 
-    // Game's launching — get out of the way. Best-effort: a minimize failure
-    // must never fail an otherwise-successful launch.
-    if let Some(win) = app.get_webview_window("main") {
-        let _ = win.minimize();
+    // Game launched — apply the user's window preference. Best-effort: a window
+    // action must never fail an otherwise-successful launch. The game is spawned
+    // detached, so exiting the launcher does not kill it.
+    match window_action.as_str() {
+        "close" => app.exit(0),
+        "minimize" => {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.minimize();
+            }
+        }
+        _ => {} // "none" / unknown — leave the launcher open.
     }
     Ok(())
 }
@@ -110,6 +118,7 @@ pub fn save_launch_prefs(
     profile_label: Option<String>,
     priority: String,
     affinity_mask_hex: Option<String>,
+    window_action: String,
 ) -> Result<(), String> {
     let path = state_path(&app)?;
     let mut state = ncp_host::state::read(&path)
@@ -117,6 +126,11 @@ pub fn save_launch_prefs(
         .unwrap_or_default();
     state.install_path = install_path.map(PathBuf::from);
     state.launch_profile_label = profile_label;
+    state.launch_window_action = match window_action.as_str() {
+        "close" => "close".to_string(),
+        "none" => "none".to_string(),
+        _ => "minimize".to_string(),
+    };
     state.launch_priority = if priority.eq_ignore_ascii_case("high") {
         Priority::High
     } else {
@@ -217,6 +231,23 @@ pub async fn launcher_news() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// UT4 master-server game-server list (the same list the in-game browser shows).
+const MASTER_SERVERS_URL: &str =
+    "https://master-ut4.timiimit.com/ut/api/matchmaking/session/matchMakingRequest";
+/// A few-dozen-server list is tens of KB; cap generously.
+const SERVER_LIST_MAX: u64 = 4 * 1024 * 1024;
+
+/// Fetch the live game-server list from timiimit's master server. The listing
+/// endpoint is anonymous (no login needed to browse; auth is only required to
+/// *join*). Returns the raw `GameServer[]` JSON for the UI to render.
+#[tauri::command]
+pub async fn list_servers() -> Result<String, String> {
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::fetch_text(&client, MASTER_SERVERS_URL, SERVER_LIST_MAX)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Open an external HTTPS URL in the user's default handler (browser /
 /// Discord app). Used for the community Discord invite links. Routed
 /// through `tauri-plugin-opener`, which hands the URL to the OS default
@@ -277,6 +308,30 @@ pub async fn pug_status(token: String) -> Result<String, String> {
     ncp_net::post_json(
         &client,
         BOT_STATUS_URL,
+        &[("launcher-token", token.trim())],
+        "{}".to_string(),
+        64 * 1024,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
+/// UT4IGBot launcher spectate endpoint (FastAPI on :9999).
+const BOT_SPECTATE_URL: &str = "http://ut4stats.com:9999/launcher_spectate";
+
+/// Ask the bot for the current live PUG's server so the launcher can spectate
+/// it, authenticated by the per-user launcher `token`. Returns the bot's JSON
+/// (`{state:"live", server, password}` or `{state:"none"}`); the UI then
+/// connects with `?SpectatorOnly=1`.
+#[tauri::command]
+pub async fn pug_spectate(token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err("no launcher token set".into());
+    }
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(
+        &client,
+        BOT_SPECTATE_URL,
         &[("launcher-token", token.trim())],
         "{}".to_string(),
         64 * 1024,

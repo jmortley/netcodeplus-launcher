@@ -67,6 +67,13 @@ pub struct LauncherState {
     #[serde(default)]
     pub affinity_mask_hex: Option<String>,
 
+    /// What the launcher window does once a game launches: `"minimize"`
+    /// (default), `"close"` (quit the launcher entirely), or `"none"` (stay
+    /// open). The game is spawned detached, so closing the launcher never kills
+    /// the running game.
+    #[serde(default = "default_window_action")]
+    pub launch_window_action: String,
+
     /// ut4stats.com player id the user linked (one-time), for fetching
     /// their stats panel. `None` = not linked.
     #[serde(default)]
@@ -108,6 +115,10 @@ fn default_channel() -> String {
     DEFAULT_CHANNEL.to_string()
 }
 
+fn default_window_action() -> String {
+    "minimize".to_string()
+}
+
 impl Default for LauncherState {
     fn default() -> Self {
         Self {
@@ -118,6 +129,7 @@ impl Default for LauncherState {
             launch_profile_label: None,
             launch_priority: Priority::default(),
             affinity_mask_hex: None,
+            launch_window_action: default_window_action(),
             ut4stats_playerid: None,
             ut4stats_playername: None,
             launcher_token: None,

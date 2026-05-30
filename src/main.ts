@@ -34,6 +34,7 @@ interface LauncherState {
   launch_profile_label: string | null;
   launch_priority: "normal" | "high";
   affinity_mask_hex: string | null;
+  launch_window_action: string;
   ut4stats_playerid: string | null;
   ut4stats_playername: string | null;
   launcher_token: string | null;
@@ -96,6 +97,7 @@ const versionLabel = document.getElementById("version")!;
 const statsPanel = document.getElementById("stats-panel")!;
 const configPanel = document.getElementById("config-panel")!;
 const newsPanel = document.getElementById("news-panel")!;
+const serversPanel = document.getElementById("servers-panel")!;
 
 const state = {
   installs: [] as DetectedInstall[],
@@ -104,6 +106,7 @@ const state = {
   profileLabel: null as string | null,
   priority: "normal" as "normal" | "high",
   affinityHex: "",
+  launchWindowAction: "minimize" as "minimize" | "close" | "none",
   linkedId: null as string | null,
   linkedName: null as string | null,
   launcherToken: null as string | null,
@@ -254,6 +257,13 @@ function renderAdvanced() {
           <option value="high"${state.priority === "high" ? " selected" : ""}>High</option>
         </select>
       </label>
+      <label>When the game launches
+        <select id="onlaunch-sel">
+          <option value="minimize"${state.launchWindowAction === "minimize" ? " selected" : ""}>Minimize launcher</option>
+          <option value="close"${state.launchWindowAction === "close" ? " selected" : ""}>Close launcher</option>
+          <option value="none"${state.launchWindowAction === "none" ? " selected" : ""}>Keep launcher open</option>
+        </select>
+      </label>
       <label>CPU affinity<select id="affinity-sel">${affOpts}</select></label>
       <label id="affinity-hex-wrap" style="display:${customAffinity ? "" : "none"}">Mask (hex)
         <input id="affinity-hex" type="text" placeholder="e.g. FFC" spellcheck="false" value="${
@@ -286,6 +296,12 @@ function wire() {
     persist();
   });
 
+  const onLaunchSel = document.getElementById("onlaunch-sel") as HTMLSelectElement | null;
+  onLaunchSel?.addEventListener("change", () => {
+    state.launchWindowAction = onLaunchSel.value as "minimize" | "close" | "none";
+    persist();
+  });
+
   const affSel = document.getElementById("affinity-sel") as HTMLSelectElement | null;
   const hexWrap = document.getElementById("affinity-hex-wrap");
   const hexInput = document.getElementById("affinity-hex") as HTMLInputElement | null;
@@ -314,6 +330,7 @@ function persist() {
     profileLabel: state.profileLabel,
     priority: state.priority,
     affinityMaskHex: state.affinityHex || null,
+    windowAction: state.launchWindowAction,
   }).catch((err) => console.error("save_launch_prefs failed:", err));
 }
 
@@ -338,6 +355,7 @@ async function launch() {
       args: [...profile.args, ...authArgs],
       priority: state.priority,
       affinityMaskHex: state.affinityHex || null,
+      windowAction: state.launchWindowAction,
     });
     persist();
     status.innerHTML = `<span class="ok">Launched: ${escape(profile.label)} (${escape(state.priority)} priority${
@@ -595,6 +613,10 @@ function renderSummary(s: PlayerSummary | null, error?: string) {
 function applyPrefs(prefs: LauncherState) {
   state.priority = prefs.launch_priority === "high" ? "high" : "normal";
   state.affinityHex = prefs.affinity_mask_hex ?? "";
+  state.launchWindowAction =
+    prefs.launch_window_action === "close" || prefs.launch_window_action === "none"
+      ? prefs.launch_window_action
+      : "minimize";
   state.profileLabel = prefs.launch_profile_label;
   state.linkedId = prefs.ut4stats_playerid;
   state.linkedName = prefs.ut4stats_playername;
@@ -784,16 +806,21 @@ function renderPug() {
       <button id="pug-join" type="button">Join iCTF PUG</button>
       <button id="pug-leave" type="button">Leave</button>
       <button id="pug-refresh" type="button">Queue status</button>
+      <button id="pug-spectate" type="button">Spectate live game</button>
     </div>
     <div id="pug-status" class="launch-status"></div>`;
   document.getElementById("pug-join")?.addEventListener("click", () => void pug("joinpug"));
   document.getElementById("pug-leave")?.addEventListener("click", () => void pug("leavepug"));
   document.getElementById("pug-refresh")?.addEventListener("click", () => void pug("listpug"));
+  document.getElementById("pug-spectate")?.addEventListener("click", () => void spectate());
   document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
 }
 
-async function connectToPug(server: string, password: string) {
-  const status = document.getElementById("pug-status");
+// Shared connect path: resolve install + profile, attach the UT4 auth args and
+// the -ncpconnect target, then launch (which minimizes the launcher). Used by
+// both the PUG Connect button and the server browser. `status`, if given, gets
+// progress / error messages.
+async function connectTo(server: string, password: string, status: HTMLElement | null) {
   const di = state.installs[state.selInstall];
   if (!di) {
     if (status)
@@ -812,19 +839,226 @@ async function connectToPug(server: string, password: string) {
     return;
   }
   const args = [...profile.args, ...authArgs, `-ncpconnect=${connectUrl}`];
-  if (status) status.textContent = "Launching into the PUG…";
+  if (status) status.textContent = "Connecting…";
   try {
     await invoke("launch_game", {
       executable: di.install.executable,
       args,
       priority: state.priority,
       affinityMaskHex: state.affinityHex || null,
+      windowAction: state.launchWindowAction,
     });
-    if (status) status.innerHTML = `<span class="ok">Launched — connecting to ${escape(server)}.</span>`;
+    if (status) status.innerHTML = `<span class="ok">Launched — connecting to ${escape(server)}…</span>`;
   } catch (err) {
     if (status) status.innerHTML = `<span class="warn">Launch failed: ${escape(String(err))}</span>`;
     console.error("connect launch failed:", err);
   }
+}
+
+async function connectToPug(server: string, password: string) {
+  await connectTo(server, password, document.getElementById("pug-status"));
+}
+
+// Spectate the current live PUG (any game — you don't have to be in it). Asks
+// the bot for the live server, then connects with ?SpectatorOnly=1 so a
+// spectator never takes a player slot.
+async function spectate() {
+  const status = document.getElementById("pug-status");
+  if (status) status.textContent = "Finding a live game…";
+  let st: { state: string; server?: string; password?: string };
+  try {
+    st = JSON.parse(await invoke<string>("pug_spectate", { token: state.launcherToken ?? "" }));
+  } catch (err) {
+    if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    return;
+  }
+  if (st.state !== "live" || !st.server) {
+    if (status) status.textContent = "No live PUG to spectate right now.";
+    return;
+  }
+  const target = st.password
+    ? `${st.server}?Password=${st.password}?SpectatorOnly=1`
+    : `${st.server}?SpectatorOnly=1`;
+  await connectTo(target, "", status);
+}
+
+// ---- server browser -------------------------------------------------------
+
+interface ServerAttrs {
+  UT_SERVERNAME_s?: string;
+  MAPNAME_s?: string;
+  GAMEMODE_s?: string;
+  UT_MAXPLAYERS_i?: number;
+  UT_PLAYERONLINE_i?: number;
+  UT_SERVERTRUSTLEVEL_i?: number;
+  UT_NUMMATCHES_i?: number;
+  UT_GAMEINSTANCE_i?: number;
+  UT_MATCHSTATE_s?: string;
+  UT_HUBGUID_s?: string;
+}
+
+interface GameServerEntry {
+  serverName?: string;
+  serverAddress?: string;
+  serverPort?: number;
+  totalPlayers?: number;
+  maxPublicPlayers?: number;
+  started?: boolean;
+  attributes?: ServerAttrs;
+}
+
+// A hub lobby (UTLobbyGameMode, or a session sitting on the UT-Entry menu map)
+// is not a live match — we filter these out and show only games in progress.
+function isLobby(s: GameServerEntry): boolean {
+  return (
+    /lobby/i.test(s.attributes?.GAMEMODE_s ?? "") ||
+    (s.attributes?.MAPNAME_s ?? "") === "UT-Entry"
+  );
+}
+
+// Friendly label for the UT4 match state; unknown/blank states show nothing.
+function matchState(s: string | undefined): string {
+  switch (s) {
+    case "InProgress":
+      return "in progress";
+    case "WaitingToStart":
+    case "CountdownToBegin":
+      return "warming up";
+    case "WaitingPostMatch":
+    case "MatchEnteringOvertime":
+      return "ending";
+    default:
+      return "";
+  }
+}
+
+// Turn a gamemode class path into something human ("…UTLobbyGameMode" → "Hub",
+// "…NCP-IGCTF_C" → "IGCTF", "…UTCTFGameMode" → "CTF").
+function prettyMode(gamemode: string): string {
+  if (!gamemode) return "—";
+  if (/lobby/i.test(gamemode)) return "Hub";
+  const seg = gamemode.split(/[./]/).pop() ?? gamemode;
+  return (
+    seg
+      .replace(/_C$/, "")
+      .replace(/GameMode$/i, "")
+      .replace(/^NCP-?/i, "")
+      .replace(/^UT/, "") || seg
+  );
+}
+
+function trustLabel(level: number | undefined): string {
+  switch (level) {
+    case 0:
+      return `<span class="ok" title="Epic-trusted">Epic</span>`;
+    case 1:
+      return `<span class="src" title="Trusted">Trusted</span>`;
+    default:
+      return `<span class="warn" title="Community / untrusted">Custom</span>`;
+  }
+}
+
+let serverCache: GameServerEntry[] = [];
+let serversShowEmpty = false;
+let serversFetching = false;
+
+async function renderServers() {
+  if (serversFetching) return;
+  serversFetching = true;
+  serversPanel.innerHTML = `<p>Loading the server list…</p>`;
+  try {
+    serverCache = JSON.parse(await invoke<string>("list_servers")) as GameServerEntry[];
+  } catch (err) {
+    serversPanel.innerHTML = `<div class="warn">Couldn't load the server list: ${escape(String(err))}</div>`;
+    serversFetching = false;
+    return;
+  }
+  serversFetching = false;
+  renderServerList();
+}
+
+// Render from the cached list, so the "show empty" toggle re-filters without a
+// re-fetch. Shows hubs (lobbies) and live matches together; matches are tagged
+// with the hub they're running on (resolved via UT_HUBGUID_s).
+function renderServerList() {
+  // hub GUID -> human hub name, so a match can show "on <hub>".
+  const hubNames = new Map<string, string>();
+  for (const s of serverCache) {
+    const guid = s.attributes?.UT_HUBGUID_s;
+    if (isLobby(s) && guid) {
+      hubNames.set(guid, s.attributes?.UT_SERVERNAME_s || s.serverName || "Hub");
+    }
+  }
+
+  const rows = serverCache
+    .map((s) => {
+      const hub = isLobby(s);
+      return {
+        hub,
+        name: s.attributes?.UT_SERVERNAME_s || s.serverName || (hub ? "Hub" : "Live match"),
+        onHub: hub ? "" : (hubNames.get(s.attributes?.UT_HUBGUID_s ?? "") ?? ""),
+        map: s.attributes?.MAPNAME_s ?? "",
+        mode: prettyMode(s.attributes?.GAMEMODE_s ?? ""),
+        matches: s.attributes?.UT_NUMMATCHES_i ?? 0,
+        stateText: matchState(s.attributes?.UT_MATCHSTATE_s),
+        players: s.totalPlayers ?? s.attributes?.UT_PLAYERONLINE_i ?? 0,
+        max: s.attributes?.UT_MAXPLAYERS_i ?? s.maxPublicPlayers ?? 0,
+        trust: s.attributes?.UT_SERVERTRUSTLEVEL_i,
+        ip: s.serverAddress ?? "",
+        port: s.serverPort ?? 7777,
+      };
+    })
+    .filter((r) => !!r.ip && r.ip !== "0.0.0.0" && !!r.port && (serversShowEmpty || r.players > 0))
+    // Live matches first, then hubs; busiest first within each group.
+    .sort((a, b) => Number(a.hub) - Number(b.hub) || b.players - a.players);
+
+  const cards = rows
+    .map((r, i) => {
+      const badge = r.hub
+        ? `<span class="ok" style="font-size:0.78em;border:1px solid currentColor;border-radius:3px;padding:0 4px;margin-right:6px">HUB</span>`
+        : "";
+      const sub = r.hub
+        ? `Hub · ${r.matches} match${r.matches === 1 ? "" : "es"} · ${r.players}/${r.max} in lobby`
+        : `${escape(r.mode)}${r.map ? ` · ${escape(r.map)}` : ""} · ${r.players}/${r.max} players` +
+          (r.stateText ? ` · ${r.stateText}` : "") +
+          (r.onHub ? ` · on ${escape(r.onHub)}` : "");
+      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid rgba(255,255,255,0.08)">
+        <div style="min-width:0">
+          <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${badge}${escape(r.name)} &nbsp;${trustLabel(r.trust)}</div>
+          <div class="src">${sub}</div>
+        </div>
+        <button class="server-join" type="button" data-i="${i}" style="flex:none">Join</button>
+      </div>`;
+    })
+    .join("");
+
+  const hint = state.ut4?.logged_in
+    ? ""
+    : ` · <span class="warn">sign in on the Launch tab to join</span>`;
+  serversPanel.innerHTML = `
+    <div class="controls" style="justify-content:space-between;align-items:center">
+      <span>${rows.length} shown${hint}</span>
+      <span style="display:flex;align-items:center;gap:12px">
+        <label style="font-weight:normal;display:flex;align-items:center;gap:5px"><input type="checkbox" id="servers-empty"${serversShowEmpty ? " checked" : ""}/> show empty</label>
+        <button id="servers-refresh" type="button">Refresh</button>
+      </span>
+    </div>
+    <div style="max-height:60vh;overflow:auto">${
+      cards || `<p>No ${serversShowEmpty ? "servers online" : "live matches or populated hubs"} right now.</p>`
+    }</div>
+    <div id="servers-status" class="launch-status"></div>`;
+
+  document.getElementById("servers-refresh")?.addEventListener("click", () => void renderServers());
+  document.getElementById("servers-empty")?.addEventListener("change", (e) => {
+    serversShowEmpty = (e.target as HTMLInputElement).checked;
+    renderServerList();
+  });
+  serversPanel.querySelectorAll<HTMLButtonElement>(".server-join").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const r = rows[Number(btn.dataset.i)];
+      if (r) void connectTo(`${r.ip}:${r.port}`, "", document.getElementById("servers-status"));
+    });
+  });
 }
 
 let pugPollTimer: number | undefined;
@@ -1007,6 +1241,11 @@ document.querySelectorAll<HTMLButtonElement>(".tab").forEach((btn) => {
       .forEach((p) => p.classList.toggle("active", p.id === `tab-${name}`));
   });
 });
+
+// Load the live server list whenever the Servers tab is opened (cheap + fresh).
+document
+  .querySelector<HTMLButtonElement>('.tab[data-tab="servers"]')
+  ?.addEventListener("click", () => void renderServers());
 
 pickButton.addEventListener("click", () => void pickDir());
 void showVersion();
