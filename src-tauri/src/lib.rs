@@ -25,6 +25,7 @@ pub fn run() {
             commands::launcher_news,
             commands::open_external,
             commands::pug_action,
+            commands::pug_status,
             commands::save_launcher_token,
             commands::engine_config_state,
             commands::openal_status,

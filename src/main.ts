@@ -74,6 +74,15 @@ interface NewsItem {
   date: string;
 }
 
+interface PugStatus {
+  state: "idle" | "queued" | "live";
+  players?: number;
+  max_players?: number;
+  server?: string;
+  password?: string;
+  pug_id?: number;
+}
+
 const launchPanel = document.getElementById("launch-panel")!;
 const advancedPanel = document.getElementById("advanced-launch")!;
 const pickButton = document.getElementById("pick-dir") as HTMLButtonElement;
@@ -92,6 +101,7 @@ const state = {
   linkedId: null as string | null,
   linkedName: null as string | null,
   launcherToken: null as string | null,
+  pugStatus: null as PugStatus | null,
 };
 
 function escape(value: string): string {
@@ -504,6 +514,10 @@ async function loadAll() {
     renderPug();
     void renderConfig();
     void renderNews();
+    if (state.launcherToken) {
+      void pollPugStatus();
+      startPugPolling();
+    }
   } catch (err) {
     launchPanel.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
     console.error("startup load failed:", err);
@@ -579,12 +593,17 @@ async function pug(action: "joinpug" | "leavepug" | "listpug") {
 
 async function saveLauncherToken(token: string | null) {
   state.launcherToken = token;
+  if (!token) state.pugStatus = null;
   try {
     await invoke("save_launcher_token", { token });
   } catch (err) {
     console.error("save_launcher_token failed:", err);
   }
   renderPug();
+  if (token) {
+    void pollPugStatus();
+    startPugPolling();
+  }
 }
 
 function renderPug() {
@@ -603,8 +622,29 @@ function renderPug() {
     });
     return;
   }
+  const st = state.pugStatus;
+  if (st && st.state === "live" && st.server) {
+    pugControls.innerHTML = `
+      <p class="ok">🎮 Your iCTF PUG is live!</p>
+      <p class="src">Server <code>${escape(st.server)}</code>${
+        st.password ? ` · password <code>${escape(st.password)}</code>` : ""
+      }</p>
+      <button id="pug-connect" type="button" class="launch-primary pug-connect">▶&nbsp;&nbsp;Connect to PUG</button>
+      <button id="pug-token-clear" type="button" class="link-btn">change token</button>
+      <div id="pug-status" class="launch-status"></div>`;
+    document
+      .getElementById("pug-connect")
+      ?.addEventListener("click", () => void connectToPug(st.server ?? "", st.password ?? ""));
+    document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
+    return;
+  }
+
+  const queueLine =
+    st && st.state === "queued"
+      ? `In queue — ${st.players ?? 0}/${st.max_players ?? 10}`
+      : "Queue for iCTF";
   pugControls.innerHTML = `
-    <p>Queue for iCTF <button id="pug-token-clear" type="button" class="link-btn">change token</button></p>
+    <p>${queueLine} <button id="pug-token-clear" type="button" class="link-btn">change token</button></p>
     <div class="discord-btns">
       <button id="pug-join" type="button">Join iCTF PUG</button>
       <button id="pug-leave" type="button">Leave</button>
@@ -615,6 +655,56 @@ function renderPug() {
   document.getElementById("pug-leave")?.addEventListener("click", () => void pug("leavepug"));
   document.getElementById("pug-refresh")?.addEventListener("click", () => void pug("listpug"));
   document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
+}
+
+async function connectToPug(server: string, password: string) {
+  const status = document.getElementById("pug-status");
+  const di = state.installs[state.selInstall];
+  if (!di) {
+    if (status)
+      status.innerHTML = `<span class="warn">No UT4 install detected — pick your folder in the Advanced tab first.</span>`;
+    return;
+  }
+  const profile =
+    di.profiles.find((p) => p.label === state.profileLabel) ?? di.profiles[selectedProfileIndex(di)];
+  const connectUrl = password ? `${server}?Password=${password}` : server;
+  const args = [...profile.args, `-ncpconnect=${connectUrl}`];
+  if (status) status.textContent = "Launching into the PUG…";
+  try {
+    await invoke("launch_game", {
+      executable: di.install.executable,
+      args,
+      priority: state.priority,
+      affinityMaskHex: state.affinityHex || null,
+    });
+    if (status) status.innerHTML = `<span class="ok">Launched — connecting to ${escape(server)}.</span>`;
+  } catch (err) {
+    if (status) status.innerHTML = `<span class="warn">Launch failed: ${escape(String(err))}</span>`;
+    console.error("connect launch failed:", err);
+  }
+}
+
+let pugPollTimer: number | undefined;
+
+function startPugPolling() {
+  if (pugPollTimer !== undefined) return;
+  pugPollTimer = window.setInterval(() => void pollPugStatus(), 5000);
+}
+
+async function pollPugStatus() {
+  if (!state.launcherToken) return;
+  try {
+    const next = JSON.parse(await invoke<string>("pug_status", { token: state.launcherToken })) as PugStatus;
+    const prev = state.pugStatus;
+    state.pugStatus = next;
+    // Re-render only on a meaningful change, so the 5 s poll doesn't clobber
+    // the status line / token input.
+    if (!prev || prev.state !== next.state || prev.server !== next.server || prev.players !== next.players) {
+      renderPug();
+    }
+  } catch (err) {
+    console.error("pug_status failed:", err);
+  }
 }
 
 // ---- performance config ---------------------------------------------------

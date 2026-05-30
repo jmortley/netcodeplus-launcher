@@ -254,6 +254,29 @@ pub async fn pug_action(action: String, token: String) -> Result<String, String>
     .map_err(|e| e.to_string())
 }
 
+/// UT4IGBot launcher PUG status endpoint (FastAPI on :9999).
+const BOT_STATUS_URL: &str = "http://ut4stats.com:9999/launcher_pug_status";
+
+/// Poll the player's PUG status (queued / live + the live server's connect
+/// info), authenticated by the per-user launcher `token`. Returns the bot's
+/// status JSON so the UI can show a one-click CONNECT when the PUG starts.
+#[tauri::command]
+pub async fn pug_status(token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err("no launcher token set".into());
+    }
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(
+        &client,
+        BOT_STATUS_URL,
+        &[("launcher-token", token.trim())],
+        "{}".to_string(),
+        64 * 1024,
+    )
+    .await
+    .map_err(|e| e.to_string())
+}
+
 /// Launcher version (from `Cargo.toml`). Surfaced in the UI for bug reports.
 #[tauri::command]
 pub fn launcher_version() -> &'static str {
