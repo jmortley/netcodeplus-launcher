@@ -534,7 +534,7 @@ async function saveLauncherToken(token: string | null) {
 function renderPug() {
   if (!state.launcherToken) {
     pugControls.innerHTML = `
-      <p>To queue PUGs here, run <code>/launchertoken</code> in the UTPugs Discord and paste the token it DMs you:</p>
+      <p>To queue iCTF PUGs here, run <code>/launchertoken</code> in the Instagib Nation Discord and paste the token it DMs you:</p>
       <div class="controls">
         <label>Launcher token
           <input id="pug-token" type="password" placeholder="paste your /launchertoken value" spellcheck="false" autocomplete="off" />
