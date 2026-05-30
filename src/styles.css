@@ -317,6 +317,23 @@ footer {
   gap: 0.6rem;
   margin-top: 0.5rem;
 }
+
+/* Inline checkbox row inside .controls (overrides the column label). */
+.controls label.cfg-check {
+  flex-direction: row;
+  align-items: center;
+  gap: 0.45rem;
+  text-transform: none;
+  letter-spacing: normal;
+  color: #e6e6e6;
+  font-size: 0.9rem;
+}
+.controls label.cfg-check input[type="checkbox"] {
+  width: auto;
+  max-width: none;
+  margin: 0;
+  padding: 0;
+}
 #join-utpugs {
   background: #5865f2;
 }

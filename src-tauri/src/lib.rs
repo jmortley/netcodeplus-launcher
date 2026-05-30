@@ -25,6 +25,10 @@ pub fn run() {
             commands::open_external,
             commands::pug_action,
             commands::save_launcher_token,
+            commands::engine_config_state,
+            commands::openal_status,
+            commands::apply_engine_config,
+            commands::restore_engine_config,
             commands::launcher_version,
         ])
         .run(tauri::generate_context!())

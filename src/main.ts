@@ -54,10 +54,23 @@ interface PlayerSummary {
   recent: { mode: string; map: string; server: string; played_at: string; result: string; delta: number }[];
 }
 
+interface EngineTweaks {
+  frame_rate_cap: number;
+  smooth_frame_rate: boolean;
+  display_gamma: number;
+}
+
+interface ConfigState {
+  ini_exists: boolean;
+  has_backup: boolean;
+  tweaks: EngineTweaks;
+}
+
 const installStatus = document.getElementById("install-status")!;
 const pickButton = document.getElementById("pick-dir") as HTMLButtonElement;
 const versionLabel = document.getElementById("version")!;
 const statsPanel = document.getElementById("stats-panel")!;
+const configPanel = document.getElementById("config-panel")!;
 
 const state = {
   installs: [] as DetectedInstall[],
@@ -452,6 +465,7 @@ async function loadAll() {
     render();
     renderStats();
     renderPug();
+    void renderConfig();
   } catch (err) {
     installStatus.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
     console.error("startup load failed:", err);
@@ -563,6 +577,99 @@ function renderPug() {
   document.getElementById("pug-leave")?.addEventListener("click", () => void pug("leavepug"));
   document.getElementById("pug-refresh")?.addEventListener("click", () => void pug("listpug"));
   document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
+}
+
+// ---- performance config ---------------------------------------------------
+
+async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
+  let cfg: ConfigState;
+  try {
+    cfg = await invoke<ConfigState>("engine_config_state");
+  } catch (err) {
+    configPanel.innerHTML = `<div class="warn">${escape(String(err))}</div>`;
+    return;
+  }
+
+  if (!cfg.ini_exists) {
+    configPanel.innerHTML = `
+      <p>A competitive graphics config tuned for high FPS that still looks decent.</p>
+      <div class="warn">No <code>Engine.ini</code> yet — launch UT4 once so it's created, then reopen the launcher.</div>`;
+    return;
+  }
+
+  let openal = false;
+  const root = state.installs[state.selInstall]?.install.root;
+  if (root) {
+    try {
+      openal = await invoke<boolean>("openal_status", { root });
+    } catch (err) {
+      console.error("openal_status failed:", err);
+    }
+  }
+
+  const audioLine = openal
+    ? `<div class="ok">✓ UT4-OpenAL detected — its audio module will be enabled.</div>`
+    : `<p class="src">OpenAL not detected — get <button id="get-openal" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio. The audio override is skipped without it.</p>`;
+
+  const t = cfg.tweaks;
+  configPanel.innerHTML = `
+    <p>Competitive graphics: high FPS, still readable. Your <code>Engine.ini</code> is backed up before the first apply; online and login settings are left untouched.</p>
+    <div class="controls">
+      <label>Frame rate cap
+        <input id="cfg-fps" type="number" min="0" step="10" value="${escape(String(t.frame_rate_cap))}" />
+      </label>
+      <label class="cfg-check"><input id="cfg-smooth" type="checkbox"${t.smooth_frame_rate ? " checked" : ""} /> Smooth frame rate</label>
+      <label>Display gamma (brightness)
+        <input id="cfg-gamma" type="number" min="1" max="5" step="0.1" value="${escape(String(t.display_gamma))}" />
+      </label>
+    </div>
+    ${audioLine}
+    <div class="discord-btns">
+      <button id="cfg-apply" type="button">Apply competitive config</button>
+      <button id="cfg-restore" type="button"${cfg.has_backup ? "" : " disabled"}>Restore backup</button>
+    </div>
+    <div id="cfg-status" class="launch-status"></div>`;
+
+  document.getElementById("get-openal")?.addEventListener("click", () =>
+    openExternal("https://github.com/main-exe/UT4-OpenAL/"),
+  );
+  document.getElementById("cfg-apply")?.addEventListener("click", () => void applyConfig(openal));
+  document.getElementById("cfg-restore")?.addEventListener("click", () => void restoreConfig());
+
+  if (flash) {
+    const s = document.getElementById("cfg-status");
+    if (s) s.innerHTML = `<span class="${flash.cls}">${escape(flash.text)}</span>`;
+  }
+}
+
+async function applyConfig(setOpenalAudio: boolean) {
+  const fps = Number((document.getElementById("cfg-fps") as HTMLInputElement).value);
+  const gamma = Number((document.getElementById("cfg-gamma") as HTMLInputElement).value);
+  const smooth = (document.getElementById("cfg-smooth") as HTMLInputElement).checked;
+  try {
+    await invoke("apply_engine_config", {
+      frameRateCap: Number.isFinite(fps) ? fps : 360,
+      smoothFrameRate: smooth,
+      displayGamma: Number.isFinite(gamma) ? gamma : 3,
+      setOpenalAudio,
+    });
+    await renderConfig({ text: "Applied. Restart UT4 for it to take effect.", cls: "ok" });
+  } catch (err) {
+    const s = document.getElementById("cfg-status");
+    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("apply_engine_config failed:", err);
+  }
+}
+
+async function restoreConfig() {
+  try {
+    await invoke("restore_engine_config");
+    await renderConfig({ text: "Restored your previous Engine.ini.", cls: "ok" });
+  } catch (err) {
+    const s = document.getElementById("cfg-status");
+    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("restore_engine_config failed:", err);
+  }
 }
 
 pickButton.addEventListener("click", () => void pickDir());

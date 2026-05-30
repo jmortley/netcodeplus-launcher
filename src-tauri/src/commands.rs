@@ -248,3 +248,46 @@ pub async fn pug_action(action: String, token: String) -> Result<String, String>
 pub fn launcher_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
+
+/// Per-user Engine.ini path, or an error if Documents can't be located.
+fn engine_ini() -> Result<PathBuf, String> {
+    ncp_host::config::engine_ini_path()
+        .ok_or_else(|| "could not locate your Documents folder".to_string())
+}
+
+/// Read the player's current competitive-config state: whether the ini
+/// exists, whether a restore point exists, and the current editable values.
+#[tauri::command]
+pub fn engine_config_state() -> Result<ncp_host::config::ConfigState, String> {
+    Ok(ncp_host::config::read_state(&engine_ini()?))
+}
+
+/// Whether UT4-OpenAL is installed in `root` — gates the `[Audio]` OpenAL
+/// override so players without it don't get broken audio.
+#[tauri::command]
+pub fn openal_status(root: String) -> bool {
+    ncp_host::config::openal_installed(Path::new(&root))
+}
+
+/// Apply the competitive Engine.ini baseline plus the editable knobs,
+/// merging into the existing ini (backing it up first).
+#[tauri::command]
+pub fn apply_engine_config(
+    frame_rate_cap: f64,
+    smooth_frame_rate: bool,
+    display_gamma: f64,
+    set_openal_audio: bool,
+) -> Result<(), String> {
+    let tweaks = ncp_host::config::EngineTweaks {
+        frame_rate_cap,
+        smooth_frame_rate,
+        display_gamma,
+    };
+    ncp_host::config::apply(&engine_ini()?, &tweaks, set_openal_audio).map_err(|e| e.to_string())
+}
+
+/// Restore Engine.ini from the launcher's `.ncpbak` backup.
+#[tauri::command]
+pub fn restore_engine_config() -> Result<(), String> {
+    ncp_host::config::restore(&engine_ini()?).map_err(|e| e.to_string())
+}
