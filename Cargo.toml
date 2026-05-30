@@ -53,6 +53,12 @@ dirs = "6"
 # (the alternative, the `windows` crate's IShellLink, needs unsafe COM).
 lnk = "0.6"
 
+# A single Win32 FFI call (`SetProcessAffinityMask`) to pin the launched
+# game to a CPU-affinity mask — the one launch knob with no safe-Rust
+# equivalent. Used only on Windows, behind a documented
+# `#[allow(unsafe_code)]`; the workspace default stays `unsafe_code = deny`.
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+
 # Network + streaming hashing (net crate).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
 sha2 = "0.10"

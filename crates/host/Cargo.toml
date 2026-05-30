@@ -24,6 +24,9 @@ dirs = { workspace = true }
 # other targets fall back to directory probing + the folder picker.
 [target.'cfg(windows)'.dependencies]
 lnk = { workspace = true }
+# One FFI call (SetProcessAffinityMask) for CPU-affinity pinning in
+# `launch`, behind a documented `#[allow(unsafe_code)]`.
+windows-sys = { workspace = true }
 
 [dev-dependencies]
 ncp-manifest = { path = "../manifest" }

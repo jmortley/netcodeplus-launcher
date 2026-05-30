@@ -1,13 +1,21 @@
 //! Launching the UT4 game with optional process priority and CPU
 //! affinity.
 //!
-//! We shell out to `cmd /C start "" [/high] [/affinity <hexmask>] <exe>
-//! <args…>` — the exact mechanism a hand-written `.bat` uses — rather
-//! than calling `SetProcessAffinityMask` / `SetPriorityClass` directly,
-//! because those require `unsafe` FFI and this crate (and the workspace)
-//! keep `unsafe_code = "deny"`. The trade-off: the launcher does not get
-//! a handle to the game process (fire-and-forget), which is fine for a
-//! launcher.
+//! The game executable is spawned **directly** via
+//! [`std::process::Command`] — never through `cmd /C start` — so the exe
+//! path and launch args reach `CreateProcess` as a structured argument
+//! vector that no shell ever re-parses. That closes the command-injection
+//! surface a `cmd` line would open (shell metacharacters in an arg can't
+//! break out).
+//!
+//! Priority is applied safely at creation time via the
+//! `HIGH_PRIORITY_CLASS` creation flag. CPU affinity is the one knob with
+//! no safe-Rust path: pinning a *child* process needs a single
+//! `SetProcessAffinityMask` FFI call, which we make behind a documented
+//! `#[allow(unsafe_code)]` — the workspace default stays
+//! `unsafe_code = "deny"`. The launch is otherwise fire-and-forget: we use
+//! the child handle only to set affinity, then drop it (the game keeps
+//! running after the launcher exits).
 
 use std::path::Path;
 
@@ -110,41 +118,57 @@ pub fn parse_mask_hex(s: &str) -> Result<Option<u64>, std::num::ParseIntError> {
     Ok(Some(u64::from_str_radix(t, 16)?))
 }
 
-/// Build the argument vector passed to `cmd /C` (i.e. everything after
-/// `/C`): `start "" [/high] [/affinity MASK] <exe> <args…>`. Exposed for
-/// testing; [`launch`] calls it.
-#[must_use]
-pub fn start_args(exe: &Path, args: &[String], opts: &LaunchOptions) -> Vec<String> {
-    // "start" then an empty window-title slot (so a quoted exe path is
-    // treated as the command, not the title).
-    let mut v: Vec<String> = vec!["start".to_string(), String::new()];
-    if matches!(opts.priority, Priority::High) {
-        v.push("/high".to_string());
-    }
-    if let Some(mask) = opts.affinity_mask {
-        v.push("/affinity".to_string());
-        v.push(format!("{mask:X}"));
-    }
-    v.push(exe.display().to_string());
-    v.extend(args.iter().cloned());
-    v
-}
-
 /// Launch the game. The working directory is set to the executable's
 /// folder (UE4 resolves some relative paths against cwd, and the bat
-/// `cd`s there first).
+/// `cd`s there first). Priority is applied at creation; affinity, when
+/// requested, is pinned on the spawned child.
 ///
 /// # Errors
-/// Returns the spawn error if the launch process cannot start.
+/// Returns the spawn error if the game process cannot start, or the OS
+/// error if pinning CPU affinity fails.
 #[cfg(windows)]
 pub fn launch(exe: &Path, args: &[String], opts: &LaunchOptions) -> std::io::Result<()> {
+    use std::os::windows::process::CommandExt;
     use std::process::Command;
+
+    // HIGH_PRIORITY_CLASS (winbase.h) — passed as a creation flag so the
+    // game starts at high priority: the safe equivalent of `start /high`.
+    const HIGH_PRIORITY_CLASS: u32 = 0x0000_0080;
+
     let cwd = exe.parent().unwrap_or(exe);
-    Command::new("cmd")
-        .arg("/C")
-        .args(start_args(exe, args, opts))
-        .current_dir(cwd)
-        .spawn()?;
+    let mut command = Command::new(exe);
+    command.args(args).current_dir(cwd);
+    if matches!(opts.priority, Priority::High) {
+        command.creation_flags(HIGH_PRIORITY_CLASS);
+    }
+    let child = command.spawn()?;
+    if let Some(mask) = opts.affinity_mask {
+        set_process_affinity(&child, mask)?;
+    }
+    Ok(())
+}
+
+/// Pin a freshly spawned child process to the given CPU affinity mask.
+///
+/// There is no safe-Rust API to set a *child* process's affinity, and
+/// routing through a shell (`cmd /C start /affinity`) would reintroduce a
+/// command-injection surface, so we make the one `SetProcessAffinityMask`
+/// FFI call directly. This is the single audited exception to the
+/// workspace-wide `unsafe_code = "deny"`.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+fn set_process_affinity(child: &std::process::Child, mask: u64) -> std::io::Result<()> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::System::Threading::SetProcessAffinityMask;
+
+    // SAFETY: `child` is borrowed for the duration of the call, so its
+    // process handle is live and valid. `SetProcessAffinityMask` only reads
+    // the handle and the integer mask — it dereferences nothing on our side,
+    // so there is no aliasing, lifetime, or initialisation hazard.
+    let ok = unsafe { SetProcessAffinityMask(child.as_raw_handle() as _, mask as usize) };
+    if ok == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
     Ok(())
 }
 
@@ -164,7 +188,6 @@ pub fn launch(exe: &Path, args: &[String], _opts: &LaunchOptions) -> std::io::Re
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     #[test]
     fn exclude_first_two_cores_on_12_matches_ffc() {
@@ -186,36 +209,5 @@ mod tests {
         assert_eq!(parse_mask_hex("   ").unwrap(), None);
         assert_eq!(parse_mask_hex("").unwrap(), None);
         assert!(parse_mask_hex("nothex").is_err());
-    }
-
-    #[test]
-    fn start_args_high_with_affinity() {
-        let exe = PathBuf::from(
-            r"C:\Program Files\UnrealTournament\Engine\Binaries\Win64\UE4-Win64-Shipping.exe",
-        );
-        let args = vec!["UnrealTournament".to_string(), "-EpicPortal".to_string()];
-        let opts = LaunchOptions {
-            priority: Priority::High,
-            affinity_mask: Some(0xFFC),
-        };
-        let v = start_args(&exe, &args, &opts);
-        assert_eq!(v[0], "start");
-        assert_eq!(v[1], ""); // empty title slot
-        assert!(v.contains(&"/high".to_string()));
-        let i = v.iter().position(|s| s == "/affinity").unwrap();
-        assert_eq!(v[i + 1], "FFC");
-        assert!(v.iter().any(|s| s.ends_with("UE4-Win64-Shipping.exe")));
-        assert_eq!(v.last().unwrap(), "-EpicPortal");
-    }
-
-    #[test]
-    fn start_args_normal_no_affinity_is_minimal() {
-        let exe = PathBuf::from("UE4-Win64-Shipping.exe");
-        let opts = LaunchOptions::default();
-        let v = start_args(&exe, &["UnrealTournament".to_string()], &opts);
-        assert!(!v.iter().any(|s| s == "/high"));
-        assert!(!v.iter().any(|s| s == "/affinity"));
-        // start, "", exe, arg
-        assert_eq!(v.len(), 4);
     }
 }

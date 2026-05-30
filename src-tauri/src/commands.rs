@@ -199,31 +199,20 @@ pub async fn ut4stats_summary(playerid: String) -> Result<String, String> {
 }
 
 /// Open an external HTTPS URL in the user's default handler (browser /
-/// Discord app). Used for the community Discord invite links. Validates
-/// the URL is HTTPS with no shell-significant characters before handing it
-/// to the shell, since the value originates in the webview.
+/// Discord app). Used for the community Discord invite links. Routed
+/// through `tauri-plugin-opener`, which hands the URL to the OS default
+/// handler without going through a shell — so there is no command-injection
+/// surface. We still require HTTPS as defence in depth, since the value
+/// originates in the webview.
 #[tauri::command]
-pub fn open_external(url: String) -> Result<(), String> {
-    if !url.starts_with("https://") || url.contains(['"', '&', '|', '<', '>', '^', ' ']) {
-        return Err("refused to open a non-https or unsafe URL".to_string());
+pub fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    if !url.starts_with("https://") {
+        return Err("refused to open a non-https URL".to_string());
     }
-    #[cfg(windows)]
-    {
-        use std::os::windows::process::CommandExt;
-        std::process::Command::new("cmd")
-            .args(["/C", "start", "", &url])
-            .creation_flags(0x0800_0000) // CREATE_NO_WINDOW — no console flash
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    #[cfg(not(windows))]
-    {
-        std::process::Command::new("xdg-open")
-            .arg(&url)
-            .spawn()
-            .map_err(|e| e.to_string())?;
-    }
-    Ok(())
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
 }
 
 /// UT4IGBot launcher PUG endpoint (FastAPI on :9999).
