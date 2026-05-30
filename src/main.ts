@@ -63,6 +63,7 @@ interface EngineTweaks {
 interface ConfigState {
   ini_exists: boolean;
   has_backup: boolean;
+  master_server_ok: boolean;
   tweaks: EngineTweaks;
 }
 
@@ -611,9 +612,16 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
     ? `<div class="ok">✓ UT4-OpenAL detected — its audio module will be enabled.</div>`
     : `<p class="src">OpenAL not detected — get <button id="get-openal" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio. The audio override is skipped without it.</p>`;
 
+  const masterWarning = cfg.master_server_ok
+    ? ""
+    : `<div class="warn">⚠ Master-server config is missing from your <code>Engine.ini</code> — you won't see community servers in the browser.
+        <button id="cfg-fix-mcp" type="button">Restore master server</button></div>`;
+
   const t = cfg.tweaks;
   configPanel.innerHTML = `
+    ${masterWarning}
     <p>Competitive graphics: high FPS, still readable. Your <code>Engine.ini</code> is backed up before the first apply; online and login settings are left untouched.</p>
+    <p class="src">Note: <code>net.AllowAsyncLoading=0</code> loads into maps faster but can cause issues in Blitz (flag run).</p>
     <div class="controls">
       <label>Frame rate cap
         <input id="cfg-fps" type="number" min="0" step="10" value="${escape(String(t.frame_rate_cap))}" />
@@ -635,6 +643,7 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
   );
   document.getElementById("cfg-apply")?.addEventListener("click", () => void applyConfig(openal));
   document.getElementById("cfg-restore")?.addEventListener("click", () => void restoreConfig());
+  document.getElementById("cfg-fix-mcp")?.addEventListener("click", () => void repairMasterServer());
 
   if (flash) {
     const s = document.getElementById("cfg-status");
@@ -669,6 +678,22 @@ async function restoreConfig() {
     const s = document.getElementById("cfg-status");
     if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
     console.error("restore_engine_config failed:", err);
+  }
+}
+
+async function repairMasterServer() {
+  try {
+    const changed = await invoke<boolean>("repair_master_server");
+    await renderConfig({
+      text: changed
+        ? "Master-server config restored. Restart UT4 to reconnect."
+        : "Master-server config was already intact.",
+      cls: "ok",
+    });
+  } catch (err) {
+    const s = document.getElementById("cfg-status");
+    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("repair_master_server failed:", err);
   }
 }
 

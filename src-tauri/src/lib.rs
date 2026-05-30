@@ -29,6 +29,7 @@ pub fn run() {
             commands::openal_status,
             commands::apply_engine_config,
             commands::restore_engine_config,
+            commands::repair_master_server,
             commands::launcher_version,
         ])
         .run(tauri::generate_context!())

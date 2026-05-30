@@ -1,10 +1,13 @@
 //! Competitive `Engine.ini` configuration.
 //!
-//! Applies a curated performance baseline (the `[ConsoleVariables]` and
-//! `[/script/engine.renderersettings]` sections) plus a few editable engine
-//! knobs (frame-rate cap, smooth frame rate, display gamma) and, when the
-//! OpenAL module is installed, the `[Audio]` device override — by
-//! **merging** them into the player's existing `Engine.ini`.
+//! Applies a curated performance baseline (the `[SystemSettings]`,
+//! `[ConsoleVariables]` and `[/script/engine.renderersettings]` sections)
+//! plus a few editable engine knobs (frame-rate cap, smooth frame rate,
+//! display gamma) and, when the OpenAL module is installed, the `[Audio]`
+//! device override — by **merging** them into the player's existing
+//! `Engine.ini`. It also verifies and can repair the
+//! `[OnlineSubsystemMcp.*]` master-server sections that a known UT4 bug
+//! sometimes wipes.
 //!
 //! Every other section — online/master-server, login token, replay paths,
 //! game-mode history — is preserved verbatim, and the original is backed up
@@ -93,6 +96,15 @@ r.SSR.MaxRoughness=0
 r.RHICmdBypass=0
 r.PostProcessingColorFormat=0";
 
+/// `[SystemSettings]` baseline. `net.AllowAsyncLoading=0` loads into maps
+/// faster but can misbehave in Blitz / flag-run — surfaced as a UI caveat.
+const SYSTEM_SETTINGS: &str = "\
+net.AllowAsyncLoading=0
+r.OneFrameThreadLag=1
+fx.GPUSimulationTextureSizeX=16
+fx.GPUSimulationTextureSizeY=16
+r.ParticleLightQuality=0";
+
 // Section names (inner text, no brackets) and the canonical header to
 // create if a section is absent.
 const SEC_CONSOLE: &str = "ConsoleVariables";
@@ -103,6 +115,25 @@ const SEC_ENGINE: &str = "/Script/UnrealTournament.UTGameEngine";
 const HDR_ENGINE: &str = "[/Script/UnrealTournament.UTGameEngine]";
 const SEC_AUDIO: &str = "Audio";
 const HDR_AUDIO: &str = "[Audio]";
+const SEC_SYSTEM: &str = "SystemSettings";
+const HDR_SYSTEM: &str = "[SystemSettings]";
+
+/// The community master-server host every `[OnlineSubsystemMcp.*]` section
+/// must point `Domain` at for online play to work.
+const MASTER_DOMAIN: &str = "master-ut4.timiimit.com";
+
+/// The seven MCP section inner-names that carry the master-server config. A
+/// known UT4 bug occasionally wipes these, dropping the player off the
+/// community server list.
+const MCP_SECTIONS: [&str; 7] = [
+    "OnlineSubsystemMcp.BaseServiceMcp",
+    "OnlineSubsystemMcp.GameServiceMcp",
+    "OnlineSubsystemMcp.AccountServiceMcp",
+    "OnlineSubsystemMcp.OnlineFriendsMcp",
+    "OnlineSubsystemMcp.PersonaServiceMcp",
+    "OnlineSubsystemMcp.OnlineImageServiceMcp",
+    "OnlineSubsystemMcp.OnlineContentControlsServiceMcp UnrealTournamentDev",
+];
 
 const ENGINE_INI_REL: &str = "UnrealTournament/Saved/Config/WindowsNoEditor/Engine.ini";
 const OPENAL_DLL_REL: &str = "Engine/Binaries/Win64/UE4-ALAudio-Win64-Shipping.dll";
@@ -137,6 +168,9 @@ pub struct ConfigState {
     pub ini_exists: bool,
     /// Whether a `.ncpbak` restore point exists.
     pub has_backup: bool,
+    /// Whether the `[OnlineSubsystemMcp.*]` master-server sections are intact
+    /// (false = wiped by the known bug; the online server browser is broken).
+    pub master_server_ok: bool,
     /// Current editable values read from the ini (defaults if absent).
     pub tweaks: EngineTweaks,
 }
@@ -184,19 +218,22 @@ fn backup_path(ini: &Path) -> PathBuf {
 /// Read the current config state for the UI.
 #[must_use]
 pub fn read_state(ini: &Path) -> ConfigState {
-    let ini_exists = ini.is_file();
     let has_backup = backup_path(ini).is_file();
-    let tweaks = if ini_exists {
-        std::fs::read_to_string(ini)
-            .map(|t| read_tweaks(&t))
-            .unwrap_or_default()
-    } else {
-        EngineTweaks::default()
-    };
-    ConfigState {
-        ini_exists,
-        has_backup,
-        tweaks,
+    match std::fs::read_to_string(ini) {
+        Ok(text) => ConfigState {
+            ini_exists: true,
+            has_backup,
+            master_server_ok: master_server_intact(&text),
+            tweaks: read_tweaks(&text),
+        },
+        // No readable ini yet — the UI shows "launch UT4 once"; master-server
+        // state is irrelevant, so report it as fine to avoid a false alarm.
+        Err(_) => ConfigState {
+            ini_exists: false,
+            has_backup,
+            master_server_ok: true,
+            tweaks: EngineTweaks::default(),
+        },
     }
 }
 
@@ -228,6 +265,7 @@ pub fn apply(ini: &Path, tweaks: &EngineTweaks, set_openal_audio: bool) -> Confi
     let mut ini_file = IniFile::parse(&text);
     ini_file.replace_body(SEC_CONSOLE, HDR_CONSOLE, CONSOLE_VARIABLES);
     ini_file.replace_body(SEC_RENDERER, HDR_RENDERER, RENDERER_SETTINGS);
+    ini_file.replace_body(SEC_SYSTEM, HDR_SYSTEM, SYSTEM_SETTINGS);
     ini_file.set_key(
         SEC_ENGINE,
         HDR_ENGINE,
@@ -265,6 +303,54 @@ pub fn restore(ini: &Path) -> ConfigResult<()> {
         Err(e) => return Err(e.into()),
     };
     write_atomic(ini, &text)
+}
+
+/// True if every required `[OnlineSubsystemMcp.*]` section is present and
+/// points `Domain` at the community master server.
+fn master_server_intact(text: &str) -> bool {
+    let file = IniFile::parse(text);
+    MCP_SECTIONS.iter().all(|name| {
+        file.find(name).is_some_and(|sec| {
+            sec.body.iter().any(|l| {
+                l.split_once('=').is_some_and(|(k, v)| {
+                    k.trim().eq_ignore_ascii_case("Domain")
+                        && v.trim().eq_ignore_ascii_case(MASTER_DOMAIN)
+                })
+            })
+        })
+    })
+}
+
+/// Ensure all `[OnlineSubsystemMcp.*]` sections exist and point at the
+/// community master server, repairing the known wipe bug. Returns whether a
+/// change was needed. Backs the ini up once before writing.
+///
+/// # Errors
+/// [`ConfigError::IniNotFound`] if the ini does not exist, or
+/// [`ConfigError::Io`] on a filesystem error.
+pub fn repair_master_server(ini: &Path) -> ConfigResult<bool> {
+    let text = match std::fs::read_to_string(ini) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Err(ConfigError::IniNotFound(ini.to_path_buf()))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    if master_server_intact(&text) {
+        return Ok(false);
+    }
+    let backup = backup_path(ini);
+    if !backup.exists() {
+        write_atomic(&backup, &text)?;
+    }
+    let mut file = IniFile::parse(&text);
+    for name in MCP_SECTIONS {
+        let header = format!("[{name}]");
+        file.set_key(name, &header, "Domain", MASTER_DOMAIN);
+        file.set_key(name, &header, "Protocol", "https");
+    }
+    write_atomic(ini, &file.render())?;
+    Ok(true)
 }
 
 const fn bool_str(b: bool) -> &'static str {
@@ -388,6 +474,12 @@ impl IniFile {
             .find(|s| section_inner(&s.header).eq_ignore_ascii_case(name))
     }
 
+    fn find(&self, name: &str) -> Option<&Section> {
+        self.sections
+            .iter()
+            .find(|s| section_inner(&s.header).eq_ignore_ascii_case(name))
+    }
+
     /// Replace a whole section body with `body` (newline-separated lines),
     /// creating the section with `canonical_header` if absent.
     fn replace_body(&mut self, name: &str, canonical_header: &str, body: &str) {
@@ -470,6 +562,7 @@ Protocol=https
         let mut f = IniFile::parse(text);
         f.replace_body(SEC_CONSOLE, HDR_CONSOLE, CONSOLE_VARIABLES);
         f.replace_body(SEC_RENDERER, HDR_RENDERER, RENDERER_SETTINGS);
+        f.replace_body(SEC_SYSTEM, HDR_SYSTEM, SYSTEM_SETTINGS);
         f.set_key(SEC_ENGINE, HDR_ENGINE, "FrameRateCap", "360.000000");
         f.set_key(SEC_ENGINE, HDR_ENGINE, "bSmoothFrameRate", "False");
         f.set_key(SEC_ENGINE, HDR_ENGINE, "DisplayGamma", "3.000000");
@@ -596,5 +689,52 @@ Protocol=https
         };
         apply(&ini, &tweaks, true).unwrap();
         assert_eq!(std::fs::read_to_string(backup_path(&ini)).unwrap(), SAMPLE);
+    }
+
+    #[test]
+    fn applies_system_settings_section() {
+        let out = apply_to(SAMPLE, true);
+        assert!(out.contains("[SystemSettings]"));
+        assert!(out.contains("net.AllowAsyncLoading=0"));
+        assert!(out.contains("r.OneFrameThreadLag=1"));
+    }
+
+    fn with_all_mcp(base: &str) -> String {
+        let mut s = base.to_string();
+        for name in MCP_SECTIONS {
+            s.push_str(&format!(
+                "[{name}]\nDomain={MASTER_DOMAIN}\nProtocol=https\n"
+            ));
+        }
+        s
+    }
+
+    #[test]
+    fn master_server_intact_detects_missing_and_present() {
+        // SAMPLE only has BaseServiceMcp, so the required set is incomplete.
+        assert!(!master_server_intact(SAMPLE));
+        assert!(master_server_intact(&with_all_mcp("[X]\nk=v\n")));
+    }
+
+    #[test]
+    fn repair_master_server_adds_missing_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Engine.ini");
+        std::fs::write(&ini, SAMPLE).unwrap();
+
+        assert!(repair_master_server(&ini).unwrap());
+        let out = std::fs::read_to_string(&ini).unwrap();
+        assert!(master_server_intact(&out));
+        for name in MCP_SECTIONS {
+            assert!(out.contains(&format!("[{name}]")), "missing {name}");
+        }
+    }
+
+    #[test]
+    fn repair_master_server_noop_when_already_intact() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Engine.ini");
+        std::fs::write(&ini, with_all_mcp("[X]\nk=v\n")).unwrap();
+        assert!(!repair_master_server(&ini).unwrap());
     }
 }

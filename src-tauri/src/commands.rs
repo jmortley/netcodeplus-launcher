@@ -291,3 +291,10 @@ pub fn apply_engine_config(
 pub fn restore_engine_config() -> Result<(), String> {
     ncp_host::config::restore(&engine_ini()?).map_err(|e| e.to_string())
 }
+
+/// Verify and, if needed, repair the `[OnlineSubsystemMcp.*]` master-server
+/// sections that a UT4 bug sometimes wipes. Returns whether a repair ran.
+#[tauri::command]
+pub fn repair_master_server() -> Result<bool, String> {
+    ncp_host::config::repair_master_server(&engine_ini()?).map_err(|e| e.to_string())
+}
