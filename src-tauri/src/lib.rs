@@ -22,6 +22,7 @@ pub fn run() {
             commands::save_ut4stats_link,
             commands::ut4stats_search,
             commands::ut4stats_summary,
+            commands::launcher_news,
             commands::open_external,
             commands::pug_action,
             commands::save_launcher_token,

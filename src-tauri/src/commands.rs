@@ -198,6 +198,17 @@ pub async fn ut4stats_summary(playerid: String) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Fetch the launcher news feed from ut4stats.com's public
+/// `/api/launcher_news/` endpoint (admin-managed announcements). Raw JSON.
+#[tauri::command]
+pub async fn launcher_news() -> Result<String, String> {
+    let url = format!("{UT4STATS_BASE}/api/launcher_news/");
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::fetch_text(&client, &url, UT4STATS_MAX)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Open an external HTTPS URL in the user's default handler (browser /
 /// Discord app). Used for the community Discord invite links. Routed
 /// through `tauri-plugin-opener`, which hands the URL to the OS default

@@ -392,35 +392,110 @@ footer {
 }
 
 .play-hero {
-  height: 190px;
-  margin-bottom: 1.1rem;
+  position: relative;
+  height: 260px;
+  margin-bottom: 1.25rem;
   border-radius: 8px;
-  background: url("/backgrounds/skaarj.jpg") center 30% / cover no-repeat;
+  overflow: hidden;
+  background: url("/backgrounds/skaarj.jpg") center 22% / cover no-repeat;
   border: 1px solid rgba(255, 255, 255, 0.1);
-  box-shadow: inset 0 -55px 45px -30px rgba(20, 23, 30, 0.95);
+}
+
+.play-hero-overlay {
+  position: absolute;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  padding: 2rem 1.25rem 1rem;
+  text-align: left;
+  background: linear-gradient(
+    to top,
+    rgba(15, 17, 21, 0.96) 8%,
+    rgba(15, 17, 21, 0.55) 50%,
+    transparent
+  );
 }
 
 .play-title {
-  font-size: 1.7rem;
-  font-weight: 700;
-  margin-bottom: 0.4rem;
+  font-size: 1.9rem;
+  font-weight: 800;
+  margin-bottom: 0.25rem;
+  text-shadow: 0 2px 10px rgba(0, 0, 0, 0.85);
 }
 
 .play-sub {
-  margin-bottom: 1.1rem;
   font-size: 0.9rem;
 }
 
 .launch-primary {
   display: inline-block;
-  min-width: 14rem;
-  font-size: 1.15rem;
+  min-width: 16rem;
+  font-size: 1.2rem;
   font-weight: 700;
-  padding: 0.85rem 2rem;
+  padding: 0.9rem 2rem;
+  background: linear-gradient(135deg, #3b82f6, #1d4ed8);
+  box-shadow: 0 4px 18px rgba(37, 99, 235, 0.5);
+  transition: box-shadow 0.15s ease, transform 0.05s ease;
+}
+
+.launch-primary:hover {
+  background: linear-gradient(135deg, #4f93ff, #2563eb);
+  box-shadow: 0 6px 28px rgba(37, 99, 235, 0.75);
+}
+
+.launch-primary:active {
+  transform: translateY(1px);
 }
 
 .launch-primary + .launch-status {
   margin-top: 0.75rem;
+}
+
+/* ---- news (pinned to the Launch tab) ---- */
+
+.news {
+  background: rgba(37, 99, 235, 0.08);
+  border: 1px solid rgba(37, 99, 235, 0.3);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.news-head {
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #6ea8fe;
+  margin-bottom: 0.5rem;
+}
+
+.news-item + .news-item {
+  margin-top: 0.6rem;
+  padding-top: 0.6rem;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+.news-item-head {
+  display: flex;
+  align-items: baseline;
+  gap: 0.4rem;
+}
+
+.news-date {
+  margin-left: auto;
+  color: #888;
+  font-size: 0.8rem;
+}
+
+.news-pin {
+  color: #fbbf24;
+}
+
+.news-body {
+  margin-top: 0.2rem;
+  font-size: 0.9rem;
+  color: #cfd3da;
+  white-space: pre-wrap;
 }
 #join-utpugs {
   background: #5865f2;

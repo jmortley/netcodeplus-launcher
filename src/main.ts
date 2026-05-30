@@ -67,12 +67,20 @@ interface ConfigState {
   tweaks: EngineTweaks;
 }
 
+interface NewsItem {
+  title: string;
+  body: string;
+  pinned: boolean;
+  date: string;
+}
+
 const launchPanel = document.getElementById("launch-panel")!;
 const advancedPanel = document.getElementById("advanced-launch")!;
 const pickButton = document.getElementById("pick-dir") as HTMLButtonElement;
 const versionLabel = document.getElementById("version")!;
 const statsPanel = document.getElementById("stats-panel")!;
 const configPanel = document.getElementById("config-panel")!;
+const newsPanel = document.getElementById("news-panel")!;
 
 const state = {
   installs: [] as DetectedInstall[],
@@ -142,8 +150,11 @@ function renderLaunch() {
   if (state.installs.length === 0) {
     launchPanel.innerHTML = `
       <div class="play-card">
-        <div class="play-hero"></div>
-        <div class="play-title">Unreal Tournament</div>
+        <div class="play-hero">
+          <div class="play-hero-overlay">
+            <div class="play-title">Unreal Tournament</div>
+          </div>
+        </div>
         <p class="warn">No install detected.</p>
         <p>Don't have the game yet? Get it from the UT4Ever installer, then reopen the launcher.</p>
         <button id="get-ut4" type="button" class="launch-primary">Get UT4</button>
@@ -157,9 +168,12 @@ function renderLaunch() {
   const di = state.installs[state.selInstall];
   launchPanel.innerHTML = `
     <div class="play-card">
-      <div class="play-hero"></div>
-      <div class="play-title">Unreal Tournament</div>
-      <div class="play-sub">${netcodeplusBadge(di.netcodeplus)}</div>
+      <div class="play-hero">
+        <div class="play-hero-overlay">
+          <div class="play-title">Unreal Tournament</div>
+          <div class="play-sub">${netcodeplusBadge(di.netcodeplus)}</div>
+        </div>
+      </div>
       <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;Launch</button>
       <div id="launch-status" class="launch-status"></div>
     </div>`;
@@ -489,6 +503,7 @@ async function loadAll() {
     renderStats();
     renderPug();
     void renderConfig();
+    void renderNews();
   } catch (err) {
     launchPanel.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
     console.error("startup load failed:", err);
@@ -706,6 +721,37 @@ async function autoFixMasterServer() {
   } catch (err) {
     console.error("master-server auto-repair failed:", err);
   }
+}
+
+// ---- news (pinned to the Launch tab) ---------------------------------------
+
+async function renderNews() {
+  let items: NewsItem[];
+  try {
+    items = JSON.parse(await invoke<string>("launcher_news")) as NewsItem[];
+  } catch (err) {
+    console.error("launcher_news failed:", err);
+    newsPanel.innerHTML = "";
+    return;
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    newsPanel.innerHTML = "";
+    return;
+  }
+  newsPanel.innerHTML = `
+    <div class="news">
+      <div class="news-head">News</div>
+      ${items
+        .map(
+          (n) => `<article class="news-item">
+            <div class="news-item-head">${n.pinned ? `<span class="news-pin">★</span> ` : ""}<strong>${escape(
+              n.title,
+            )}</strong><span class="news-date">${escape(n.date)}</span></div>
+            <div class="news-body">${escape(n.body)}</div>
+          </article>`,
+        )
+        .join("")}
+    </div>`;
 }
 
 // ---- tabs ------------------------------------------------------------------
