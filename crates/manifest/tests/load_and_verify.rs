@@ -130,6 +130,54 @@ fn dependent_pak_with_versionreq_round_trips() {
     assert_eq!(loaded, manifest);
 }
 
+// ---------- pak filename safety --------------------------------------
+
+fn set_ncutplus_filename(manifest: &mut Manifest, filename: &str) {
+    manifest
+        .channels
+        .get_mut("stable")
+        .unwrap()
+        .paks
+        .get_mut("ncutplus")
+        .unwrap()
+        .pak_filename = filename.to_string();
+}
+
+#[test]
+fn pak_filename_with_parent_traversal_is_rejected() {
+    let now = Utc::now();
+    let keys = fresh_keys();
+    let mut manifest = sample_manifest(now);
+    // Classic traversal: escape the paks dir and drop a DLL into System32.
+    set_ncutplus_filename(&mut manifest, "..\\..\\..\\Windows\\System32\\evil.dll");
+    let json = serde_json::to_vec(&manifest).unwrap();
+    let sig = sign_blob(&json, &keys);
+
+    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsafePakFilename { .. }),
+        "got: {err:?}"
+    );
+}
+
+#[test]
+fn pak_filename_with_absolute_path_is_rejected() {
+    let now = Utc::now();
+    let keys = fresh_keys();
+    let mut manifest = sample_manifest(now);
+    set_ncutplus_filename(&mut manifest, "/etc/cron.d/evil");
+    let json = serde_json::to_vec(&manifest).unwrap();
+    let sig = sign_blob(&json, &keys);
+
+    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::UnsafePakFilename { .. }),
+        "got: {err:?}"
+    );
+}
+
 // ---------- signature failures ---------------------------------------
 
 #[test]

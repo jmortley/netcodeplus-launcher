@@ -78,4 +78,25 @@ pub enum Error {
         /// replay floor).
         minimum: u64,
     },
+
+    /// A pak's `pak_filename` is not a single, flat filename. The installer
+    /// joins this onto the UT4 paks/plugins directory to decide where the
+    /// downloaded bytes land, so a value containing a path separator, a `..`
+    /// parent reference, a drive/UNC prefix, or a reserved/control character
+    /// could redirect the write outside the install tree (path traversal).
+    /// Rejected even when the manifest is otherwise validly signed — a single
+    /// mistaken or compromised signing run must not be able to write outside
+    /// the game directory.
+    #[error(
+        "channel {channel:?} pak {pak_id:?}: unsafe pak_filename {filename:?} \
+         (must be a flat filename with no path separators or '..')"
+    )]
+    UnsafePakFilename {
+        /// Channel the offending pak belongs to.
+        channel: String,
+        /// Channel-local id of the offending pak.
+        pak_id: String,
+        /// The rejected filename.
+        filename: String,
+    },
 }
