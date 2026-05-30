@@ -102,7 +102,58 @@ pub async fn post_json(
     for (name, value) in headers {
         req = req.header(*name, *value);
     }
-    let response = req.send().await?;
+    read_bounded_utf8(req.send().await?, url, max_bytes).await
+}
+
+/// POST `form` as `application/x-www-form-urlencoded` with extra request
+/// `headers` (e.g. an `Authorization: Basic …`), validate `2xx`, and read up to
+/// `max_bytes` of the (UTF-8) response. Used for the UT4 master server's OAuth
+/// token endpoint. `reqwest`'s form serializer handles the percent-encoding.
+///
+/// # Errors
+///
+/// Same set as [`post_json`].
+pub async fn post_form(
+    client: &Client,
+    url: &str,
+    headers: &[(&str, &str)],
+    form: &[(&str, &str)],
+    max_bytes: u64,
+) -> Result<String> {
+    let mut req = client.inner.post(url).form(form);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    read_bounded_utf8(req.send().await?, url, max_bytes).await
+}
+
+/// GET `url` with extra request `headers` (e.g. an `Authorization: Bearer …`),
+/// validate `2xx`, and read up to `max_bytes` of the (UTF-8) response. Used for
+/// the OAuth exchange-code endpoint.
+///
+/// # Errors
+///
+/// Same set as [`fetch_text`].
+pub async fn fetch_text_with_headers(
+    client: &Client,
+    url: &str,
+    headers: &[(&str, &str)],
+    max_bytes: u64,
+) -> Result<String> {
+    let mut req = client.inner.get(url);
+    for (name, value) in headers {
+        req = req.header(*name, *value);
+    }
+    read_bounded_utf8(req.send().await?, url, max_bytes).await
+}
+
+/// Validate a response is `2xx` and read up to `max_bytes` of its body as UTF-8,
+/// streaming so a server that lies about `Content-Length` can't overrun the cap.
+async fn read_bounded_utf8(
+    response: reqwest::Response,
+    url: &str,
+    max_bytes: u64,
+) -> Result<String> {
     let status = response.status();
     if !status.is_success() {
         return Err(NetError::HttpStatus {

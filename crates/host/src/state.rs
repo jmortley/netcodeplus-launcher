@@ -83,6 +83,18 @@ pub struct LauncherState {
     #[serde(default)]
     pub launcher_token: Option<String>,
 
+    /// UT4 master-server account username the user logged in with, used as the
+    /// `-AUTH_LOGIN` value at launch and for the UI. NOT a secret — the refresh
+    /// token (the secret) lives in the OS credential store, never here. `None` =
+    /// not logged in.
+    #[serde(default)]
+    pub ut4_username: Option<String>,
+
+    /// Display name of the logged-in UT4 account, cached for the UI. `None` =
+    /// not logged in.
+    #[serde(default)]
+    pub ut4_display_name: Option<String>,
+
     /// Highest manifest `sequence` the launcher has ever accepted.
     /// Persisted so a later run rejects any manifest carrying a lower
     /// sequence — an active-attacker replay/downgrade of an older,
@@ -109,6 +121,8 @@ impl Default for LauncherState {
             ut4stats_playerid: None,
             ut4stats_playername: None,
             launcher_token: None,
+            ut4_username: None,
+            ut4_display_name: None,
             highest_manifest_sequence: 0,
         }
     }

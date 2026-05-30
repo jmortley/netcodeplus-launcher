@@ -27,6 +27,12 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# OS credential store for the UT4 refresh token (Windows Credential Manager /
+# macOS keychain / Linux keyutils). Native backends only — no D-Bus/secret-
+# service dependency, so it builds clean on the Linux CI host too. Windows is the
+# real runtime target; the Linux backend just needs to compile for CI.
+keyring = { version = "3", features = ["apple-native", "windows-native", "linux-native"] }
+
 # Workspace crates that the Tauri commands wrap.
 ncp-host = { path = "../crates/host" }
 ncp-net = { path = "../crates/net" }

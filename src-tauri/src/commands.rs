@@ -56,6 +56,7 @@ pub fn affinity_presets() -> Vec<AffinityPreset> {
 /// optional CPU affinity (hex mask string; empty/None = all cores).
 #[tauri::command]
 pub fn launch_game(
+    app: tauri::AppHandle,
     executable: String,
     args: Vec<String>,
     priority: String,
@@ -75,11 +76,18 @@ pub fn launch_game(
         },
         affinity_mask,
     };
-    ncp_host::launch(Path::new(&executable), &args, &opts).map_err(|e| e.to_string())
+    ncp_host::launch(Path::new(&executable), &args, &opts).map_err(|e| e.to_string())?;
+
+    // Game's launching — get out of the way. Best-effort: a minimize failure
+    // must never fail an otherwise-successful launch.
+    if let Some(win) = app.get_webview_window("main") {
+        let _ = win.minimize();
+    }
+    Ok(())
 }
 
 /// Path to the persistent launcher state file in the per-app config dir.
-fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+pub(crate) fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
     Ok(dir.join("state.json"))
 }

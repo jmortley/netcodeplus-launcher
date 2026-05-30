@@ -83,6 +83,12 @@ interface PugStatus {
   pug_id?: number;
 }
 
+interface Ut4Auth {
+  logged_in: boolean;
+  username: string | null;
+  display_name: string | null;
+}
+
 const launchPanel = document.getElementById("launch-panel")!;
 const advancedPanel = document.getElementById("advanced-launch")!;
 const pickButton = document.getElementById("pick-dir") as HTMLButtonElement;
@@ -102,6 +108,7 @@ const state = {
   linkedName: null as string | null,
   launcherToken: null as string | null,
   pugStatus: null as PugStatus | null,
+  ut4: null as Ut4Auth | null,
 };
 
 function escape(value: string): string {
@@ -186,11 +193,13 @@ function renderLaunch() {
       </div>
       <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;Launch</button>
       <div id="launch-status" class="launch-status"></div>
+      ${ut4AccountHtml()}
     </div>`;
   (document.getElementById("launch-btn") as HTMLButtonElement | null)?.addEventListener(
     "click",
     () => void launch(),
   );
+  wireUt4Account();
 }
 
 // Advanced tab: power-user knobs — install selection, launch profile,
@@ -315,10 +324,18 @@ async function launch() {
   const status = document.getElementById("launch-status")!;
 
   status.textContent = "Launching…";
+  let authArgs: string[];
+  try {
+    authArgs = await ut4AuthArgs();
+  } catch (err) {
+    if (handleReloginError(err, null)) return;
+    status.innerHTML = `<span class="warn">UT4 login failed: ${escape(String(err))}</span>`;
+    return;
+  }
   try {
     await invoke("launch_game", {
       executable: di.install.executable,
-      args: profile.args,
+      args: [...profile.args, ...authArgs],
       priority: state.priority,
       affinityMaskHex: state.affinityHex || null,
     });
@@ -330,6 +347,106 @@ async function launch() {
     status.innerHTML = `<span class="warn">Launch failed: ${escape(String(err))}</span>`;
     console.error("launch_game failed:", err);
   }
+}
+
+// ---- UT4 account login ----------------------------------------------------
+
+// Account block for the Launch card: a sign-in form when signed out, or the
+// signed-in identity + a log-out link.
+function ut4AccountHtml(): string {
+  const a = state.ut4;
+  if (a?.logged_in) {
+    return `<div class="ut4-account" style="margin-top:14px">
+      <span class="ok">UT4: signed in as <strong>${escape(a.display_name ?? a.username ?? "player")}</strong></span>
+      &nbsp;·&nbsp;<button id="ut4-logout" type="button" class="link-btn">log out</button>
+    </div>`;
+  }
+  return `<div class="ut4-account" style="margin-top:14px">
+    <p class="src">Sign in to UT4 so the launcher logs you in directly (skips the in-game login window).
+      Use the same username &amp; password as your account at
+      <button id="ut4-site-link" type="button" class="link-btn">ut4.timiimit.com</button> —
+      the same login the game itself uses.</p>
+    <div class="controls">
+      <input id="ut4-user" type="text" placeholder="UT4 username" autocomplete="username" spellcheck="false" />
+      <input id="ut4-pass" type="password" placeholder="password" autocomplete="current-password" />
+      <button id="ut4-login" type="button">Sign in</button>
+    </div>
+    <p class="src ut4-secure-note">🔒 Your password goes straight to ut4.timiimit.com over HTTPS and is
+      <strong>never saved</strong>. The launcher keeps only a revocable session token, in Windows
+      Credential Manager — not in any file, and not synced anywhere.
+      <button id="ut4-src-link" type="button" class="link-btn">It's open source — read exactly what it does.</button></p>
+    <div id="ut4-auth-status" class="launch-status"></div>
+  </div>`;
+}
+
+function wireUt4Account() {
+  document.getElementById("ut4-login")?.addEventListener("click", () => void ut4Login());
+  document.getElementById("ut4-logout")?.addEventListener("click", () => void ut4Logout());
+  document
+    .getElementById("ut4-site-link")
+    ?.addEventListener("click", () => openExternal("https://ut4.timiimit.com/"));
+  document
+    .getElementById("ut4-src-link")
+    ?.addEventListener("click", () =>
+      openExternal("https://github.com/jmortley/netcodeplus-launcher/blob/main/src-tauri/src/auth.rs"),
+    );
+}
+
+async function ut4Login() {
+  const userEl = document.getElementById("ut4-user") as HTMLInputElement | null;
+  const passEl = document.getElementById("ut4-pass") as HTMLInputElement | null;
+  const status = document.getElementById("ut4-auth-status");
+  const username = userEl?.value.trim() ?? "";
+  const password = passEl?.value ?? "";
+  if (passEl) passEl.value = ""; // never retain the password in the DOM
+  if (!username || !password) {
+    if (status) status.innerHTML = `<span class="warn">Enter your UT4 username and password.</span>`;
+    return;
+  }
+  if (status) status.textContent = "Signing in…";
+  try {
+    state.ut4 = await invoke<Ut4Auth>("ut4_login", { username, password });
+    renderLaunch();
+  } catch (err) {
+    if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+  }
+}
+
+async function ut4Logout() {
+  try {
+    await invoke("ut4_logout");
+  } catch (err) {
+    console.error("ut4_logout failed:", err);
+  }
+  state.ut4 = { logged_in: false, username: null, display_name: null };
+  renderLaunch();
+}
+
+// Returns the -AUTH_* args that log the game in via the launcher's session, or
+// [] when signed out (the game then shows its own login window). Throws
+// "RELOGIN_REQUIRED" when the stored session has expired.
+async function ut4AuthArgs(): Promise<string[]> {
+  if (!state.ut4?.logged_in) return [];
+  const a = await invoke<{ username: string; exchange_code: string }>("ut4_prepare_launch");
+  return [`-AUTH_LOGIN=${a.username}`, `-AUTH_PASSWORD=${a.exchange_code}`, `-AUTH_TYPE=exchangecode`];
+}
+
+// On an expired session, flip to signed-out and re-render the login form. If a
+// status element is given (e.g. the PUG controls on another tab) the message
+// goes there; otherwise into the freshly-rendered account form. Returns true
+// when it handled a relogin, so the caller aborts the launch.
+function handleReloginError(err: unknown, statusEl: HTMLElement | null): boolean {
+  if (!String(err).includes("RELOGIN_REQUIRED")) return false;
+  state.ut4 = { logged_in: false, username: null, display_name: null };
+  renderLaunch();
+  const msg = "Your UT4 session expired — sign in again on the Launch tab, then try again.";
+  if (statusEl) {
+    statusEl.innerHTML = `<span class="warn">${escape(msg)}</span>`;
+  } else {
+    const s = document.getElementById("ut4-auth-status");
+    if (s) s.innerHTML = `<span class="warn">${escape(msg)}</span>`;
+  }
+  return true;
 }
 
 // ---- ut4stats player panel ------------------------------------------------
@@ -499,14 +616,17 @@ async function showVersion() {
 
 async function loadAll() {
   try {
-    const [installs, presets, prefs] = await Promise.all([
+    const [installs, presets, prefs, ut4] = await Promise.all([
       invoke<DetectedInstall[]>("detect_installs"),
       invoke<AffinityPreset[]>("affinity_presets"),
       invoke<LauncherState>("load_state"),
+      // A credential-store hiccup must not block startup — treat as signed out.
+      invoke<Ut4Auth>("ut4_auth_status").catch(() => null),
     ]);
     state.installs = installs;
     state.presets = presets;
     state.selInstall = 0;
+    state.ut4 = ut4;
     applyPrefs(prefs);
     void autoFixMasterServer();
     render();
@@ -683,7 +803,15 @@ async function connectToPug(server: string, password: string) {
   const profile =
     di.profiles.find((p) => p.label === state.profileLabel) ?? di.profiles[selectedProfileIndex(di)];
   const connectUrl = password ? `${server}?Password=${password}` : server;
-  const args = [...profile.args, `-ncpconnect=${connectUrl}`];
+  let authArgs: string[];
+  try {
+    authArgs = await ut4AuthArgs();
+  } catch (err) {
+    if (handleReloginError(err, status)) return;
+    if (status) status.innerHTML = `<span class="warn">UT4 login failed: ${escape(String(err))}</span>`;
+    return;
+  }
+  const args = [...profile.args, ...authArgs, `-ncpconnect=${connectUrl}`];
   if (status) status.textContent = "Launching into the PUG…";
   try {
     await invoke("launch_game", {

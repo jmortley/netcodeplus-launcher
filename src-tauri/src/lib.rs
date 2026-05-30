@@ -5,6 +5,7 @@
 //! logic lives in the workspace's `ncp-*` crates; this file just
 //! glues them to the webview.
 
+mod auth;
 mod commands;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -33,6 +34,10 @@ pub fn run() {
             commands::restore_engine_config,
             commands::repair_master_server,
             commands::launcher_version,
+            auth::ut4_login,
+            auth::ut4_auth_status,
+            auth::ut4_logout,
+            auth::ut4_prepare_launch,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

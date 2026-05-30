@@ -46,6 +46,8 @@ fn sample_state() -> LauncherState {
         ut4stats_playerid: Some("76561190000000000".to_string()),
         ut4stats_playername: Some("phantaci".to_string()),
         launcher_token: Some("tok_example".to_string()),
+        ut4_username: Some("phantaci".to_string()),
+        ut4_display_name: Some("phantaci".to_string()),
         highest_manifest_sequence: 42,
     }
 }
