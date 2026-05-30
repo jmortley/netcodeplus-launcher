@@ -75,7 +75,7 @@ interface NewsItem {
 }
 
 interface PugStatus {
-  state: "idle" | "queued" | "live";
+  state: "idle" | "queued" | "starting" | "live";
   players?: number;
   max_players?: number;
   server?: string;
@@ -635,6 +635,19 @@ function renderPug() {
     document
       .getElementById("pug-connect")
       ?.addEventListener("click", () => void connectToPug(st.server ?? "", st.password ?? ""));
+    document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
+    return;
+  }
+  if (st && st.state === "starting") {
+    // PUG is live but the game server is still spinning up (NYC ~90s). Show a
+    // disabled button; the 5 s poll re-renders the moment it flips to "live",
+    // so the user can't launch into a server that isn't listening yet.
+    pugControls.innerHTML = `
+      <p class="ok">🛰️ Your iCTF PUG is starting…</p>
+      <p class="src">Server spinning up — Connect unlocks the moment it's ready (~90s).</p>
+      <button type="button" class="launch-primary pug-connect" disabled>▶&nbsp;&nbsp;Starting…</button>
+      <button id="pug-token-clear" type="button" class="link-btn">change token</button>
+      <div id="pug-status" class="launch-status"></div>`;
     document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
     return;
   }
