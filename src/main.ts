@@ -119,11 +119,15 @@ function eqHex(a: string, b: string): boolean {
 function render() {
   if (state.installs.length === 0) {
     installStatus.innerHTML = `
-      <div class="warn">
-        No UT4 install detected from your desktop shortcuts.
-        Click <em>Pick install folder</em> below and choose your
-        <code>UnrealTournament</code> directory.
-      </div>`;
+      <div class="warn">No UT4 install detected from your desktop shortcuts.</div>
+      <p>If you don't have UnrealTournament yet, install it with the UT4Ever
+      installer, then reopen the launcher:</p>
+      <button id="get-ut4" type="button">Get UT4 — ut4ever.org/installer</button>
+      <p>Already installed? Click <em>Pick install folder</em> below and choose your
+      <code>UnrealTournament</code> directory.</p>`;
+    document.getElementById("get-ut4")?.addEventListener("click", () =>
+      openExternal("https://ut4ever.org/installer"),
+    );
     return;
   }
   if (state.selInstall >= state.installs.length) state.selInstall = 0;
