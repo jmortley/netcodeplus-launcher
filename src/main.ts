@@ -1027,7 +1027,10 @@ function renderServerList() {
           <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${badge}${escape(r.name)} &nbsp;${trustLabel(r.trust)}</div>
           <div class="src">${sub}</div>
         </div>
-        <button class="server-join" type="button" data-i="${i}" style="flex:none">Join</button>
+        <span style="flex:none;display:flex;gap:6px">
+          ${r.hub ? "" : `<button class="server-spectate" type="button" data-i="${i}">Spectate</button>`}
+          <button class="server-join" type="button" data-i="${i}">Join</button>
+        </span>
       </div>`;
     })
     .join("");
@@ -1057,6 +1060,17 @@ function renderServerList() {
     btn.addEventListener("click", () => {
       const r = rows[Number(btn.dataset.i)];
       if (r) void connectTo(`${r.ip}:${r.port}`, "", document.getElementById("servers-status"));
+    });
+  });
+  serversPanel.querySelectorAll<HTMLButtonElement>(".server-spectate").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const r = rows[Number(btn.dataset.i)];
+      if (r)
+        void connectTo(
+          `${r.ip}:${r.port}?SpectatorOnly=1`,
+          "",
+          document.getElementById("servers-status"),
+        );
     });
   });
 }
