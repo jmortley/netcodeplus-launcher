@@ -33,21 +33,17 @@
       <nav class="tabs">
         <button class="tab active" type="button" data-tab="launch">Launch</button>
         <button class="tab" type="button" data-tab="stats">Stats</button>
-        <button class="tab" type="button" data-tab="config">Config</button>
         <button class="tab" type="button" data-tab="community">Community</button>
+        <button class="tab" type="button" data-tab="advanced">Advanced</button>
       </nav>
 
       <section id="tab-launch" class="tab-panel active">
-        <div id="install-status" class="status">Detecting…</div>
-        <button id="pick-dir" type="button">Pick install folder</button>
+        <div id="news-panel"></div>
+        <div id="launch-panel" class="status">Detecting…</div>
       </section>
 
       <section id="tab-stats" class="tab-panel">
         <div id="stats-panel" class="status">…</div>
-      </section>
-
-      <section id="tab-config" class="tab-panel">
-        <div id="config-panel" class="status">…</div>
       </section>
 
       <section id="tab-community" class="tab-panel">
@@ -59,6 +55,14 @@
             <button id="join-ictf" type="button">Instagib Nation Discord</button>
           </div>
         </div>
+      </section>
+
+      <section id="tab-advanced" class="tab-panel">
+        <h2>Launch options</h2>
+        <div id="advanced-launch" class="status">…</div>
+        <button id="pick-dir" type="button">Pick install folder</button>
+        <h2>Performance config</h2>
+        <div id="config-panel" class="status">…</div>
       </section>
 
       <footer>

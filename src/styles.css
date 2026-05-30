@@ -383,6 +383,36 @@ footer {
   margin-bottom: 0.75rem;
   font-weight: 600;
 }
+
+/* ---- launch (play) card ---- */
+
+.play-card {
+  text-align: center;
+  padding: 1.5rem 1rem 1rem;
+}
+
+.play-title {
+  font-size: 1.7rem;
+  font-weight: 700;
+  margin-bottom: 0.4rem;
+}
+
+.play-sub {
+  margin-bottom: 1.1rem;
+  font-size: 0.9rem;
+}
+
+.launch-primary {
+  display: inline-block;
+  min-width: 14rem;
+  font-size: 1.15rem;
+  font-weight: 700;
+  padding: 0.85rem 2rem;
+}
+
+.launch-primary + .launch-status {
+  margin-top: 0.75rem;
+}
 #join-utpugs {
   background: #5865f2;
 }

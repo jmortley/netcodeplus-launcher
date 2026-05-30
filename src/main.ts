@@ -67,7 +67,8 @@ interface ConfigState {
   tweaks: EngineTweaks;
 }
 
-const installStatus = document.getElementById("install-status")!;
+const launchPanel = document.getElementById("launch-panel")!;
+const advancedPanel = document.getElementById("advanced-launch")!;
 const pickButton = document.getElementById("pick-dir") as HTMLButtonElement;
 const versionLabel = document.getElementById("version")!;
 const statsPanel = document.getElementById("stats-panel")!;
@@ -131,17 +132,46 @@ function eqHex(a: string, b: string): boolean {
 }
 
 function render() {
+  renderLaunch();
+  renderAdvanced();
+}
+
+// Launch tab: clean and end-user — just the game and a big Launch button.
+// Everything technical lives in the Advanced tab.
+function renderLaunch() {
   if (state.installs.length === 0) {
-    installStatus.innerHTML = `
-      <div class="warn">No UT4 install detected from your desktop shortcuts.</div>
-      <p>If you don't have UnrealTournament yet, install it with the UT4Ever
-      installer, then reopen the launcher:</p>
-      <button id="get-ut4" type="button">Get UT4 — ut4ever.org/installer</button>
-      <p>Already installed? Click <em>Pick install folder</em> below and choose your
-      <code>UnrealTournament</code> directory.</p>`;
+    launchPanel.innerHTML = `
+      <div class="play-card">
+        <div class="play-title">Unreal Tournament</div>
+        <p class="warn">No install detected.</p>
+        <p>Don't have the game yet? Get it from the UT4Ever installer, then reopen the launcher.</p>
+        <button id="get-ut4" type="button" class="launch-primary">Get UT4</button>
+      </div>`;
     document.getElementById("get-ut4")?.addEventListener("click", () =>
       openExternal("https://ut4ever.org/installer"),
     );
+    return;
+  }
+  if (state.selInstall >= state.installs.length) state.selInstall = 0;
+  const di = state.installs[state.selInstall];
+  launchPanel.innerHTML = `
+    <div class="play-card">
+      <div class="play-title">Unreal Tournament</div>
+      <div class="play-sub">${netcodeplusBadge(di.netcodeplus)}</div>
+      <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;Launch</button>
+      <div id="launch-status" class="launch-status"></div>
+    </div>`;
+  (document.getElementById("launch-btn") as HTMLButtonElement | null)?.addEventListener(
+    "click",
+    () => void launch(),
+  );
+}
+
+// Advanced tab: power-user knobs — install selection, launch profile,
+// process priority, CPU affinity. (Performance config renders below it.)
+function renderAdvanced() {
+  if (state.installs.length === 0) {
+    advancedPanel.innerHTML = `<p>No UT4 install detected. Pick your <code>UnrealTournament</code> folder below.</p>`;
     return;
   }
   if (state.selInstall >= state.installs.length) state.selInstall = 0;
@@ -174,20 +204,14 @@ function render() {
       )
       .join("") + `<option value="__custom__"${customAffinity ? " selected" : ""}>Custom…</option>`;
 
-  const heading =
-    state.installs.length === 1
-      ? `<div class="ok">We think your game is installed here:</div>`
-      : `<div class="warn">Found ${state.installs.length} UT4 installs — pick the one you play:</div>`;
-
-  installStatus.innerHTML = `
-    ${heading}
-    ${installPicker}
+  advancedPanel.innerHTML = `
     <div class="install-card">
       <div><strong>${escape(di.install.root)}</strong></div>
       <div class="src">${sourceText(di.source)}</div>
       <div class="ncp">${netcodeplusBadge(di.netcodeplus)}</div>
     </div>
     <div class="controls">
+      ${installPicker}
       <label>Launch profile<select id="profile-sel">${profOpts}</select></label>
       <label>Priority
         <select id="priority-sel">
@@ -201,10 +225,7 @@ function render() {
           customAffinity ? escape(state.affinityHex) : ""
         }" />
       </label>
-      <button id="launch-btn" type="button">Launch UT4</button>
-      <div id="launch-status" class="launch-status"></div>
-    </div>
-  `;
+    </div>`;
   wire();
 }
 
@@ -248,8 +269,6 @@ function wire() {
     state.affinityHex = hexInput.value.trim();
     persist();
   });
-
-  (document.getElementById("launch-btn") as HTMLButtonElement | null)?.addEventListener("click", () => void launch());
 }
 
 function persist() {
@@ -469,7 +488,7 @@ async function loadAll() {
     renderPug();
     void renderConfig();
   } catch (err) {
-    installStatus.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
+    launchPanel.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
     console.error("startup load failed:", err);
   }
 }
@@ -488,7 +507,7 @@ async function pickDir() {
   try {
     const result = await invoke<DetectedInstall | null>("check_install", { path: dirPath });
     if (!result) {
-      installStatus.innerHTML = `
+      advancedPanel.innerHTML = `
         <div class="warn">
           <code>${escape(dirPath)}</code> does not look like a UT4 install.
           Expected <code>Engine/Binaries/Win64/UE4-Win64-Shipping.exe</code> and
@@ -502,7 +521,7 @@ async function pickDir() {
     render();
     persist();
   } catch (err) {
-    installStatus.innerHTML = `<div class="warn">Validation failed: ${escape(String(err))}</div>`;
+    advancedPanel.innerHTML = `<div class="warn">Validation failed: ${escape(String(err))}</div>`;
     console.error("check_install failed:", err);
   }
 }
