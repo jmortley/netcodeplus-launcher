@@ -603,6 +603,8 @@ async function saveLauncherToken(token: string | null) {
   if (token) {
     void pollPugStatus();
     startPugPolling();
+  } else {
+    stopPugPolling();
   }
 }
 
@@ -702,6 +704,13 @@ let pugPollTimer: number | undefined;
 function startPugPolling() {
   if (pugPollTimer !== undefined) return;
   pugPollTimer = window.setInterval(() => void pollPugStatus(), 5000);
+}
+
+function stopPugPolling() {
+  if (pugPollTimer !== undefined) {
+    clearInterval(pugPollTimer);
+    pugPollTimer = undefined;
+  }
 }
 
 async function pollPugStatus() {
