@@ -70,6 +70,7 @@ fn sample_manifest(now: DateTime<Utc>) -> Manifest {
         schema_version: SUPPORTED_SCHEMA_VERSION,
         generated_at: now - Duration::minutes(5),
         expires_at: now + Duration::days(7),
+        sequence: 1,
         min_launcher_version: Version::parse("0.1.0").unwrap(),
         channels,
     }
@@ -85,8 +86,9 @@ fn valid_manifest_round_trips() {
     let json = serde_json::to_vec(&manifest).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    let loaded = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
-        .expect("manifest should verify");
+    let loaded =
+        Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
+            .expect("manifest should verify");
     assert_eq!(loaded, manifest);
 }
 
@@ -122,8 +124,9 @@ fn dependent_pak_with_versionreq_round_trips() {
     let json = serde_json::to_vec(&manifest).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    let loaded = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
-        .expect("manifest with dep should verify");
+    let loaded =
+        Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
+            .expect("manifest with dep should verify");
     assert_eq!(loaded, manifest);
 }
 
@@ -144,6 +147,7 @@ fn signature_made_with_wrong_key_is_rejected() {
         &trusted_keys.verify_pk,
         now,
         &current_launcher(),
+        0,
     )
     .unwrap_err();
     assert!(matches!(err, Error::SignatureInvalid), "got {err:?}");
@@ -161,8 +165,15 @@ fn payload_tampered_after_signing_is_rejected() {
     let last = tampered.last_mut().expect("json non-empty");
     *last = last.wrapping_add(1);
 
-    let err = Manifest::load_and_verify(&tampered, &sig, &keys.verify_pk, now, &current_launcher())
-        .unwrap_err();
+    let err = Manifest::load_and_verify(
+        &tampered,
+        &sig,
+        &keys.verify_pk,
+        now,
+        &current_launcher(),
+        0,
+    )
+    .unwrap_err();
     assert!(matches!(err, Error::SignatureInvalid), "got {err:?}");
 }
 
@@ -176,9 +187,15 @@ fn malformed_signature_is_rejected_before_json_parse() {
     let json = b"this is not even json".to_vec();
     let bogus_sig = "not a minisign signature";
 
-    let err =
-        Manifest::load_and_verify(&json, bogus_sig, &keys.verify_pk, now, &current_launcher())
-            .unwrap_err();
+    let err = Manifest::load_and_verify(
+        &json,
+        bogus_sig,
+        &keys.verify_pk,
+        now,
+        &current_launcher(),
+        0,
+    )
+    .unwrap_err();
     assert!(
         matches!(err, Error::SignatureMalformed(_)),
         "expected SignatureMalformed, got {err:?}"
@@ -196,7 +213,7 @@ fn expired_manifest_is_rejected_even_when_signature_is_valid() {
     let json = serde_json::to_vec(&manifest).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
+    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
         .unwrap_err();
     assert!(matches!(err, Error::Expired { .. }), "got {err:?}");
 }
@@ -211,7 +228,7 @@ fn manifest_expiring_exactly_now_is_rejected() {
     let json = serde_json::to_vec(&manifest).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
+    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
         .unwrap_err();
     assert!(matches!(err, Error::Expired { .. }), "got {err:?}");
 }
@@ -227,8 +244,9 @@ fn future_dated_generated_at_is_accepted() {
     let json = serde_json::to_vec(&manifest).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    let loaded = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
-        .expect("future generated_at should be accepted");
+    let loaded =
+        Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
+            .expect("future generated_at should be accepted");
     assert_eq!(loaded.generated_at, manifest.generated_at);
 }
 
@@ -243,7 +261,7 @@ fn launcher_older_than_min_required_is_rejected() {
     let json = serde_json::to_vec(&manifest).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
+    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
         .unwrap_err();
     assert!(matches!(err, Error::LauncherTooOld { .. }), "got {err:?}");
 }
@@ -257,7 +275,7 @@ fn launcher_at_exactly_min_required_is_accepted() {
     let json = serde_json::to_vec(&manifest).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
+    Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
         .expect("launcher at exactly min should be accepted");
 }
 
@@ -270,7 +288,7 @@ fn launcher_newer_than_min_required_is_accepted() {
     let json = serde_json::to_vec(&manifest).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
+    Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
         .expect("newer launcher should be accepted");
 }
 
@@ -285,7 +303,7 @@ fn schema_version_zero_is_rejected() {
     let json = serde_json::to_vec(&manifest).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
+    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
         .unwrap_err();
     assert!(
         matches!(
@@ -308,7 +326,7 @@ fn schema_version_two_is_rejected() {
     let json = serde_json::to_vec(&manifest).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
+    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
         .unwrap_err();
     assert!(
         matches!(
@@ -333,7 +351,7 @@ fn unparseable_json_with_valid_signature_returns_json_error() {
     let json = b"not json at all".to_vec();
     let sig = sign_blob(&json, &keys);
 
-    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
+    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
         .unwrap_err();
     assert!(matches!(err, Error::Json(_)), "got {err:?}");
 }
@@ -355,8 +373,9 @@ fn unknown_fields_are_ignored_for_forwards_compat() {
     let json = serde_json::to_vec(&value).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    let loaded = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
-        .expect("unknown fields should be ignored");
+    let loaded =
+        Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
+            .expect("unknown fields should be ignored");
     // The known fields are preserved; the unknown one is dropped.
     assert_eq!(loaded.schema_version, manifest.schema_version);
     assert_eq!(loaded.channels.len(), manifest.channels.len());
@@ -372,7 +391,57 @@ fn missing_required_field_is_a_json_error() {
     let json = serde_json::to_vec(&value).unwrap();
     let sig = sign_blob(&json, &keys);
 
-    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher())
+    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
         .unwrap_err();
     assert!(matches!(err, Error::Json(_)), "got {err:?}");
+}
+
+// ---------- sequence (replay / downgrade) ----------------------------
+
+#[test]
+fn sequence_below_floor_is_rejected() {
+    // An older, still-validly-signed, unexpired manifest replayed by an
+    // active attacker: signature and expires_at pass, but the sequence is
+    // below the highest the launcher has already accepted.
+    let now = Utc::now();
+    let keys = fresh_keys();
+    let mut manifest = sample_manifest(now);
+    manifest.sequence = 5;
+    let json = serde_json::to_vec(&manifest).unwrap();
+    let sig = sign_blob(&json, &keys);
+
+    let err = Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 6)
+        .unwrap_err();
+    assert!(
+        matches!(err, Error::SequenceTooOld { got: 5, minimum: 6 }),
+        "got {err:?}"
+    );
+}
+
+#[test]
+fn sequence_equal_to_floor_is_accepted() {
+    // Re-fetching the current manifest (same sequence) is idempotent, not
+    // a downgrade.
+    let now = Utc::now();
+    let keys = fresh_keys();
+    let mut manifest = sample_manifest(now);
+    manifest.sequence = 5;
+    let json = serde_json::to_vec(&manifest).unwrap();
+    let sig = sign_blob(&json, &keys);
+
+    Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 5)
+        .expect("equal sequence should be accepted");
+}
+
+#[test]
+fn sequence_above_floor_is_accepted() {
+    let now = Utc::now();
+    let keys = fresh_keys();
+    let mut manifest = sample_manifest(now);
+    manifest.sequence = 7;
+    let json = serde_json::to_vec(&manifest).unwrap();
+    let sig = sign_blob(&json, &keys);
+
+    Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 6)
+        .expect("newer sequence should be accepted");
 }

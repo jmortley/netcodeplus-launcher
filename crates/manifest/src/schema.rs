@@ -42,6 +42,15 @@ pub struct Manifest {
     /// captured a stale-but-signed manifest can replay it.
     pub expires_at: DateTime<Utc>,
 
+    /// Monotonic publish counter: every newly published manifest carries
+    /// a strictly higher value than the previous one. The launcher
+    /// records the highest `sequence` it has ever accepted and rejects
+    /// any manifest carrying a lower one. This closes the replay/downgrade
+    /// window that `expires_at` alone leaves open — within the expiry
+    /// window an active network attacker can otherwise serve an older,
+    /// still-validly-signed manifest to force a downgrade.
+    pub sequence: u64,
+
     /// Minimum launcher version required to interpret the manifest.
     /// A launcher older than this must refuse to apply the manifest
     /// and prompt the user to upgrade the launcher first.

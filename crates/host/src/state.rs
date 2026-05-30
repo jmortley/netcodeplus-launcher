@@ -82,6 +82,14 @@ pub struct LauncherState {
     /// resolve the player and queue them. `None` = not set.
     #[serde(default)]
     pub launcher_token: Option<String>,
+
+    /// Highest manifest `sequence` the launcher has ever accepted.
+    /// Persisted so a later run rejects any manifest carrying a lower
+    /// sequence — an active-attacker replay/downgrade of an older,
+    /// still-signed, still-unexpired manifest. Starts at 0 (first run
+    /// accepts any sequence).
+    #[serde(default)]
+    pub highest_manifest_sequence: u64,
 }
 
 fn default_channel() -> String {
@@ -101,6 +109,23 @@ impl Default for LauncherState {
             ut4stats_playerid: None,
             ut4stats_playername: None,
             launcher_token: None,
+            highest_manifest_sequence: 0,
+        }
+    }
+}
+
+impl LauncherState {
+    /// Advance the manifest replay floor to `sequence` when it exceeds the
+    /// highest previously accepted, returning `true` if the floor moved.
+    /// Call after a manifest verifies, then persist the state, so a later
+    /// run rejects any lower-sequence (replayed) manifest. A no-op for
+    /// equal or lower values.
+    pub fn record_manifest_sequence(&mut self, sequence: u64) -> bool {
+        if sequence > self.highest_manifest_sequence {
+            self.highest_manifest_sequence = sequence;
+            true
+        } else {
+            false
         }
     }
 }
@@ -160,4 +185,34 @@ pub fn write(path: &Path, state: &LauncherState) -> Result<()> {
         "wrote state file atomically"
     );
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn record_manifest_sequence_advances_only_upward() {
+        let mut state = LauncherState::default();
+        assert_eq!(state.highest_manifest_sequence, 0);
+        assert!(state.record_manifest_sequence(5));
+        assert_eq!(state.highest_manifest_sequence, 5);
+        // Equal does not advance.
+        assert!(!state.record_manifest_sequence(5));
+        assert_eq!(state.highest_manifest_sequence, 5);
+        // Lower (a replay attempt) does not advance.
+        assert!(!state.record_manifest_sequence(3));
+        assert_eq!(state.highest_manifest_sequence, 5);
+        // Higher advances the floor.
+        assert!(state.record_manifest_sequence(6));
+        assert_eq!(state.highest_manifest_sequence, 6);
+    }
+
+    #[test]
+    fn highest_manifest_sequence_defaults_to_zero_for_old_state_files() {
+        // State files written before this field existed must still load,
+        // with the floor defaulting to 0.
+        let state: LauncherState = serde_json::from_str(r#"{"channel":"stable"}"#).unwrap();
+        assert_eq!(state.highest_manifest_sequence, 0);
+    }
 }

@@ -65,4 +65,17 @@ pub enum Error {
         /// Launcher version currently running.
         current: Version,
     },
+
+    /// The manifest's `sequence` is lower than the highest the launcher
+    /// has already accepted: an attempt to replay or downgrade to an
+    /// older manifest, rejected even though its signature and
+    /// `expires_at` are still valid.
+    #[error("manifest sequence {got} is older than the last accepted sequence {minimum}")]
+    SequenceTooOld {
+        /// Sequence number carried by the manifest under test.
+        got: u64,
+        /// Highest sequence the launcher has previously accepted (the
+        /// replay floor).
+        minimum: u64,
+    },
 }

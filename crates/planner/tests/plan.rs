@@ -63,6 +63,7 @@ fn manifest_with_channel(name: &str, paks: HashMap<String, ManifestPak>) -> Mani
         schema_version: SUPPORTED_SCHEMA_VERSION,
         generated_at: Utc.with_ymd_and_hms(2026, 4, 30, 0, 0, 0).unwrap(),
         expires_at: Utc.with_ymd_and_hms(2030, 1, 1, 0, 0, 0).unwrap(),
+        sequence: 1,
         min_launcher_version: v("0.1.0"),
         channels,
     }

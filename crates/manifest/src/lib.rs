@@ -16,8 +16,9 @@
 //!    payload paired with a tampered signature never reaches
 //!    `serde_json`.
 //! 3. Parse the JSON.
-//! 4. Enforce schema version, freshness (`expires_at > now`), and
-//!    minimum-launcher invariants.
+//! 4. Enforce schema version, freshness (`expires_at > now`),
+//!    minimum-launcher, and replay-protection (`sequence >=
+//!    min_sequence`) invariants.
 
 mod error;
 mod schema;
@@ -52,12 +53,19 @@ impl Manifest {
     ///   `schema_version`.
     /// - [`Error::Expired`] if `expires_at <= now`.
     /// - [`Error::LauncherTooOld`] if a newer launcher is required.
+    /// - [`Error::SequenceTooOld`] if `sequence < min_sequence`, i.e. an
+    ///   older manifest replayed by an active attacker.
+    ///
+    /// `min_sequence` is the highest manifest `sequence` the launcher has
+    /// previously accepted (persist it across runs); pass `0` on first
+    /// run to accept any sequence.
     pub fn load_and_verify(
         json_bytes: &[u8],
         signature_text: &str,
         public_key: &PublicKey,
         now: DateTime<Utc>,
         current_launcher_version: &Version,
+        min_sequence: u64,
     ) -> Result<Self> {
         // 1. Decode and verify the signature first. Any failure here
         //    short-circuits before serde_json sees a single byte.
@@ -88,6 +96,15 @@ impl Manifest {
             return Err(Error::LauncherTooOld {
                 required: manifest.min_launcher_version.clone(),
                 current: current_launcher_version.clone(),
+            });
+        }
+        // Anti-replay / anti-downgrade: reject a manifest older than the
+        // highest sequence we have already accepted, even though its
+        // signature and `expires_at` still check out.
+        if manifest.sequence < min_sequence {
+            return Err(Error::SequenceTooOld {
+                got: manifest.sequence,
+                minimum: min_sequence,
             });
         }
 
