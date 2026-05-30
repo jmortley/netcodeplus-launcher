@@ -30,24 +30,27 @@
         <span id="version" class="version" aria-label="Launcher version">…</span>
       </header>
 
-      <section>
-        <h2>UT4 Install</h2>
+      <nav class="tabs">
+        <button class="tab active" type="button" data-tab="launch">Launch</button>
+        <button class="tab" type="button" data-tab="stats">Stats</button>
+        <button class="tab" type="button" data-tab="config">Config</button>
+        <button class="tab" type="button" data-tab="community">Community</button>
+      </nav>
+
+      <section id="tab-launch" class="tab-panel active">
         <div id="install-status" class="status">Detecting…</div>
         <button id="pick-dir" type="button">Pick install folder</button>
       </section>
 
-      <section>
-        <h2>Player Stats</h2>
+      <section id="tab-stats" class="tab-panel">
         <div id="stats-panel" class="status">…</div>
       </section>
 
-      <section>
-        <h2>Performance Config</h2>
+      <section id="tab-config" class="tab-panel">
         <div id="config-panel" class="status">…</div>
       </section>
 
-      <section>
-        <h2>Community</h2>
+      <section id="tab-community" class="tab-panel">
         <div class="status">
           <div id="pug-controls"></div>
           <p>Or chat with the community on Discord.</p>

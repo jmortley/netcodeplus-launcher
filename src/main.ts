@@ -614,7 +614,7 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
 
   const masterWarning = cfg.master_server_ok
     ? ""
-    : `<div class="warn">⚠ Master-server config is missing from your <code>Engine.ini</code> — you won't see community servers in the browser.
+    : `<div class="alert">⚠ Your master-server config is MISSING from <code>Engine.ini</code> — UT4 can't log you in or reach any online server until it's restored. Fix this before launching.
         <button id="cfg-fix-mcp" type="button">Restore master server</button></div>`;
 
   const t = cfg.tweaks;
@@ -696,6 +696,20 @@ async function repairMasterServer() {
     console.error("repair_master_server failed:", err);
   }
 }
+
+// ---- tabs ------------------------------------------------------------------
+
+document.querySelectorAll<HTMLButtonElement>(".tab").forEach((btn) => {
+  btn.addEventListener("click", () => {
+    const name = btn.dataset.tab;
+    document
+      .querySelectorAll<HTMLElement>(".tab")
+      .forEach((b) => b.classList.toggle("active", b === btn));
+    document
+      .querySelectorAll<HTMLElement>(".tab-panel")
+      .forEach((p) => p.classList.toggle("active", p.id === `tab-${name}`));
+  });
+});
 
 pickButton.addEventListener("click", () => void pickDir());
 void showVersion();

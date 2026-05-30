@@ -334,6 +334,55 @@ footer {
   margin: 0;
   padding: 0;
 }
+
+/* ---- tabs ---- */
+
+.tabs {
+  display: flex;
+  gap: 0.25rem;
+  margin-bottom: 1.25rem;
+  border-bottom: 1px solid #2a2d33;
+}
+
+.tab {
+  background: none;
+  color: #999;
+  margin: 0;
+  padding: 0.5rem 0.9rem;
+  border-radius: 6px 6px 0 0;
+  font-size: 0.9rem;
+  border-bottom: 2px solid transparent;
+}
+
+.tab:hover {
+  background: rgba(255, 255, 255, 0.05);
+  color: #e6e6e6;
+}
+
+.tab.active {
+  color: #fff;
+  border-bottom-color: #2563eb;
+  background: rgba(37, 99, 235, 0.12);
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+/* Critical alert (e.g. wiped master-server config) — louder than .warn. */
+.alert {
+  color: #fecaca;
+  background: rgba(220, 38, 38, 0.15);
+  border: 1px solid rgba(248, 113, 113, 0.5);
+  border-radius: 6px;
+  padding: 0.75rem;
+  margin-bottom: 0.75rem;
+  font-weight: 600;
+}
 #join-utpugs {
   background: #5865f2;
 }
