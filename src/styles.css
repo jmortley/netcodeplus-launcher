@@ -391,6 +391,15 @@ footer {
   padding: 1.5rem 1rem 1rem;
 }
 
+.play-hero {
+  height: 190px;
+  margin-bottom: 1.1rem;
+  border-radius: 8px;
+  background: url("/backgrounds/skaarj.jpg") center 30% / cover no-repeat;
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  box-shadow: inset 0 -55px 45px -30px rgba(20, 23, 30, 0.95);
+}
+
 .play-title {
   font-size: 1.7rem;
   font-weight: 700;

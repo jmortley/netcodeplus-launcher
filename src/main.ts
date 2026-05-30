@@ -142,6 +142,7 @@ function renderLaunch() {
   if (state.installs.length === 0) {
     launchPanel.innerHTML = `
       <div class="play-card">
+        <div class="play-hero"></div>
         <div class="play-title">Unreal Tournament</div>
         <p class="warn">No install detected.</p>
         <p>Don't have the game yet? Get it from the UT4Ever installer, then reopen the launcher.</p>
@@ -156,6 +157,7 @@ function renderLaunch() {
   const di = state.installs[state.selInstall];
   launchPanel.innerHTML = `
     <div class="play-card">
+      <div class="play-hero"></div>
       <div class="play-title">Unreal Tournament</div>
       <div class="play-sub">${netcodeplusBadge(di.netcodeplus)}</div>
       <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;Launch</button>
