@@ -321,27 +321,23 @@ fn master_server_intact(text: &str) -> bool {
     })
 }
 
-/// Ensure all `[OnlineSubsystemMcp.*]` sections exist and point at the
-/// community master server, repairing the known wipe bug. Returns whether a
-/// change was needed. Backs the ini up once before writing.
+/// Silently ensure all `[OnlineSubsystemMcp.*]` sections exist and point at
+/// the community master server, repairing the known wipe bug (which
+/// otherwise breaks login *and* the server browser entirely). Returns
+/// whether a change was made. Purely additive — it only writes back the
+/// seven master-server sections — so it takes no backup and is safe to run
+/// automatically on every launch. A missing ini (game never run) is a no-op.
 ///
 /// # Errors
-/// [`ConfigError::IniNotFound`] if the ini does not exist, or
 /// [`ConfigError::Io`] on a filesystem error.
 pub fn repair_master_server(ini: &Path) -> ConfigResult<bool> {
     let text = match std::fs::read_to_string(ini) {
         Ok(t) => t,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err(ConfigError::IniNotFound(ini.to_path_buf()))
-        }
+        Err(e) if e.kind() == ErrorKind::NotFound => return Ok(false),
         Err(e) => return Err(e.into()),
     };
     if master_server_intact(&text) {
         return Ok(false);
-    }
-    let backup = backup_path(ini);
-    if !backup.exists() {
-        write_atomic(&backup, &text)?;
     }
     let mut file = IniFile::parse(&text);
     for name in MCP_SECTIONS {

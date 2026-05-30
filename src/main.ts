@@ -463,6 +463,7 @@ async function loadAll() {
     state.presets = presets;
     state.selInstall = 0;
     applyPrefs(prefs);
+    void autoFixMasterServer();
     render();
     renderStats();
     renderPug();
@@ -612,14 +613,8 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
     ? `<div class="ok">✓ UT4-OpenAL detected — its audio module will be enabled.</div>`
     : `<p class="src">OpenAL not detected — get <button id="get-openal" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio. The audio override is skipped without it.</p>`;
 
-  const masterWarning = cfg.master_server_ok
-    ? ""
-    : `<div class="alert">⚠ Your master-server config is MISSING from <code>Engine.ini</code> — UT4 can't log you in or reach any online server until it's restored. Fix this before launching.
-        <button id="cfg-fix-mcp" type="button">Restore master server</button></div>`;
-
   const t = cfg.tweaks;
   configPanel.innerHTML = `
-    ${masterWarning}
     <p>Competitive graphics: high FPS, still readable. Your <code>Engine.ini</code> is backed up before the first apply; online and login settings are left untouched.</p>
     <p class="src">Note: <code>net.AllowAsyncLoading=0</code> loads into maps faster but can cause issues in Blitz (flag run).</p>
     <div class="controls">
@@ -643,7 +638,6 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
   );
   document.getElementById("cfg-apply")?.addEventListener("click", () => void applyConfig(openal));
   document.getElementById("cfg-restore")?.addEventListener("click", () => void restoreConfig());
-  document.getElementById("cfg-fix-mcp")?.addEventListener("click", () => void repairMasterServer());
 
   if (flash) {
     const s = document.getElementById("cfg-status");
@@ -681,19 +675,15 @@ async function restoreConfig() {
   }
 }
 
-async function repairMasterServer() {
+async function autoFixMasterServer() {
+  // Silent on startup: the known UT4 bug wipes the master-server config,
+  // which breaks login and the server browser entirely. Repair it without
+  // bothering the user (a launcher should just work) — only log if we did.
   try {
     const changed = await invoke<boolean>("repair_master_server");
-    await renderConfig({
-      text: changed
-        ? "Master-server config restored. Restart UT4 to reconnect."
-        : "Master-server config was already intact.",
-      cls: "ok",
-    });
+    if (changed) console.info("Restored missing master-server config in Engine.ini.");
   } catch (err) {
-    const s = document.getElementById("cfg-status");
-    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
-    console.error("repair_master_server failed:", err);
+    console.error("master-server auto-repair failed:", err);
   }
 }
 
