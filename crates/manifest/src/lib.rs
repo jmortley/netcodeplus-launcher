@@ -30,7 +30,7 @@ use tracing::debug;
 
 pub use crate::error::{Error, Result};
 pub use crate::schema::{
-    Channel, HexError, Manifest, ManifestPak, Sha256Digest, SUPPORTED_SCHEMA_VERSION,
+    Channel, HexError, Manifest, ManifestPak, PluginEntry, Sha256Digest, SUPPORTED_SCHEMA_VERSION,
 };
 
 impl Manifest {

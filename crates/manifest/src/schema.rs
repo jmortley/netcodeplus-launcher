@@ -72,6 +72,52 @@ pub struct Channel {
     /// what the launcher uses to track a logical pak across filename
     /// changes.
     pub paks: HashMap<String, ManifestPak>,
+
+    /// The NetcodePlus plugin build for this channel, if the channel ships
+    /// one. `None` (the default, for back-compat with manifests authored
+    /// before plugin support) means the channel offers no plugin update and
+    /// the launcher leaves any installed plugin untouched.
+    ///
+    /// The plugin is a *folder* (`.uplugin` + `Binaries/`), distributed as a
+    /// zip and extracted into `<root>/UnrealTournament/Plugins/NetcodePlus/`,
+    /// so it is modelled separately from the single-file [`ManifestPak`]s —
+    /// notably it carries an integer [`PluginEntry::version`] rather than a
+    /// semver one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub plugin: Option<PluginEntry>,
+}
+
+/// The NetcodePlus plugin build advertised by a [`Channel`].
+///
+/// Distributed as a zip of the plugin folder and verified against
+/// [`Self::sha256`] before extraction — the download URL is **untrusted**,
+/// integrity comes from the signed manifest. The update decision is
+/// hash-based (install when the installed zip's digest differs from this
+/// one), matching how paks are handled; [`Self::version`] is the human-facing
+/// build number used for display and as a downgrade guard.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PluginEntry {
+    /// Monotonic plugin build number (the project's single-incrementing
+    /// version, e.g. `324` — matching the compile-time `NETCODE_PLUGIN_VERSION`
+    /// the plugin uses for compatibility gating). Not semver: the plugin has
+    /// always been versioned as one increasing integer.
+    pub version: u32,
+
+    /// HTTPS URL the plugin zip can be downloaded from.
+    ///
+    /// **Untrusted** — integrity comes from [`Self::sha256`] inside the signed
+    /// manifest, never from TLS or the host's reputation.
+    pub url: String,
+
+    /// SHA-256 digest of the plugin **zip** bytes. The launcher refuses to
+    /// extract a download whose bytes do not produce this digest, and treats a
+    /// mismatch between this and the recorded installed digest as "update
+    /// available".
+    pub sha256: Sha256Digest,
+
+    /// Declared size of the zip in bytes. A download whose length differs
+    /// should be aborted before hashing (cheap resource-exhaustion guard).
+    pub size_bytes: u64,
 }
 
 /// A single pak entry within a [`Channel`].
@@ -291,5 +337,51 @@ mod tests {
         let d = Sha256Digest::from_bytes([0u8; 32]);
         let s = format!("{d:?}");
         assert!(s.contains("00000000"), "got: {s}");
+    }
+
+    #[test]
+    fn channel_without_plugin_field_parses() {
+        // Back-compat: a channel authored before plugin support (no `plugin`
+        // key) must deserialise with `plugin: None`.
+        let json = r#"{ "paks": {} }"#;
+        let ch: Channel = serde_json::from_str(json).unwrap();
+        assert!(ch.plugin.is_none());
+    }
+
+    #[test]
+    fn channel_with_plugin_round_trips_with_integer_version() {
+        let json = r#"{
+            "paks": {},
+            "plugin": {
+                "version": 324,
+                "url": "https://example.invalid/NetcodePlus-324.zip",
+                "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "size_bytes": 1048576
+            }
+        }"#;
+        let ch: Channel = serde_json::from_str(json).unwrap();
+        let plugin = ch.plugin.expect("plugin entry present");
+        assert_eq!(plugin.version, 324);
+        assert_eq!(plugin.size_bytes, 1_048_576);
+
+        // Round-trips back to JSON and re-parses identically.
+        let reparsed: Channel = serde_json::from_str(&serde_json::to_string(&ch).unwrap()).unwrap();
+        assert_eq!(reparsed, ch);
+    }
+
+    #[test]
+    fn plugin_rejects_non_integer_version() {
+        // The plugin version is a single incrementing integer, not semver — a
+        // "2.0"-style string must be rejected.
+        let json = r#"{
+            "paks": {},
+            "plugin": {
+                "version": "2.0",
+                "url": "https://example.invalid/x.zip",
+                "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "size_bytes": 1
+            }
+        }"#;
+        assert!(serde_json::from_str::<Channel>(json).is_err());
     }
 }
