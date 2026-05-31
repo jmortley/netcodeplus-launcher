@@ -60,6 +60,41 @@ pub struct Manifest {
     /// contents. A launcher chooses one channel at runtime and ignores
     /// the others.
     pub channels: HashMap<String, Channel>,
+
+    /// The latest launcher build, if the manifest advertises one. Top-level
+    /// (one launcher for everyone), not per-channel. `None` (the default, for
+    /// back-compat with manifests authored before launcher-update support)
+    /// means "no launcher update info" and the launcher shows nothing.
+    ///
+    /// Used for **notify-only** self-update: the launcher compares its own
+    /// version to [`LauncherEntry::version`] and, if older, surfaces a banner
+    /// linking to [`LauncherEntry::url`] for the user to download and run
+    /// themselves. There is no in-place exe swap (which would require code
+    /// signing to avoid AV/SmartScreen quarantine).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher: Option<LauncherEntry>,
+}
+
+/// The latest launcher build advertised by a [`Manifest`].
+///
+/// Notify-only: this carries just enough to tell the user a newer launcher
+/// exists and where to get it. It deliberately has **no `sha256`** — the
+/// launcher does not download or verify its own replacement here (the user
+/// fetches it through the normal release page, same trust path as their first
+/// install). A future in-place self-update would add a verified-download field
+/// set, gated on code signing.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct LauncherEntry {
+    /// Latest launcher version. The launcher compares this to its own
+    /// `CARGO_PKG_VERSION`; a strictly greater value means an update is
+    /// available. Semver (the launcher itself is semver-versioned, unlike the
+    /// integer-versioned plugin).
+    pub version: Version,
+
+    /// HTTPS URL the user is sent to in order to download the new launcher
+    /// (e.g. a GitHub release page). Opened in the user's browser via the
+    /// opener plugin; never auto-executed.
+    pub url: String,
 }
 
 /// One update channel inside a [`Manifest`].
@@ -367,6 +402,43 @@ mod tests {
         // Round-trips back to JSON and re-parses identically.
         let reparsed: Channel = serde_json::from_str(&serde_json::to_string(&ch).unwrap()).unwrap();
         assert_eq!(reparsed, ch);
+    }
+
+    #[test]
+    fn manifest_without_launcher_field_parses() {
+        // Back-compat: a manifest authored before launcher-update support (no
+        // top-level `launcher` key) must deserialise with `launcher: None`.
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-05-31T00:00:00Z",
+            "expires_at": "2027-05-31T00:00:00Z",
+            "sequence": 1,
+            "min_launcher_version": "0.1.0",
+            "channels": {}
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert!(m.launcher.is_none());
+    }
+
+    #[test]
+    fn manifest_with_launcher_round_trips() {
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-05-31T00:00:00Z",
+            "expires_at": "2027-05-31T00:00:00Z",
+            "sequence": 2,
+            "min_launcher_version": "0.1.0",
+            "channels": {},
+            "launcher": {
+                "version": "0.2.0",
+                "url": "https://github.com/jmortley/netcodeplus-launcher/releases/tag/v0.2.0"
+            }
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let launcher = m.launcher.as_ref().expect("launcher entry present");
+        assert_eq!(launcher.version, semver::Version::new(0, 2, 0));
+        let reparsed: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(reparsed, m);
     }
 
     #[test]
