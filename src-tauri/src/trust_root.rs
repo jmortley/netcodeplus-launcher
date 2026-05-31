@@ -26,9 +26,9 @@ pub const PUBLIC_KEY_B64: &str = "RWSBsJd2OGt1NABcQTevaMe6jyptpP+DaGtAVVJwXSG2rk
 /// [`trust_root_parses`], so a failure here means the constant was edited to an
 /// invalid value and is caught by that test before shipping.
 ///
-/// Consumed by the update-verification command (F1, not yet wired) which passes
-/// it to [`ncp_manifest::Manifest::load_and_verify`].
-#[allow(dead_code)] // wired in by F1 (fetch_and_verify_manifest)
+/// Consumed by the update-verification command
+/// ([`crate::updates::fetch_and_verify_manifest`]) which passes it to
+/// [`ncp_manifest::Manifest::load_and_verify`].
 pub fn public_key() -> PublicKey {
     PublicKey::from_base64(PUBLIC_KEY_B64)
         .expect("compiled-in trust-root public key must be valid base64 minisign key")

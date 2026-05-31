@@ -2524,10 +2524,13 @@ dependencies = [
 name = "netcodeplus-launcher"
 version = "0.1.0"
 dependencies = [
+ "chrono",
  "keyring",
  "minisign-verify",
  "ncp-host",
+ "ncp-manifest",
  "ncp-net",
+ "semver",
  "serde",
  "serde_json",
  "tauri",

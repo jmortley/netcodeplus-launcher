@@ -8,6 +8,7 @@
 mod auth;
 mod commands;
 mod trust_root;
+mod updates;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -41,6 +42,7 @@ pub fn run() {
             auth::ut4_auth_status,
             auth::ut4_logout,
             auth::ut4_prepare_launch,
+            updates::fetch_and_verify_manifest,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
