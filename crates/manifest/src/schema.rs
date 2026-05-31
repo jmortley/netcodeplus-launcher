@@ -360,7 +360,7 @@ mod tests {
             }
         }"#;
         let ch: Channel = serde_json::from_str(json).unwrap();
-        let plugin = ch.plugin.expect("plugin entry present");
+        let plugin = ch.plugin.as_ref().expect("plugin entry present");
         assert_eq!(plugin.version, 324);
         assert_eq!(plugin.size_bytes, 1_048_576);
 

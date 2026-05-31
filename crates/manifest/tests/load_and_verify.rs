@@ -64,7 +64,7 @@ fn sample_manifest(now: DateTime<Utc>) -> Manifest {
     );
 
     let mut channels = HashMap::new();
-    channels.insert("stable".to_string(), Channel { paks });
+    channels.insert("stable".to_string(), Channel { paks, plugin: None });
 
     Manifest {
         schema_version: SUPPORTED_SCHEMA_VERSION,

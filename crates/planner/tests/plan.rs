@@ -58,7 +58,7 @@ fn make_pak_with_deps(
 
 fn manifest_with_channel(name: &str, paks: HashMap<String, ManifestPak>) -> Manifest {
     let mut channels = HashMap::new();
-    channels.insert(name.to_string(), Channel { paks });
+    channels.insert(name.to_string(), Channel { paks, plugin: None });
     Manifest {
         schema_version: SUPPORTED_SCHEMA_VERSION,
         generated_at: Utc.with_ymd_and_hms(2026, 4, 30, 0, 0, 0).unwrap(),
