@@ -37,6 +37,7 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "linux-
 ncp-host = { path = "../crates/host" }
 ncp-net = { path = "../crates/net" }
 ncp-manifest = { path = "../crates/manifest" }
+ncp-planner = { path = "../crates/planner" }
 
 # Verifies update-manifest signatures against the compiled-in trust root
 # (src/trust_root.rs). Same version the manifest crate uses, so the PublicKey

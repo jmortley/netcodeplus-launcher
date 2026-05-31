@@ -2530,6 +2530,7 @@ dependencies = [
  "ncp-host",
  "ncp-manifest",
  "ncp-net",
+ "ncp-planner",
  "semver",
  "serde",
  "serde_json",
