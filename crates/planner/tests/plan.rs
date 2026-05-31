@@ -66,6 +66,7 @@ fn manifest_with_channel(name: &str, paks: HashMap<String, ManifestPak>) -> Mani
         sequence: 1,
         min_launcher_version: v("0.1.0"),
         channels,
+        launcher: None,
     }
 }
 
