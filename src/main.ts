@@ -943,7 +943,8 @@ interface GameServerEntry {
 }
 
 // A hub lobby (UTLobbyGameMode, or a session sitting on the UT-Entry menu map)
-// is not a live match — we filter these out and show only games in progress.
+// has no live match of its own; its matches advertise as separate sessions and
+// are grouped back under the hub by shared IP (see renderServerList).
 function isLobby(s: GameServerEntry): boolean {
   return (
     /lobby/i.test(s.attributes?.GAMEMODE_s ?? "") ||
@@ -1012,77 +1013,142 @@ async function renderServers() {
   renderServerList();
 }
 
+// Live player count for a session (in-game players for an instance, lobby
+// occupancy for a hub).
+function srvPlayers(s: GameServerEntry): number {
+  return Number(s.totalPlayers ?? s.attributes?.UT_PLAYERONLINE_i ?? 0) || 0;
+}
+
+// A session has a real, connectable address.
+function srvHasAddr(s: GameServerEntry): boolean {
+  return !!s.serverAddress && s.serverAddress !== "0.0.0.0" && !!s.serverPort;
+}
+
 // Render from the cached list, so the "show empty" toggle re-filters without a
-// re-fetch. Shows hubs (lobbies) and live matches together; matches are tagged
-// with the hub they're running on (resolved via UT_HUBGUID_s).
+// re-fetch. Groups every live match under its parent hub — like the Hubs tab on
+// ut4.timiimit.com. A match links to its hub by shared IP first (the reliable
+// signal — UT_HUBGUID_s on an instance rarely equals its hub's advertised GUID),
+// then by UT_HUBGUID_s as a fallback; matches that resolve to no listed hub fall
+// into a standalone "Other matches" group.
 function renderServerList() {
-  // hub GUID -> human hub name, so a match can show "on <hub>".
-  const hubNames = new Map<string, string>();
-  for (const s of serverCache) {
-    const guid = s.attributes?.UT_HUBGUID_s;
-    if (isLobby(s) && guid) {
-      hubNames.set(guid, s.attributes?.UT_SERVERNAME_s || s.serverName || "Hub");
+  const hubs = serverCache.filter((s) => isLobby(s) && srvHasAddr(s));
+  const instances = serverCache.filter((s) => !isLobby(s) && srvHasAddr(s));
+
+  // Index hubs for instance->hub resolution: by IP (primary) and GUID (fallback).
+  const hubByIp = new Map<string, GameServerEntry>();
+  const hubByGuid = new Map<string, GameServerEntry>();
+  for (const h of hubs) {
+    const ip = h.serverAddress ?? "";
+    if (ip && !hubByIp.has(ip)) hubByIp.set(ip, h);
+    const guid = h.attributes?.UT_HUBGUID_s;
+    if (guid) hubByGuid.set(String(guid), h);
+  }
+
+  // Bucket each instance under its hub; leftovers are standalone.
+  const childrenOf = new Map<GameServerEntry, GameServerEntry[]>();
+  const standalone: GameServerEntry[] = [];
+  for (const inst of instances) {
+    const guid = inst.attributes?.UT_HUBGUID_s;
+    const hub =
+      (inst.serverAddress ? hubByIp.get(inst.serverAddress) : undefined) ??
+      (guid ? hubByGuid.get(String(guid)) : undefined);
+    if (hub) {
+      const arr = childrenOf.get(hub) ?? [];
+      arr.push(inst);
+      childrenOf.set(hub, arr);
+    } else {
+      standalone.push(inst);
     }
   }
 
-  const rows = serverCache
-    .map((s) => {
-      const hub = isLobby(s);
-      return {
-        hub,
-        name: s.attributes?.UT_SERVERNAME_s || s.serverName || (hub ? "Hub" : "Live match"),
-        onHub: hub ? "" : (hubNames.get(s.attributes?.UT_HUBGUID_s ?? "") ?? ""),
-        map: s.attributes?.MAPNAME_s ?? "",
-        mode: prettyMode(s.attributes?.GAMEMODE_s ?? ""),
-        matches: s.attributes?.UT_NUMMATCHES_i ?? 0,
-        stateText: matchState(s.attributes?.UT_MATCHSTATE_s),
-        players: s.totalPlayers ?? s.attributes?.UT_PLAYERONLINE_i ?? 0,
-        max: s.attributes?.UT_MAXPLAYERS_i ?? s.maxPublicPlayers ?? 0,
-        trust: s.attributes?.UT_SERVERTRUSTLEVEL_i,
-        ip: s.serverAddress ?? "",
-        port: s.serverPort ?? 7777,
-      };
-    })
-    .filter((r) => !!r.ip && r.ip !== "0.0.0.0" && !!r.port && (serversShowEmpty || r.players > 0))
-    // Live matches first, then hubs; busiest first within each group.
-    .sort((a, b) => Number(a.hub) - Number(b.hub) || b.players - a.players);
-
-  const cards = rows
-    .map((r, i) => {
-      const badge = r.hub
-        ? `<span class="ok" style="font-size:0.78em;border:1px solid currentColor;border-radius:3px;padding:0 4px;margin-right:6px">HUB</span>`
-        : "";
-      const sub = r.hub
-        ? `Hub · ${r.matches} match${r.matches === 1 ? "" : "es"} · ${r.players}/${r.max} in lobby`
-        : `${escape(r.mode)}${r.map ? ` · ${escape(r.map)}` : ""} · ${r.players}/${r.max} players` +
-          (r.stateText ? ` · ${r.stateText}` : "") +
-          (r.onHub ? ` · on ${escape(r.onHub)}` : "");
-      return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid rgba(255,255,255,0.08)">
-        <div style="min-width:0">
-          <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${badge}${escape(r.name)} &nbsp;${trustLabel(r.trust)}</div>
-          <div class="src">${sub}</div>
-        </div>
+  // A nested live-match row (mode · map · players · state) with connect actions.
+  const matchRow = (s: GameServerEntry): string => {
+    const server = `${s.serverAddress}:${s.serverPort}`;
+    const p = srvPlayers(s);
+    const max = Number(s.attributes?.UT_MAXPLAYERS_i ?? s.maxPublicPlayers ?? 0);
+    const mode = prettyMode(String(s.attributes?.GAMEMODE_s ?? ""));
+    const map = String(s.attributes?.MAPNAME_s ?? "");
+    const st = matchState(s.attributes?.UT_MATCHSTATE_s);
+    const sub =
+      `${escape(mode || "match")}${map ? ` · ${escape(map)}` : ""} · ${p}/${max} players` +
+      (st ? ` · ${st}` : "");
+    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 2px 7px 16px;border-bottom:1px solid rgba(255,255,255,0.06)">
+        <div class="src" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sub}</div>
         <span style="flex:none;display:flex;gap:6px">
-          ${r.hub ? "" : `<button class="server-spectate" type="button" data-i="${i}">Spectate</button>`}
-          <button class="server-join" type="button" data-i="${i}">Join</button>
+          <button class="server-spectate" type="button" data-server="${escape(server)}">Spectate</button>
+          <button class="server-join" type="button" data-server="${escape(server)}">Join</button>
         </span>
       </div>`;
+  };
+
+  // A hub block: header (name, trust, live-match count, lobby occupancy) plus its
+  // nested matches. The header's Join button enters the hub lobby itself.
+  const hubBlock = (h: GameServerEntry): string => {
+    const kids = (childrenOf.get(h) ?? [])
+      .filter((s) => serversShowEmpty || srvPlayers(s) > 0)
+      .sort((a, b) => srvPlayers(b) - srvPlayers(a));
+    const name = String(h.attributes?.UT_SERVERNAME_s || h.serverName || "Hub");
+    const server = `${h.serverAddress}:${h.serverPort}`;
+    const lobby = srvPlayers(h);
+    const live = kids.length;
+    const header = `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid rgba(255,255,255,0.12)">
+        <div style="min-width:0">
+          <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="ok" style="font-size:0.78em;border:1px solid currentColor;border-radius:3px;padding:0 4px;margin-right:6px">HUB</span>${escape(name)} &nbsp;${trustLabel(h.attributes?.UT_SERVERTRUSTLEVEL_i)}</div>
+          <div class="src">${live} live match${live === 1 ? "" : "es"} · ${lobby} in lobby</div>
+        </div>
+        <span style="flex:none"><button class="server-join" type="button" data-server="${escape(server)}">Join hub</button></span>
+      </div>`;
+    const body = kids.length
+      ? kids.map(matchRow).join("")
+      : `<div class="src" style="padding:7px 2px 7px 16px">No live matches right now.</div>`;
+    return `<div style="margin-bottom:6px">${header}${body}</div>`;
+  };
+
+  // Show a hub if it has live matches, lobby players, or the toggle is on.
+  const visibleHubs = hubs
+    .filter((h) => {
+      const kids = childrenOf.get(h) ?? [];
+      return serversShowEmpty || srvPlayers(h) > 0 || kids.some((s) => srvPlayers(s) > 0);
     })
-    .join("");
+    .sort((a, b) => {
+      const act = (h: GameServerEntry) =>
+        (childrenOf.get(h) ?? []).reduce((n, s) => n + srvPlayers(s), 0) + srvPlayers(h);
+      return act(b) - act(a);
+    });
+
+  const visibleStandalone = standalone
+    .filter((s) => serversShowEmpty || srvPlayers(s) > 0)
+    .sort((a, b) => srvPlayers(b) - srvPlayers(a));
+
+  const liveMatchCount =
+    visibleHubs.reduce(
+      (n, h) => n + (childrenOf.get(h) ?? []).filter((s) => srvPlayers(s) > 0).length,
+      0,
+    ) + visibleStandalone.filter((s) => srvPlayers(s) > 0).length;
+
+  const sections: string[] = visibleHubs.map(hubBlock);
+  if (visibleStandalone.length) {
+    sections.push(
+      `<div style="margin-bottom:6px"><div class="src" style="padding:9px 2px;border-bottom:1px solid rgba(255,255,255,0.12);font-weight:600">Other matches</div>${visibleStandalone
+        .map(matchRow)
+        .join("")}</div>`,
+    );
+  }
+  const body = sections.join("");
 
   const hint = state.ut4?.logged_in
     ? ""
     : ` · <span class="warn">sign in on the Launch tab to join</span>`;
   serversPanel.innerHTML = `
     <div class="controls" style="justify-content:space-between;align-items:center">
-      <span>${rows.length} shown${hint}</span>
+      <span>${visibleHubs.length} hub${visibleHubs.length === 1 ? "" : "s"} · ${liveMatchCount} live match${liveMatchCount === 1 ? "" : "es"}${hint}</span>
       <span style="display:flex;align-items:center;gap:12px">
         <label style="font-weight:normal;display:flex;align-items:center;gap:5px"><input type="checkbox" id="servers-empty"${serversShowEmpty ? " checked" : ""}/> show empty</label>
         <button id="servers-refresh" type="button">Refresh</button>
       </span>
     </div>
     <div style="max-height:60vh;overflow:auto">${
-      cards || `<p>No ${serversShowEmpty ? "servers online" : "live matches or populated hubs"} right now.</p>`
+      body || `<p>No ${serversShowEmpty ? "servers online" : "live matches or populated hubs"} right now.</p>`
     }</div>
     <div id="servers-status" class="launch-status"></div>`;
 
@@ -1093,19 +1159,15 @@ function renderServerList() {
   });
   serversPanel.querySelectorAll<HTMLButtonElement>(".server-join").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const r = rows[Number(btn.dataset.i)];
-      if (r) void connectTo(`${r.ip}:${r.port}`, "", document.getElementById("servers-status"));
+      const server = btn.dataset.server;
+      if (server) void connectTo(server, "", document.getElementById("servers-status"));
     });
   });
   serversPanel.querySelectorAll<HTMLButtonElement>(".server-spectate").forEach((btn) => {
     btn.addEventListener("click", () => {
-      const r = rows[Number(btn.dataset.i)];
-      if (r)
-        void connectTo(
-          `${r.ip}:${r.port}?SpectatorOnly=1`,
-          "",
-          document.getElementById("servers-status"),
-        );
+      const server = btn.dataset.server;
+      if (server)
+        void connectTo(`${server}?SpectatorOnly=1`, "", document.getElementById("servers-status"));
     });
   });
 }
