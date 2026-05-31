@@ -859,26 +859,61 @@ async function connectToPug(server: string, password: string) {
   await connectTo(server, password, document.getElementById("pug-status"));
 }
 
-// Spectate the current live PUG (any game — you don't have to be in it). Asks
-// the bot for the live server, then connects with ?SpectatorOnly=1 so a
-// spectator never takes a player slot.
+interface SpectatePug {
+  pug_id: number;
+  server: string;
+  password: string;
+  mode?: string;
+  map?: string;
+}
+
+// Spectate a live PUG (any game — you don't have to be in it). Asks the bot for
+// the live PUGs; connects directly if there's one, shows a picker if several.
+// Connects with ?SpectatorOnly=1 so a spectator never takes a player slot.
 async function spectate() {
   const status = document.getElementById("pug-status");
-  if (status) status.textContent = "Finding a live game…";
-  let st: { state: string; server?: string; password?: string };
+  if (status) status.textContent = "Finding live games…";
+  let st: { state: string; pugs?: SpectatePug[] };
   try {
     st = JSON.parse(await invoke<string>("pug_spectate", { token: state.launcherToken ?? "" }));
   } catch (err) {
     if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
     return;
   }
-  if (st.state !== "live" || !st.server) {
+  const pugs = st.pugs ?? [];
+  if (st.state !== "live" || pugs.length === 0) {
     if (status) status.textContent = "No live PUG to spectate right now.";
     return;
   }
-  const target = st.password
-    ? `${st.server}?Password=${st.password}?SpectatorOnly=1`
-    : `${st.server}?SpectatorOnly=1`;
+  if (pugs.length === 1) {
+    await spectatePug(pugs[0], status);
+    return;
+  }
+  // Multiple live games — let the user pick.
+  if (status) {
+    status.innerHTML =
+      `<div>${pugs.length} live games — pick one to spectate:</div>` +
+      `<div class="discord-btns">${pugs
+        .map(
+          (p, i) =>
+            `<button class="spec-pick" type="button" data-i="${i}">${escape(p.mode || "PUG")}${
+              p.map ? ` · ${escape(p.map)}` : ""
+            } · #${p.pug_id}</button>`,
+        )
+        .join("")}</div>`;
+    status.querySelectorAll<HTMLButtonElement>(".spec-pick").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const p = pugs[Number(btn.dataset.i)];
+        if (p) void spectatePug(p, status);
+      });
+    });
+  }
+}
+
+async function spectatePug(p: SpectatePug, status: HTMLElement | null) {
+  const target = p.password
+    ? `${p.server}?Password=${p.password}?SpectatorOnly=1`
+    : `${p.server}?SpectatorOnly=1`;
   await connectTo(target, "", status);
 }
 
