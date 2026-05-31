@@ -7,6 +7,7 @@
 
 mod auth;
 mod commands;
+mod trust_root;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {

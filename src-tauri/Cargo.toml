@@ -37,3 +37,8 @@ keyring = { version = "3", features = ["apple-native", "windows-native", "linux-
 ncp-host = { path = "../crates/host" }
 ncp-net = { path = "../crates/net" }
 
+# Verifies update-manifest signatures against the compiled-in trust root
+# (src/trust_root.rs). Same version the manifest crate uses, so the PublicKey
+# type matches across the F1 verification path.
+minisign-verify = { workspace = true }
+

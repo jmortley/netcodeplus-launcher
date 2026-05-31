@@ -2525,6 +2525,7 @@ name = "netcodeplus-launcher"
 version = "0.1.0"
 dependencies = [
  "keyring",
+ "minisign-verify",
  "ncp-host",
  "ncp-net",
  "serde",
