@@ -52,13 +52,22 @@ interface PlayerSummary {
   totals: { games: number; kills: number; deaths: number; kd: number; damage: number };
   accuracy: Record<string, number | null>;
   ratings: { mode: string; rating: number; rd: number; games: number; last_played: string | null }[];
-  recent: { mode: string; map: string; server: string; played_at: string; result: string; delta: number }[];
+  recent: {
+    mode: string;
+    map: string;
+    server: string;
+    played_at: string;
+    result: string;
+    delta: number;
+    match_id: number | null;
+  }[];
 }
 
 interface EngineTweaks {
   frame_rate_cap: number;
   smooth_frame_rate: boolean;
   display_gamma: number;
+  allow_async_loading: boolean;
 }
 
 interface ConfigState {
@@ -585,9 +594,19 @@ function renderSummary(s: PlayerSummary | null, error?: string) {
         .map((m) => {
           const cls = m.result === "win" ? "ok" : m.result === "loss" ? "warn" : "src";
           const sign = m.delta > 0 ? "+" : "";
-          return `<li><span class="${cls}">${escape(m.result)}</span> ${sign}${m.delta} · ${escape(m.mode)} · ${escape(
-            m.map || "?",
-          )} <span class="src">${escape(m.played_at)}</span></li>`;
+          const mapText = escape(m.map || "?");
+          // Correlated matches link to their ut4stats.com summary page; the
+          // rest render as plain text. The URL is same-origin to ut4stats and
+          // opened via the opener plugin (open_external requires https://).
+          const mapCell =
+            m.match_id != null
+              ? `<button class="match-link link-btn" type="button" data-url="${escape(
+                  `https://ut4stats.com/match_summary/${m.match_id}/`,
+                )}" title="View this match on ut4stats.com">${mapText} ↗</button>`
+              : mapText;
+          return `<li><span class="${cls}">${escape(m.result)}</span> ${sign}${m.delta} · ${escape(
+            m.mode,
+          )} · ${mapCell} <span class="src">${escape(m.played_at)}</span></li>`;
         })
         .join("")}</ul>`
     : "";
@@ -606,6 +625,12 @@ function renderSummary(s: PlayerSummary | null, error?: string) {
     ${recent ? `<div class="src">Recent rated matches</div>${recent}` : ""}
   `;
   document.getElementById("ut4-change")?.addEventListener("click", () => void unlink());
+  statsPanel.querySelectorAll<HTMLButtonElement>(".match-link").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const url = btn.dataset.url;
+      if (url) void openExternal(url);
+    });
+  });
 }
 
 // ---- startup --------------------------------------------------------------
@@ -1237,7 +1262,6 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
   const t = cfg.tweaks;
   configPanel.innerHTML = `
     <p>Competitive graphics: high FPS, still readable. Your <code>Engine.ini</code> is backed up before the first apply; online and login settings are left untouched.</p>
-    <p class="src">Note: <code>net.AllowAsyncLoading=0</code> loads into maps faster but can cause issues in Blitz (flag run).</p>
     <div class="controls">
       <label>Frame rate cap
         <input id="cfg-fps" type="number" min="0" step="10" value="${escape(String(t.frame_rate_cap))}" />
@@ -1246,7 +1270,9 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
       <label>Display gamma (brightness)
         <input id="cfg-gamma" type="number" min="1" max="5" step="0.1" value="${escape(String(t.display_gamma))}" />
       </label>
+      <label class="cfg-check"><input id="cfg-async" type="checkbox"${t.allow_async_loading ? " checked" : ""} /> Allow async loading (Blitz / flag-run safe)</label>
     </div>
+    <p class="src">Leave <strong>async loading</strong> on if you play Blitz (flag run) — it avoids load hitches that mode is prone to. Turn it off for slightly faster map loads in other modes (the competitive default).</p>
     ${audioLine}
     <div class="discord-btns">
       <button id="cfg-apply" type="button">Apply competitive config</button>
@@ -1270,11 +1296,13 @@ async function applyConfig(setOpenalAudio: boolean) {
   const fps = Number((document.getElementById("cfg-fps") as HTMLInputElement).value);
   const gamma = Number((document.getElementById("cfg-gamma") as HTMLInputElement).value);
   const smooth = (document.getElementById("cfg-smooth") as HTMLInputElement).checked;
+  const allowAsync = (document.getElementById("cfg-async") as HTMLInputElement).checked;
   try {
     await invoke("apply_engine_config", {
       frameRateCap: Number.isFinite(fps) ? fps : 360,
       smoothFrameRate: smooth,
       displayGamma: Number.isFinite(gamma) ? gamma : 3,
+      allowAsyncLoading: allowAsync,
       setOpenalAudio,
     });
     await renderConfig({ text: "Applied. Restart UT4 for it to take effect.", cls: "ok" });

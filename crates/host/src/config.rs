@@ -96,10 +96,11 @@ r.SSR.MaxRoughness=0
 r.RHICmdBypass=0
 r.PostProcessingColorFormat=0";
 
-/// `[SystemSettings]` baseline. `net.AllowAsyncLoading=0` loads into maps
-/// faster but can misbehave in Blitz / flag-run — surfaced as a UI caveat.
-const SYSTEM_SETTINGS: &str = "\
-net.AllowAsyncLoading=0
+/// `[SystemSettings]` baseline, minus `net.AllowAsyncLoading` — that line is
+/// written separately because it's a per-player toggle (see
+/// [`EngineTweaks::allow_async_loading`]): `=0` loads into maps faster but can
+/// misbehave in Blitz / flag-run.
+const SYSTEM_SETTINGS_REST: &str = "\
 r.OneFrameThreadLag=1
 fx.GPUSimulationTextureSizeX=16
 fx.GPUSimulationTextureSizeY=16
@@ -148,6 +149,10 @@ pub struct EngineTweaks {
     pub smooth_frame_rate: bool,
     /// `DisplayGamma` (higher = brighter; 3.0 is the competitive baseline).
     pub display_gamma: f64,
+    /// `net.AllowAsyncLoading` in `[SystemSettings]`. The competitive baseline
+    /// is off (`=0`, faster map loads) but it can break Blitz / flag-run, so
+    /// it's a per-player toggle. `true` writes `=1`, `false` writes `=0`.
+    pub allow_async_loading: bool,
 }
 
 impl Default for EngineTweaks {
@@ -156,6 +161,7 @@ impl Default for EngineTweaks {
             frame_rate_cap: 360.0,
             smooth_frame_rate: false,
             display_gamma: 3.0,
+            allow_async_loading: false,
         }
     }
 }
@@ -265,7 +271,11 @@ pub fn apply(ini: &Path, tweaks: &EngineTweaks, set_openal_audio: bool) -> Confi
     let mut ini_file = IniFile::parse(&text);
     ini_file.replace_body(SEC_CONSOLE, HDR_CONSOLE, CONSOLE_VARIABLES);
     ini_file.replace_body(SEC_RENDERER, HDR_RENDERER, RENDERER_SETTINGS);
-    ini_file.replace_body(SEC_SYSTEM, HDR_SYSTEM, SYSTEM_SETTINGS);
+    let system_body = format!(
+        "net.AllowAsyncLoading={}\n{SYSTEM_SETTINGS_REST}",
+        u8::from(tweaks.allow_async_loading),
+    );
+    ini_file.replace_body(SEC_SYSTEM, HDR_SYSTEM, &system_body);
     ini_file.set_key(
         SEC_ENGINE,
         HDR_ENGINE,
@@ -360,30 +370,34 @@ const fn bool_str(b: bool) -> &'static str {
 /// Read the three editable values out of `[/Script/UnrealTournament.UTGameEngine]`.
 fn read_tweaks(text: &str) -> EngineTweaks {
     let mut t = EngineTweaks::default();
-    let mut in_section = false;
+    let mut in_engine = false;
+    let mut in_system = false;
     for line in text.lines() {
         let l = line.trim();
         if l.starts_with('[') && l.ends_with(']') {
-            in_section = section_inner(l).eq_ignore_ascii_case(SEC_ENGINE);
-            continue;
-        }
-        if !in_section {
+            let inner = section_inner(l);
+            in_engine = inner.eq_ignore_ascii_case(SEC_ENGINE);
+            in_system = inner.eq_ignore_ascii_case(SEC_SYSTEM);
             continue;
         }
         let Some((k, v)) = l.split_once('=') else {
             continue;
         };
         let (k, v) = (k.trim(), v.trim());
-        if k.eq_ignore_ascii_case("FrameRateCap") {
-            if let Ok(n) = v.parse() {
-                t.frame_rate_cap = n;
+        if in_engine {
+            if k.eq_ignore_ascii_case("FrameRateCap") {
+                if let Ok(n) = v.parse() {
+                    t.frame_rate_cap = n;
+                }
+            } else if k.eq_ignore_ascii_case("bSmoothFrameRate") {
+                t.smooth_frame_rate = v.eq_ignore_ascii_case("true");
+            } else if k.eq_ignore_ascii_case("DisplayGamma") {
+                if let Ok(n) = v.parse() {
+                    t.display_gamma = n;
+                }
             }
-        } else if k.eq_ignore_ascii_case("bSmoothFrameRate") {
-            t.smooth_frame_rate = v.eq_ignore_ascii_case("true");
-        } else if k.eq_ignore_ascii_case("DisplayGamma") {
-            if let Ok(n) = v.parse() {
-                t.display_gamma = n;
-            }
+        } else if in_system && k.eq_ignore_ascii_case("net.AllowAsyncLoading") {
+            t.allow_async_loading = v == "1";
         }
     }
     t
@@ -570,7 +584,12 @@ Protocol=https
         let mut f = IniFile::parse(text);
         f.replace_body(SEC_CONSOLE, HDR_CONSOLE, CONSOLE_VARIABLES);
         f.replace_body(SEC_RENDERER, HDR_RENDERER, RENDERER_SETTINGS);
-        f.replace_body(SEC_SYSTEM, HDR_SYSTEM, SYSTEM_SETTINGS);
+        // Mirror apply()'s default tweaks: async loading off.
+        f.replace_body(
+            SEC_SYSTEM,
+            HDR_SYSTEM,
+            &format!("net.AllowAsyncLoading=0\n{SYSTEM_SETTINGS_REST}"),
+        );
         f.set_key(SEC_ENGINE, HDR_ENGINE, "FrameRateCap", "360.000000");
         f.set_key(SEC_ENGINE, HDR_ENGINE, "bSmoothFrameRate", "False");
         f.set_key(SEC_ENGINE, HDR_ENGINE, "DisplayGamma", "3.000000");
@@ -721,6 +740,7 @@ Protocol=https
             frame_rate_cap: 240.0,
             smooth_frame_rate: true,
             display_gamma: 2.0,
+            allow_async_loading: false,
         };
         apply(&ini, &tweaks, true).unwrap();
         assert_eq!(std::fs::read_to_string(backup_path(&ini)).unwrap(), SAMPLE);
@@ -730,8 +750,36 @@ Protocol=https
     fn applies_system_settings_section() {
         let out = apply_to(SAMPLE, true);
         assert!(out.contains("[SystemSettings]"));
+        // Default tweaks => async loading off (competitive baseline).
         assert!(out.contains("net.AllowAsyncLoading=0"));
         assert!(out.contains("r.OneFrameThreadLag=1"));
+    }
+
+    #[test]
+    fn allow_async_loading_toggle_writes_one() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Engine.ini");
+        std::fs::write(&ini, SAMPLE).unwrap();
+        let tweaks = EngineTweaks {
+            allow_async_loading: true,
+            ..EngineTweaks::default()
+        };
+        apply(&ini, &tweaks, false).unwrap();
+        let out = std::fs::read_to_string(&ini).unwrap();
+        assert!(out.contains("net.AllowAsyncLoading=1"));
+        assert!(!out.contains("net.AllowAsyncLoading=0"));
+        // The rest of the baseline is still written.
+        assert!(out.contains("r.OneFrameThreadLag=1"));
+    }
+
+    #[test]
+    fn read_tweaks_reads_allow_async_loading() {
+        let on = "[SystemSettings]\nnet.AllowAsyncLoading=1\n";
+        assert!(read_tweaks(on).allow_async_loading);
+        let off = "[SystemSettings]\nnet.AllowAsyncLoading=0\n";
+        assert!(!read_tweaks(off).allow_async_loading);
+        // Absent => default off.
+        assert!(!read_tweaks("[Core.System]\nPaths=x\n").allow_async_loading);
     }
 
     fn with_all_mcp(base: &str) -> String {
