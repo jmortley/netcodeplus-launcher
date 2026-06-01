@@ -46,6 +46,8 @@ pub fn run() {
             updates::compute_plan,
             updates::plugin_status,
             updates::install_plugin,
+            updates::scan_strays,
+            updates::remove_stray_plugin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

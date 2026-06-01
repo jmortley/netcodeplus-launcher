@@ -471,6 +471,37 @@ footer {
   margin-top: 0.5rem;
 }
 
+/* Stray-install warning card — a real problem (misplaced plugin that
+   double-loads or won't load), so red and shown above the Play button. Quiet
+   when nothing is misplaced. */
+.stray-card {
+  margin: 0 auto 1rem;
+  max-width: 34rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(239, 68, 68, 0.6);
+  border-radius: 8px;
+  background: rgba(239, 68, 68, 0.1);
+  text-align: left;
+  font-size: 0.9rem;
+}
+.stray-title {
+  font-weight: 700;
+  margin-bottom: 0.5rem;
+}
+.stray-row {
+  padding: 0.5rem 0;
+  border-top: 1px solid rgba(239, 68, 68, 0.25);
+}
+.stray-row:first-of-type {
+  border-top: none;
+}
+.stray-row button {
+  margin-top: 0.4rem;
+}
+.stray-status {
+  margin-left: 0.5rem;
+}
+
 .launch-primary + .launch-status {
   margin-top: 0.75rem;
 }

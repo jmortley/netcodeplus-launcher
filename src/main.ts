@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import { open } from "@tauri-apps/plugin-dialog";
+import { confirm, open } from "@tauri-apps/plugin-dialog";
 
 interface UtInstall {
   root: string;
@@ -42,6 +42,17 @@ interface PluginInstallOutcome {
   root: string;
   result: "installed" | "skipped" | "failed";
   detail: string;
+}
+
+// Stray (misplaced) NetcodePlus copies from `scan_strays`.
+interface StrayReport {
+  kind: string;
+  explanation: string;
+  path: string;
+}
+interface InstallStrays {
+  root: string;
+  strays: StrayReport[];
 }
 
 interface AffinityPreset {
@@ -236,6 +247,77 @@ async function doInstallPlugin(): Promise<void> {
   }
 }
 
+// Warn about stray / misplaced NetcodePlus copies (e.g. a hand-install dropped
+// into Engine/Plugins, which double-loads). Renders prominent warnings into
+// #stray-panel with a confirm-gated "Fix this" that removes the stray. Silent
+// when everything is in the right place. Aimed at non-tech-savvy testers, so
+// the copy is plain-English and the destructive action requires an OS confirm.
+async function renderStrays(): Promise<void> {
+  const panel = document.getElementById("stray-panel");
+  if (!panel) return;
+  let found: InstallStrays[];
+  try {
+    found = await invoke<InstallStrays[]>("scan_strays");
+  } catch (err) {
+    console.error("scan_strays failed:", err);
+    panel.innerHTML = "";
+    return;
+  }
+  if (found.length === 0) {
+    panel.innerHTML = "";
+    return;
+  }
+  // Flatten to a list of (root, stray) rows with stable indices for handlers.
+  const rows: { root: string; stray: StrayReport }[] = [];
+  for (const inst of found) {
+    for (const stray of inst.strays) rows.push({ root: inst.root, stray });
+  }
+  panel.innerHTML = `
+    <div class="stray-card">
+      <div class="stray-title">⚠ NetcodePlus is in the wrong place</div>
+      ${rows
+        .map(
+          (r, i) => `<div class="stray-row">
+            <div>${escape(r.stray.explanation)}</div>
+            <div class="src">${escape(r.stray.path)}</div>
+            <button class="stray-fix" type="button" data-i="${i}">Fix this</button>
+            <span class="stray-status" data-status="${i}"></span>
+          </div>`,
+        )
+        .join("")}
+    </div>`;
+  panel.querySelectorAll<HTMLButtonElement>(".stray-fix").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const r = rows[Number(btn.dataset.i)];
+      if (r) void fixStray(r.root, r.stray, btn);
+    });
+  });
+}
+
+async function fixStray(root: string, stray: StrayReport, btn: HTMLButtonElement): Promise<void> {
+  const ok = await confirm(
+    `${stray.explanation}\n\nRemove this misplaced copy?\n\n${stray.path}`,
+    { title: "Fix NetcodePlus install", kind: "warning" },
+  );
+  if (!ok) return;
+  const statusEl = btn.parentElement?.querySelector<HTMLElement>(".stray-status");
+  btn.disabled = true;
+  if (statusEl) statusEl.textContent = "Removing…";
+  try {
+    await invoke("remove_stray_plugin", { root, kind: stray.kind, path: stray.path });
+    if (statusEl) statusEl.innerHTML = `<span class="ok">✓ removed</span>`;
+    // Re-detect + re-render so the badge, plugin card, and stray list all
+    // reflect the fixed state.
+    state.installs = await invoke<DetectedInstall[]>("detect_installs");
+    renderLaunch();
+    renderAdvanced();
+  } catch (err) {
+    if (statusEl) statusEl.innerHTML = `<span class="warn">Couldn't remove: ${escape(String(err))}</span>`;
+    btn.disabled = false;
+    console.error("remove_stray_plugin failed:", err);
+  }
+}
+
 function selectedProfileIndex(di: DetectedInstall): number {
   if (state.profileLabel) {
     const saved = di.profiles.findIndex((p) => p.label === state.profileLabel);
@@ -285,6 +367,7 @@ function renderLaunch() {
   const di = state.installs[state.selInstall];
   launchPanel.innerHTML = `
     <div class="play-card">
+      <div id="stray-panel"></div>
       <div class="play-hero">
         <div class="play-hero-overlay">
           <div class="play-title">Unreal Tournament</div>
@@ -301,6 +384,7 @@ function renderLaunch() {
     () => void launch(),
   );
   void renderPluginStatus();
+  void renderStrays();
   wireUt4Account();
 }
 

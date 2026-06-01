@@ -479,3 +479,85 @@ pub async fn install_plugin(app: AppHandle) -> Result<Vec<PluginInstallOutcome>,
 
     Ok(outcomes)
 }
+
+// ===================================================================
+// Stray NetcodePlus detection — misplaced copies that double-load or
+// fail to load. Filesystem-only; no manifest/network involved.
+// ===================================================================
+
+/// One install's stray findings, for the UI.
+#[derive(Debug, Serialize)]
+pub struct InstallStrays {
+    /// Install root scanned.
+    pub root: String,
+    /// Strays found in this install (empty when clean).
+    pub strays: Vec<StrayReport>,
+}
+
+/// A stray copy, summarised for the UI (the kind, a plain-English reason, and
+/// the path — echoed back to `remove_stray_plugin` unchanged).
+#[derive(Debug, Serialize)]
+pub struct StrayReport {
+    /// `"engine_plugins"` | `"nested_too_deep"` | `"loose_in_plugins_root"`.
+    pub kind: String,
+    /// Non-technical explanation to show the user.
+    pub explanation: String,
+    /// Path that would be removed (round-tripped to remove_stray_plugin).
+    pub path: String,
+}
+
+fn stray_kind_str(k: ncp_host::StrayKind) -> &'static str {
+    match k {
+        ncp_host::StrayKind::EnginePlugins => "engine_plugins",
+        ncp_host::StrayKind::NestedTooDeep => "nested_too_deep",
+        ncp_host::StrayKind::LooseInPluginsRoot => "loose_in_plugins_root",
+    }
+}
+
+fn stray_kind_from_str(s: &str) -> Option<ncp_host::StrayKind> {
+    match s {
+        "engine_plugins" => Some(ncp_host::StrayKind::EnginePlugins),
+        "nested_too_deep" => Some(ncp_host::StrayKind::NestedTooDeep),
+        "loose_in_plugins_root" => Some(ncp_host::StrayKind::LooseInPluginsRoot),
+        _ => None,
+    }
+}
+
+/// Scan every detected install for stray / misplaced NetcodePlus copies.
+/// Read-only. Returns only installs that actually have strays.
+#[tauri::command]
+pub fn scan_strays() -> Vec<InstallStrays> {
+    ncp_host::detect_installs()
+        .into_iter()
+        .filter_map(|d| {
+            let strays: Vec<StrayReport> = ncp_host::scan_strays(&d.install.root)
+                .into_iter()
+                .map(|s| StrayReport {
+                    kind: stray_kind_str(s.kind).to_string(),
+                    explanation: s.kind.explanation().to_string(),
+                    path: s.path.to_string_lossy().into_owned(),
+                })
+                .collect();
+            (!strays.is_empty()).then(|| InstallStrays {
+                root: d.install.root.to_string_lossy().into_owned(),
+                strays,
+            })
+        })
+        .collect()
+}
+
+/// Remove one stray copy after the user confirmed it in the UI.
+///
+/// `root` + `kind` identify the stray; `ncp_host::remove_stray` recomputes the
+/// expected path under `root` for that kind and refuses anything else, so the
+/// webview cannot direct a delete to an arbitrary location. The `path` from the
+/// scan is passed through for the safety re-check.
+#[tauri::command]
+pub fn remove_stray_plugin(root: String, kind: String, path: String) -> Result<(), String> {
+    let kind = stray_kind_from_str(&kind).ok_or_else(|| "unknown stray kind".to_string())?;
+    let stray = ncp_host::StrayPlugin {
+        kind,
+        path: std::path::PathBuf::from(path),
+    };
+    ncp_host::remove_stray(std::path::Path::new(&root), &stray).map_err(|e| e.to_string())
+}
