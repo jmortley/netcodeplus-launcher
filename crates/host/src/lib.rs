@@ -38,6 +38,8 @@ pub use crate::launch::{
 pub use crate::plugin_install::{
     install_plugin_zip, install_plugin_zip_verified, PluginInstallError,
 };
-pub use crate::shortcut::{create_desktop_shortcut, detect_outdated_launcher, ShortcutError};
+pub use crate::shortcut::{
+    create_desktop_shortcut, detect_outdated_launcher, schedule_delete_on_reboot, ShortcutError,
+};
 pub use crate::state::{LauncherState, DEFAULT_CHANNEL};
 pub use crate::stray::{remove_stray, scan_strays, StrayKind, StrayPlugin, StrayRemoveError};

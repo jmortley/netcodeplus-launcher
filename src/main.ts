@@ -1812,14 +1812,26 @@ async function doDeleteOldLauncher(): Promise<void> {
   if (!ok) return;
   const status = document.getElementById("cleanup-status");
   try {
-    await invoke("delete_old_launcher");
+    const res = await invoke<{ scheduled_for_reboot: boolean }>("delete_old_launcher");
     // Keep the card up so the user can still create a shortcut — only the
     // removal is done. Re-rendering would clear the whole card (the pending
     // old-launcher record is gone now), which is what hid the shortcut button.
     document.getElementById("cleanup-delete")?.remove();
-    if (status) status.innerHTML = `<span class="ok">✓ Old launcher removed.</span>`;
+    if (status) {
+      status.innerHTML = res.scheduled_for_reboot
+        ? `<span class="ok">✓ It's still open, so it'll be removed automatically after your next restart.</span>`
+        : `<span class="ok">✓ Old launcher removed.</span>`;
+    }
   } catch (err) {
-    if (status) status.innerHTML = `<span class="warn">Couldn't remove it: ${escape(String(err))}</span>`;
+    const msg = String(err);
+    // A locked/denied failure means the old launcher is still running and the
+    // reboot-delete fallback couldn't be scheduled either — tell the user plainly.
+    const locked = /os error (?:5|32)\b|denied/i.test(msg);
+    if (status) {
+      status.innerHTML = locked
+        ? `<span class="warn">Couldn't remove it — the old launcher is probably still open. Close it and try again.</span>`
+        : `<span class="warn">Couldn't remove it: ${escape(msg)}</span>`;
+    }
     console.error("delete_old_launcher failed:", err);
   }
 }

@@ -109,6 +109,63 @@ pub fn create_desktop_shortcut(_target: &Path, _name: &str) -> Result<PathBuf, S
     Err(ShortcutError::Unsupported)
 }
 
+/// Schedule `path` for deletion on the next reboot.
+///
+/// The fallback for removing the previous launcher exe when it can't be deleted
+/// now because it is locked — Windows locks a running image file, so if the old
+/// launcher is still open, `remove_file` fails. `MoveFileExW(path, NULL,
+/// MOVEFILE_DELAY_UNTIL_REBOOT)` records the delete in the registry's
+/// `PendingFileRenameOperations`, which the kernel applies during early boot,
+/// before the file is locked again. No elevation is needed for an exe the user
+/// could otherwise manage.
+///
+/// # Errors
+/// The underlying OS error (as [`std::io::Error`]) if the API call fails, or an
+/// `Unsupported` error on non-Windows targets.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub fn schedule_delete_on_reboot(path: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_DELAY_UNTIL_REBOOT};
+
+    // NUL-terminated UTF-16, encoded straight from the OS string (no lossy
+    // round-trip through UTF-8) for the `*W` API.
+    let wide_path: Vec<u16> = path
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // SAFETY: `wide_path` is a NUL-terminated UTF-16 buffer that outlives the
+    // call. The destination is NULL — with MOVEFILE_DELAY_UNTIL_REBOOT that
+    // records a delete (not a rename) in PendingFileRenameOperations, applied
+    // during early boot. MoveFileExW reads the path and returns no handle or
+    // allocation we must own.
+    let ok = unsafe {
+        MoveFileExW(
+            wide_path.as_ptr(),
+            std::ptr::null(),
+            MOVEFILE_DELAY_UNTIL_REBOOT,
+        )
+    };
+    if ok == 0 {
+        // SAFETY: GetLastError takes no args and only reads thread-local state.
+        let err = unsafe { GetLastError() };
+        return Err(std::io::Error::from_raw_os_error(err as i32));
+    }
+    Ok(())
+}
+
+/// Non-Windows stub: there is no reboot-time delete queue to schedule onto.
+#[cfg(not(windows))]
+pub fn schedule_delete_on_reboot(_path: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "scheduling a delete on reboot is only supported on Windows",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

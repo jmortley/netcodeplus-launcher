@@ -503,8 +503,24 @@ pub fn create_launcher_shortcut() -> Result<String, String> {
 /// webview), and only when it is a regular `.exe` file that is not the launcher
 /// currently running — so a tampered state file can't turn this into an
 /// arbitrary-file delete.
+/// Outcome of [`delete_old_launcher`], so the UI can word the result correctly.
+#[derive(Debug, serde::Serialize)]
+pub struct DeleteOldLauncherResult {
+    /// The old exe was locked (it is probably still running), so the removal was
+    /// scheduled for the next reboot via `MoveFileEx` rather than done now.
+    pub scheduled_for_reboot: bool,
+}
+
+/// True for the filesystem errors a still-running exe produces: Windows locks a
+/// running image file, so deleting it fails with a sharing violation (os error
+/// 32) or access-denied (os error 5).
+fn is_lock_error(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(5) | Some(32))
+        || e.kind() == std::io::ErrorKind::PermissionDenied
+}
+
 #[tauri::command]
-pub fn delete_old_launcher(app: tauri::AppHandle) -> Result<(), String> {
+pub fn delete_old_launcher(app: tauri::AppHandle) -> Result<DeleteOldLauncherResult, String> {
     let path = state_path(&app)?;
     let mut state = ncp_host::state::read(&path)
         .map_err(|e| e.to_string())?
@@ -519,7 +535,9 @@ pub fn delete_old_launcher(app: tauri::AppHandle) -> Result<(), String> {
     if !old_path.is_file() {
         state.pending_old_launcher_path = None;
         ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
-        return Ok(());
+        return Ok(DeleteOldLauncherResult {
+            scheduled_for_reboot: false,
+        });
     }
     // Safety: must be a regular .exe, and not the running launcher.
     let is_exe = old_path
@@ -541,10 +559,21 @@ pub fn delete_old_launcher(app: tauri::AppHandle) -> Result<(), String> {
         return Err("refused to remove the launcher that is currently running".into());
     }
 
-    std::fs::remove_file(&old_path).map_err(|e| e.to_string())?;
+    let scheduled_for_reboot = match std::fs::remove_file(&old_path) {
+        Ok(()) => false,
+        // The old exe is probably still open, so Windows has its image file
+        // locked. Schedule the delete for the next reboot rather than failing.
+        Err(e) if is_lock_error(&e) => {
+            ncp_host::schedule_delete_on_reboot(&old_path).map_err(|e| e.to_string())?;
+            true
+        }
+        Err(e) => return Err(e.to_string()),
+    };
     state.pending_old_launcher_path = None;
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
-    Ok(())
+    Ok(DeleteOldLauncherResult {
+        scheduled_for_reboot,
+    })
 }
 
 /// Dismiss the post-update cleanup prompt without deleting anything (clears the
