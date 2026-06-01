@@ -2451,7 +2451,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-host"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "dirs",
  "lnk",
@@ -2471,7 +2471,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-manifest"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "hex",
@@ -2486,7 +2486,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-net"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "futures-util",
  "ncp-manifest",
@@ -2501,7 +2501,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-planner"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "ncp-manifest",
@@ -2537,7 +2537,7 @@ dependencies = [
 
 [[package]]
 name = "netcodeplus-launcher"
-version = "0.2.2"
+version = "0.2.3"
 dependencies = [
  "chrono",
  "keyring",
