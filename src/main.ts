@@ -184,10 +184,17 @@ function renderLaunch() {
             <div class="play-title">Unreal Tournament</div>
           </div>
         </div>
-        <p class="warn">No install detected.</p>
-        <p>Don't have the game yet? Get it from the UT4Ever installer, then reopen the launcher.</p>
-        <button id="get-ut4" type="button" class="launch-primary">Get UT4</button>
+        <p class="warn">No install auto-detected.</p>
+        <p><strong>Already have UT4?</strong> We look for a desktop shortcut — if you don't have one, go to the <strong>Advanced</strong> tab and pick your <code>UnrealTournament</code> folder.</p>
+        <button id="pick-install" type="button" class="launch-primary">Locate my UT4 install →</button>
+        <p class="src">Don't have the game yet? Get it from the UT4Ever installer, then reopen the launcher.</p>
+        <button id="get-ut4" type="button" class="link-btn">Get UT4</button>
       </div>`;
+    document.getElementById("pick-install")?.addEventListener("click", () => {
+      // Jump to the Advanced tab (where the folder picker lives) by reusing the
+      // tab button's own click handler, so tab state stays consistent.
+      document.querySelector<HTMLButtonElement>('.tab[data-tab="advanced"]')?.click();
+    });
     document.getElementById("get-ut4")?.addEventListener("click", () =>
       openExternal("https://ut4ever.org/installer"),
     );
