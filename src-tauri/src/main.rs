@@ -64,16 +64,28 @@ fn run_elevated_install(args: &[String]) -> i32 {
         return 125;
     }
 
+    // The elevated child is a GUI-subsystem process, so its stderr is not
+    // visible to the parent. Write a diagnostic log to temp (always writable,
+    // even elevated) so a failed elevated install can be diagnosed after the
+    // fact — both during development and from a tester's machine.
+    let log_path = std::env::temp_dir().join("ncp-elevated-install.log");
+    let mut log = String::new();
+    log.push_str(&format!(
+        "elevated-install: zip={zip} sha={sha256} roots={roots:?}\n"
+    ));
+
     let zip_path = std::path::Path::new(&zip);
     let mut failed = 0i32;
     for root in &roots {
         match ncp_host::install_plugin_zip_verified(zip_path, std::path::Path::new(root), &sha256) {
-            Ok(()) => eprintln!("elevated-install: ok {root}"),
+            Ok(()) => log.push_str(&format!("ok: {root}\n")),
             Err(e) => {
-                eprintln!("elevated-install: FAILED {root}: {e}");
+                log.push_str(&format!("FAILED: {root}: {e}\n"));
                 failed += 1;
             }
         }
     }
+    log.push_str(&format!("done: {failed} failed\n"));
+    let _ = std::fs::write(&log_path, &log);
     failed.min(125)
 }

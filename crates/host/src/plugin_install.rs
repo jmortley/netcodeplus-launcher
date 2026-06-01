@@ -72,6 +72,29 @@ pub enum PluginInstallError {
 /// Result alias for plugin installation.
 pub type Result<T> = std::result::Result<T, PluginInstallError>;
 
+/// Best-effort removal of `.NetcodePlus.staging.*` / `.NetcodePlus.old.*`
+/// leftovers in `plugins_dir` from interrupted prior runs. Failures are ignored
+/// (a leftover we cannot delete simply stays; the install uses a PID-unique
+/// staging name so it does not collide).
+fn sweep_leftovers(plugins_dir: &Path) {
+    let Ok(entries) = fs::read_dir(plugins_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with(".NetcodePlus.staging.") || name.starts_with(".NetcodePlus.old.") {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
+/// Wrap an `io::Error` with which swap step failed and on which path, so a bare
+/// "Access is denied" becomes actionable ("move existing aside: <path>: …").
+fn annotate(e: io::Error, step: &str, path: &Path) -> io::Error {
+    io::Error::new(e.kind(), format!("{step}: {}: {e}", path.display()))
+}
+
 /// Compute the lowercase hex SHA-256 of the file at `path`, streaming so a
 /// large ZIP is not fully buffered.
 fn file_sha256_hex(path: &Path) -> io::Result<String> {
@@ -201,6 +224,12 @@ pub fn install_plugin_zip(zip_path: &Path, root: &Path) -> Result<()> {
         .to_path_buf();
     fs::create_dir_all(&plugins_dir)?;
 
+    // Sweep any leftover staging/backup dirs from a previous interrupted run
+    // (e.g. a crash, or an earlier failed elevated attempt). Best-effort: a
+    // leftover we cannot remove is not fatal here. Doing this lets an elevated
+    // run clean up an admin-owned leftover a prior elevated run left behind.
+    sweep_leftovers(&plugins_dir);
+
     // Stage into a temp sibling dir so a half-extraction never touches the live
     // folder. Unique-ish name; cleaned up on every exit path.
     let staging = plugins_dir.join(format!(".NetcodePlus.staging.{}", std::process::id()));
@@ -223,16 +252,18 @@ pub fn install_plugin_zip(zip_path: &Path, root: &Path) -> Result<()> {
     }
 
     // Swap: move any existing folder aside, move staging into place, remove the
-    // old. If the final move fails, restore the old folder.
+    // old. If the final move fails, restore the old folder. Each fs op is
+    // annotated so a failure names the exact step (the bare io::Error otherwise
+    // just says "Access is denied" with no indication of which path).
     let backup = plugins_dir.join(format!(".NetcodePlus.old.{}", std::process::id()));
     let had_existing = dest.exists();
     if had_existing {
         if backup.exists() {
-            fs::remove_dir_all(&backup)?;
+            fs::remove_dir_all(&backup).map_err(|e| annotate(e, "remove stale backup", &backup))?;
         }
-        fs::rename(&dest, &backup)?;
+        fs::rename(&dest, &backup).map_err(|e| annotate(e, "move existing aside", &dest))?;
     }
-    match fs::rename(&staging, &dest) {
+    match fs::rename(&staging, &dest).map_err(|e| annotate(e, "move new into place", &staging)) {
         Ok(()) => {
             if had_existing {
                 let _ = fs::remove_dir_all(&backup); // best-effort cleanup
