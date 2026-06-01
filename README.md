@@ -37,6 +37,10 @@ verifiable end to end** (no bundled secrets, no telemetry, source public), so
   in-game login window. Standard Epic-style OAuth.
 - **Detect your install and launch** with your preferred profile, process
   priority, and CPU affinity — one click.
+- **Keeps NetcodePlus current** — checks a cryptographically signed manifest on
+  launch, updates the plugin across all your installs in one click (every
+  download verified against the manifest before it's written), and flags when a
+  newer launcher build is out. See [Security](#security).
 - **Server browser** — live hubs and matches grouped the way the in-game/site
   browser shows them, with one-click Join or Spectate.
 - **PUGs** — link your account once, then join/leave the iCTF PUG queue and jump
