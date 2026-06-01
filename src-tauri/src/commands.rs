@@ -265,8 +265,9 @@ pub fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
-/// UT4IGBot launcher PUG endpoint (FastAPI on :9999).
-const BOT_PUG_URL: &str = "http://ut4stats.com:9999/launcher_pug_action";
+/// UT4IGBot launcher PUG endpoint (HTTPS via the ut4stats.com Apache
+/// reverse-proxy to the bot's FastAPI app; the proxied path is TLS-terminated).
+const BOT_PUG_URL: &str = "https://ut4stats.com/launcher/pug_action";
 
 /// Send a PUG queue action (`joinpug` / `leavepug` / `listpug`) to the bot,
 /// authenticated by the player's per-user `token` (issued by the bot's
@@ -293,8 +294,8 @@ pub async fn pug_action(action: String, token: String) -> Result<String, String>
     .map_err(|e| e.to_string())
 }
 
-/// UT4IGBot launcher PUG status endpoint (FastAPI on :9999).
-const BOT_STATUS_URL: &str = "http://ut4stats.com:9999/launcher_pug_status";
+/// UT4IGBot launcher PUG status endpoint (HTTPS via the Apache reverse-proxy).
+const BOT_STATUS_URL: &str = "https://ut4stats.com/launcher/pug_status";
 
 /// Poll the player's PUG status (queued / live + the live server's connect
 /// info), authenticated by the per-user launcher `token`. Returns the bot's
@@ -316,8 +317,8 @@ pub async fn pug_status(token: String) -> Result<String, String> {
     .map_err(|e| e.to_string())
 }
 
-/// UT4IGBot launcher spectate endpoint (FastAPI on :9999).
-const BOT_SPECTATE_URL: &str = "http://ut4stats.com:9999/launcher_spectate";
+/// UT4IGBot launcher spectate endpoint (HTTPS via the Apache reverse-proxy).
+const BOT_SPECTATE_URL: &str = "https://ut4stats.com/launcher/spectate";
 
 /// Ask the bot for the current live PUG's server so the launcher can spectate
 /// it, authenticated by the per-user launcher `token`. Returns the bot's JSON
