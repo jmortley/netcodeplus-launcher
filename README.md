@@ -6,10 +6,13 @@ update path can be **cryptographically verified end to end** instead of trusted
 on faith.
 
 > **Status: pre-release / beta.** Detection, login, launch, server browser,
-> stats, config, and community features are live. The signed auto-update flow
-> (plugin / launcher / paks) is wired but waiting on the hardware signing-key
-> ceremony — see [Security](#security). Repo, crate, and exe are still named
-> `netcodeplus-launcher`; the app's display name is "UT4 Community Launcher."
+> stats, config, community features, and the **signed auto-update flow** are all
+> live — NetcodePlus and the launcher itself update through a manifest signed
+> with the production key (offline, hardware-protected) and verified before
+> install (see [Security](#security)). Still to come: code-signing the released
+> `.exe` (SmartScreen/AV reputation) and the community-pak install path. Repo,
+> crate, and exe are still named `netcodeplus-launcher`; the app's display name
+> is "UT4 Community Launcher."
 >
 > *Not affiliated with Epic Games or the Unreal Tournament brand.*
 
@@ -77,7 +80,8 @@ The whole point of the project. The trust model:
 
 - **Source-available.** Read what it does before you run it.
 - **No bundled secrets, no telemetry.** It talks to the UT4 master server,
-  ut4stats.com, and the PUG bot — nothing else, nothing in the background.
+  ut4stats.com, the PUG bot, and GitHub (for signed update checks) — nothing
+  else, nothing in the background.
 - **Signed updates (the core design).** A single Ed25519 **public** key is
   compiled into the binary. Update manifests are signed **offline** with the
   matching private key, which lives on a hardware token and never touches a
@@ -105,10 +109,14 @@ by default.
 
 ### Beta status, in plain terms
 
-The verify-before-install machinery is built and tested, but the production
-signing key isn't provisioned yet, so the **auto-update feature is not live in
-this beta** — everything else is. Code signing for the released `.exe`
-(SmartScreen/AV reputation) is planned alongside it.
+The signed verify-before-install update flow is **live**: the production signing
+key is provisioned (offline, protected by a hardware security key), and
+NetcodePlus + launcher updates are published through it and checked against the
+compiled-in key before anything is written. Two pieces are still in progress —
+**code-signing the released `.exe`** (so Windows SmartScreen/AV trust it without
+a warning; an OSS code-signing cert is in the pipeline) and the **community-pak
+install path** (not shipped yet, and pak updates stay opt-in by design even once
+it lands — see above). Everything else is live.
 
 ## Privacy
 
