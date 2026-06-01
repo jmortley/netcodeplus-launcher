@@ -50,10 +50,16 @@ verifiable end to end** (no bundled secrets, no telemetry, source public), so
 ## Install & run
 
 Download the release `.exe` and run it — no installer, no admin rights. It runs
-at your normal user privilege.
+at your normal user privilege. **Windows 10 or 11.**
 
 First time: sign in, let it detect your UT4 install, and you're set. To use PUGs
 or stats, link your account once (the in-app steps walk you through it).
+
+> **Window blank / nothing shows up?** The launcher renders through the
+> **WebView2 Runtime**, which ships with Windows 11 and Windows Update on
+> Windows 10 — but some debloated/custom Windows images (Atlas, ReviOS, etc.)
+> strip it out. Install the *Evergreen WebView2 Runtime* from Microsoft
+> (<https://developer.microsoft.com/microsoft-edge/webview2/>) and relaunch.
 
 ## Security
 
