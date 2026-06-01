@@ -11,12 +11,12 @@
 //! crash mid-write either leaves the old state file intact or
 //! replaces it with the new one — never a half-written hybrid.
 
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
 
-use ncp_planner::LocalInstall;
+use ncp_planner::{InstalledPlugin, LocalInstall};
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use tracing::debug;
@@ -110,6 +110,16 @@ pub struct LauncherState {
     #[serde(default)]
     pub ut4_account_id: Option<String>,
 
+    /// Recorded NetcodePlus plugin install state, **keyed by UT4 install root
+    /// path** (the `DetectedInstall.install.root` string). A player can have
+    /// several installs that drift to different plugin builds, so each is
+    /// tracked independently. Written when the launcher installs the plugin
+    /// into a given root; read back to decide up-to-date vs needs-update. The
+    /// on-disk `.uplugin` has no reliable version, so this is the version
+    /// source of truth.
+    #[serde(default)]
+    pub installed_plugins: HashMap<String, InstalledPlugin>,
+
     /// Highest manifest `sequence` the launcher has ever accepted.
     /// Persisted so a later run rejects any manifest carrying a lower
     /// sequence — an active-attacker replay/downgrade of an older,
@@ -144,6 +154,7 @@ impl Default for LauncherState {
             ut4_username: None,
             ut4_display_name: None,
             ut4_account_id: None,
+            installed_plugins: HashMap::new(),
             highest_manifest_sequence: 0,
         }
     }

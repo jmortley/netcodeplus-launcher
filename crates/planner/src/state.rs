@@ -34,3 +34,23 @@ pub struct LocalPak {
     /// the manifest are caught by the planner regardless.
     pub sha256: Sha256Digest,
 }
+
+/// One installed NetcodePlus plugin's recorded state, per UT4 install root.
+///
+/// The launcher records this when *it* installs the plugin into a given root,
+/// so a later check can decide up-to-date vs needs-update by comparing the
+/// recorded ZIP digest to the manifest's. The on-disk `.uplugin` carries no
+/// reliable version (its `VersionName` is the upstream value and is never
+/// bumped), so this recorded state — not folder inspection — is the version
+/// source of truth.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct InstalledPlugin {
+    /// Plugin build number recorded at install time (the manifest's integer
+    /// `PluginEntry::version`).
+    pub version: u32,
+
+    /// SHA-256 of the plugin **ZIP** the launcher installed (the manifest's
+    /// `PluginEntry::sha256`). Compared against the manifest to decide whether
+    /// an update is needed — a difference means new bytes are published.
+    pub sha256: Sha256Digest,
+}

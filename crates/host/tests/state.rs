@@ -8,7 +8,7 @@ use std::fs;
 
 use ncp_host::{state, LauncherState, Priority, StateError};
 use ncp_manifest::Sha256Digest;
-use ncp_planner::{LocalInstall, LocalPak};
+use ncp_planner::{InstalledPlugin, LocalInstall, LocalPak};
 use semver::Version;
 use tempfile::TempDir;
 
@@ -35,6 +35,15 @@ fn sample_state() -> LauncherState {
     let mut opted_out = HashSet::new();
     opted_out.insert("legacy".to_string());
 
+    let mut installed_plugins = HashMap::new();
+    installed_plugins.insert(
+        "C:/Games/UnrealTournament".to_string(),
+        InstalledPlugin {
+            version: 324,
+            sha256: Sha256Digest::from_bytes([3u8; 32]),
+        },
+    );
+
     LauncherState {
         install_path: Some("C:/Games/UnrealTournament".into()),
         channel: "stable".to_string(),
@@ -50,6 +59,7 @@ fn sample_state() -> LauncherState {
         ut4_username: Some("phantaci".to_string()),
         ut4_display_name: Some("phantaci".to_string()),
         ut4_account_id: Some("64bf8c6d81004e88823d577abe157373".to_string()),
+        installed_plugins,
         highest_manifest_sequence: 42,
     }
 }

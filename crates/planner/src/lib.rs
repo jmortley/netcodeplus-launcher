@@ -35,10 +35,12 @@
 
 mod error;
 mod plan;
+mod plugin;
 mod state;
 
 pub use crate::error::{PlanError, Result};
 pub use crate::plan::{
     plan, DownloadAction, DownloadReason, KeepAction, RemoveAction, RemoveReason, UpdatePlan,
 };
-pub use crate::state::{LocalInstall, LocalPak};
+pub use crate::plugin::{plan_plugin, PluginAction};
+pub use crate::state::{InstalledPlugin, LocalInstall, LocalPak};
