@@ -229,14 +229,22 @@ async function doInstallPlugin(): Promise<void> {
     const installed = outcomes.filter((o) => o.result === "installed").length;
     const failed = outcomes.filter((o) => o.result === "failed");
     if (failed.length) {
+      // Show the real per-install error and DON'T re-render — re-rendering
+      // rebuilds #plugin-panel and would wipe this message before it's read.
+      // Keep the button enabled so the user can retry after fixing the cause
+      // (e.g. close the game, run as admin for a Program Files install).
       if (status)
-        status.innerHTML = `<span class="warn">Installed ${installed}, but ${failed.length} failed: ${escape(
+        status.innerHTML = `<span class="warn">Update failed: ${escape(
           failed.map((f) => f.detail).join("; "),
         )}</span>`;
-    } else if (status) {
+      if (btn) btn.disabled = false;
+      return;
+    }
+    if (status) {
       status.innerHTML = `<span class="ok">✓ NetcodePlus updated in ${installed} install${installed === 1 ? "" : "s"}.</span>`;
     }
-    // Re-detect so the install badges + plugin card reflect the new state.
+    // Success — re-detect so the install badges + plugin card reflect the new
+    // state (the card should now disappear).
     state.installs = await invoke<DetectedInstall[]>("detect_installs");
     renderLaunch();
     renderAdvanced();
