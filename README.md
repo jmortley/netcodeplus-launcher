@@ -112,12 +112,23 @@ this beta** — everything else is. Code signing for the released `.exe`
 
 ## Privacy
 
-No telemetry, no analytics, no ads, no background phone-home. The launcher only
-contacts the UT4 master server, ut4stats.com, the PUG bot, and GitHub (for
-updates) — each only when a feature needs it. Your password is never stored;
-your login token lives in the Windows Credential Manager, not in any file.
-Exactly what's kept on your machine and what's sent where is spelled out in
-[`PRIVACY.md`](PRIVACY.md).
+No accounts beyond your existing UT4 login, and **no telemetry, no analytics, no
+ads, no background phone-home** — the launcher reaches the network only when a
+feature you're using needs it.
+
+- **What stays on your machine.** Your preferences and non-secret identifiers
+  live in a local `state.json`. Your login **refresh token** is kept in the
+  **Windows Credential Manager** — never in a file, never synced to OneDrive —
+  and your **password is never stored** at all.
+- **What it talks to, and when.** The UT4 master server (sign-in + server
+  browser), ut4stats.com (your stats + News), the PUG bot over HTTPS (only if
+  you've set a PUG token), and GitHub (update checks) — nothing else, nothing in
+  the background.
+- **No tracking.** Nothing is sold, shared, or aggregated; there is no server
+  that receives usage data, and there are no third-party trackers.
+
+Full detail — every stored field and every network destination, with exactly
+what's sent — is in [`PRIVACY.md`](PRIVACY.md).
 
 ## Reporting issues
 
