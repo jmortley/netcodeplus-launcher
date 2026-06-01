@@ -39,8 +39,8 @@ pub use crate::plugin_install::{
     install_plugin_zip, install_plugin_zip_verified, PluginInstallError,
 };
 pub use crate::shortcut::{
-    create_desktop_shortcut, detect_outdated_launcher, is_stale_pending, schedule_delete_on_reboot,
-    ShortcutError,
+    create_desktop_shortcut, desktop_shortcut_is_stale, detect_outdated_launcher, is_stale_pending,
+    schedule_delete_on_reboot, ShortcutError, LAUNCHER_SHORTCUT_NAME,
 };
 pub use crate::state::{LauncherState, DEFAULT_CHANNEL};
 pub use crate::stray::{remove_stray, scan_strays, StrayKind, StrayPlugin, StrayRemoveError};

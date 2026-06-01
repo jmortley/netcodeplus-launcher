@@ -56,6 +56,9 @@ interface LauncherUpdateResult {
 interface HousekeepingResult {
   old_launcher_path: string | null;
   current_version: string;
+  // True only when a desktop "UT4 Community Launcher.lnk" exists but points at a
+  // different (old) exe — drives the optional "Update desktop shortcut" button.
+  shortcut_needs_update: boolean;
 }
 
 // Stray (misplaced) NetcodePlus copies from `scan_strays`.
@@ -1797,30 +1800,35 @@ async function renderLauncherCleanup(): Promise<void> {
     panel.innerHTML = "";
     return;
   }
+  // Only offer to fix the shortcut when a stale "UT4 Community Launcher.lnk"
+  // actually points at the old exe — not for users who launch the exe directly.
+  const shortcutBtn = st.shortcut_needs_update
+    ? `<button id="cleanup-shortcut" type="button">Update desktop shortcut</button>`
+    : "";
   panel.innerHTML = `
     <div class="cleanup-card">
       <div class="cleanup-text">You're now on v${escape(st.current_version)}. Tidy up the old launcher:</div>
       <div class="src">Previous version still at: ${escape(st.old_launcher_path)}</div>
       <div class="cleanup-actions">
-        <button id="cleanup-shortcut" type="button">Create desktop shortcut</button>
+        ${shortcutBtn}
         <button id="cleanup-delete" type="button">Remove old launcher</button>
         <button id="cleanup-dismiss" type="button" class="link-btn">Dismiss</button>
       </div>
       <div id="cleanup-status" class="launch-status"></div>
     </div>`;
-  document.getElementById("cleanup-shortcut")?.addEventListener("click", () => void doCreateShortcut());
+  document.getElementById("cleanup-shortcut")?.addEventListener("click", () => void doUpdateShortcut());
   document.getElementById("cleanup-delete")?.addEventListener("click", () => void doDeleteOldLauncher());
   document.getElementById("cleanup-dismiss")?.addEventListener("click", () => void doDismissCleanup());
 }
 
-async function doCreateShortcut(): Promise<void> {
+async function doUpdateShortcut(): Promise<void> {
   const status = document.getElementById("cleanup-status");
   try {
     const lnk = await invoke<string>("create_launcher_shortcut");
-    if (status) status.innerHTML = `<span class="ok">✓ Desktop shortcut created.</span>`;
-    console.info("shortcut created:", lnk);
+    if (status) status.innerHTML = `<span class="ok">✓ Desktop shortcut updated.</span>`;
+    console.info("shortcut updated:", lnk);
   } catch (err) {
-    if (status) status.innerHTML = `<span class="warn">Couldn't create the shortcut: ${escape(String(err))}</span>`;
+    if (status) status.innerHTML = `<span class="warn">Couldn't update the shortcut: ${escape(String(err))}</span>`;
     console.error("create_launcher_shortcut failed:", err);
   }
 }

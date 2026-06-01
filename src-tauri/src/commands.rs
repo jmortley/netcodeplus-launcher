@@ -434,6 +434,11 @@ pub struct HousekeepingResult {
     pub old_launcher_path: Option<String>,
     /// This build's version, for the prompt copy.
     pub current_version: String,
+    /// Whether the canonical Desktop shortcut exists but points at a different
+    /// (old) exe — so the UI offers "Update desktop shortcut". `false` when there
+    /// is no such shortcut or it already points here, so a user who launches the
+    /// exe directly is never nagged to make one.
+    pub shortcut_needs_update: bool,
 }
 
 /// Record the running launcher's path + version, detect a post-update move, and
@@ -498,6 +503,7 @@ pub fn launcher_update_housekeeping(app: tauri::AppHandle) -> Result<Housekeepin
     Ok(HousekeepingResult {
         old_launcher_path: state.pending_old_launcher_path,
         current_version: current_version.to_string(),
+        shortcut_needs_update: ncp_host::desktop_shortcut_is_stale(&current_path),
     })
 }
 
@@ -506,7 +512,7 @@ pub fn launcher_update_housekeeping(app: tauri::AppHandle) -> Result<Housekeepin
 #[tauri::command]
 pub fn create_launcher_shortcut() -> Result<String, String> {
     let current = std::env::current_exe().map_err(|e| e.to_string())?;
-    let lnk = ncp_host::create_desktop_shortcut(&current, "UT4 Community Launcher")
+    let lnk = ncp_host::create_desktop_shortcut(&current, ncp_host::LAUNCHER_SHORTCUT_NAME)
         .map_err(|e| e.to_string())?;
     Ok(lnk.to_string_lossy().into_owned())
 }

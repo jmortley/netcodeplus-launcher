@@ -143,6 +143,50 @@ pub fn create_desktop_shortcut(_target: &Path, _name: &str) -> Result<PathBuf, S
     Err(ShortcutError::Unsupported)
 }
 
+/// File name (without the `.lnk` extension) of the canonical Desktop shortcut the
+/// launcher manages — shared by the writer (the caller of
+/// [`create_desktop_shortcut`]) and the staleness check below, so the two can't
+/// drift apart.
+pub const LAUNCHER_SHORTCUT_NAME: &str = "UT4 Community Launcher";
+
+/// Whether the canonical Desktop shortcut (`UT4 Community Launcher.lnk`) exists
+/// but points somewhere other than `current_exe` — i.e. it went stale after a
+/// notify-update and is worth offering to repoint.
+///
+/// Returns `false` when there is no such shortcut (the user launches the exe
+/// directly, or named their shortcut differently — we must not nag them to make
+/// one), when it already points here, or when its target can't be read. The
+/// repoint itself is [`create_desktop_shortcut`], which overwrites that same name.
+#[cfg(windows)]
+#[must_use]
+pub fn desktop_shortcut_is_stale(current_exe: &Path) -> bool {
+    use lnk::encoding::WINDOWS_1252;
+    use lnk::ShellLink;
+
+    let Some(desktop) = dirs::desktop_dir() else {
+        return false;
+    };
+    let lnk = desktop.join(format!("{LAUNCHER_SHORTCUT_NAME}.lnk"));
+    if !lnk.is_file() {
+        return false;
+    }
+    let Ok(link) = ShellLink::open(&lnk, WINDOWS_1252) else {
+        return false;
+    };
+    let Some(target) = link.link_target() else {
+        return false;
+    };
+    // Stale = the shortcut points at a different exe than the one running now.
+    paths_differ(&PathBuf::from(target), current_exe)
+}
+
+/// Non-Windows stub: there are no `.lnk` shortcuts to evaluate.
+#[cfg(not(windows))]
+#[must_use]
+pub fn desktop_shortcut_is_stale(_current_exe: &Path) -> bool {
+    false
+}
+
 /// Schedule `path` for deletion on the next reboot.
 ///
 /// The fallback for removing the previous launcher exe when it can't be deleted
