@@ -159,6 +159,21 @@ button:active {
   color: #fbbf24;
 }
 
+/* The "✓ NetcodePlus installed" badge as a clickable link to the plugin folder.
+   Keeps the green of `.ok` but resets button chrome and underlines on hover. */
+.ncp-reveal {
+  background: none;
+  border: none;
+  padding: 0;
+  font: inherit;
+  font-weight: 600;
+  color: #4ade80;
+  cursor: pointer;
+}
+.ncp-reveal:hover {
+  text-decoration: underline;
+}
+
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;

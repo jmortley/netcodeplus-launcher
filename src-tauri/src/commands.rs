@@ -539,6 +539,28 @@ pub fn restore_engine_config() -> Result<(), String> {
     ncp_host::config::restore(&engine_ini()?).map_err(|e| e.to_string())
 }
 
+/// Clear the read-only attribute on Engine.ini so the competitive config can be
+/// applied. Opt-in (the UI offers it) — some players set it read-only on purpose.
+#[tauri::command]
+pub fn clear_engine_ini_readonly() -> Result<(), String> {
+    ncp_host::config::clear_read_only(&engine_ini()?).map_err(|e| e.to_string())
+}
+
+/// Open an install's NetcodePlus plugin folder in the OS file manager. Only ever
+/// opens a real *directory* under the given install root — never an arbitrary
+/// webview path, and never a file, so there is no exec surface.
+#[tauri::command]
+pub fn reveal_netcodeplus_folder(app: tauri::AppHandle, root: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = ncp_host::netcodeplus_dir(Path::new(&root));
+    if !dir.is_dir() {
+        return Err("the NetcodePlus folder isn't there to open".to_string());
+    }
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Verify and, if needed, repair the `[OnlineSubsystemMcp.*]` master-server
 /// sections that a UT4 bug sometimes wipes. Returns whether a repair ran.
 #[tauri::command]

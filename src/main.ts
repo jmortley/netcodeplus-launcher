@@ -120,6 +120,7 @@ interface ConfigState {
   has_backup: boolean;
   master_server_ok: boolean;
   tweaks: EngineTweaks;
+  engine_ini_read_only: boolean;
 }
 
 interface NewsItem {
@@ -189,10 +190,13 @@ function sourceText(source: DetectSource): string {
   }
 }
 
-function netcodeplusBadge(status: NetcodePlusStatus): string {
+function netcodeplusBadge(status: NetcodePlusStatus, root?: string): string {
   switch (status) {
     case "installed":
-      return `<span class="ok">✓ NetcodePlus installed</span>`;
+      // With a root, the badge is a link that opens the plugin folder.
+      return root
+        ? `<button class="ncp-reveal" type="button" data-root="${escape(root)}" title="Open the NetcodePlus folder">✓ NetcodePlus installed</button>`
+        : `<span class="ok">✓ NetcodePlus installed</span>`;
     case "missing":
       return `<span class="warn">NetcodePlus is not installed in this UT4 install</span>`;
     case "malformed":
@@ -393,7 +397,7 @@ function renderLaunch() {
       <div class="play-hero">
         <div class="play-hero-overlay">
           <div class="play-title">Unreal Tournament</div>
-          <div class="play-sub">${netcodeplusBadge(di.netcodeplus)}</div>
+          <div class="play-sub">${netcodeplusBadge(di.netcodeplus, di.install.root)}</div>
         </div>
       </div>
       <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;Launch</button>
@@ -451,7 +455,7 @@ function renderAdvanced() {
     <div class="install-card">
       <div><strong>${escape(di.install.root)}</strong></div>
       <div class="src">${sourceText(di.source)}</div>
-      <div class="ncp">${netcodeplusBadge(di.netcodeplus)}</div>
+      <div class="ncp">${netcodeplusBadge(di.netcodeplus, di.install.root)}</div>
     </div>
     <div class="controls">
       ${installPicker}
@@ -1520,8 +1524,12 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
     : `<p class="src">OpenAL not detected — get <button id="get-openal" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio. The audio override is skipped without it.</p>`;
 
   const t = cfg.tweaks;
+  const readOnlyWarn = cfg.engine_ini_read_only
+    ? `<div class="alert">⚠ Your <code>Engine.ini</code> is read-only, so Apply can't write to it. If you set it read-only on purpose, leave it; otherwise <button id="cfg-make-writable" type="button" class="link-btn">make it writable</button> and apply again.</div>`
+    : "";
   configPanel.innerHTML = `
     <p>Applies a <strong>complete, competitively-tuned <code>Engine.ini</code> baseline</strong> — high FPS, still readable. The controls below let you <strong>customize a few parts</strong> of that config; the rest is applied as-is. Your existing <code>Engine.ini</code> is backed up before the first apply, and your online/login settings are left untouched.</p>
+    ${readOnlyWarn}
     <div class="controls">
       <label>Frame rate cap
         <input id="cfg-fps" type="number" min="0" step="10" value="${escape(String(t.frame_rate_cap))}" />
@@ -1545,10 +1553,31 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
   );
   document.getElementById("cfg-apply")?.addEventListener("click", () => void applyConfig(openal));
   document.getElementById("cfg-restore")?.addEventListener("click", () => void restoreConfig());
+  document.getElementById("cfg-make-writable")?.addEventListener("click", () => void doClearReadonly());
 
   if (flash) {
     const s = document.getElementById("cfg-status");
     if (s) s.innerHTML = `<span class="${flash.cls}">${escape(flash.text)}</span>`;
+  }
+}
+
+async function doClearReadonly(): Promise<void> {
+  try {
+    await invoke("clear_engine_ini_readonly");
+    await renderConfig({ text: "Engine.ini is writable now — apply when ready.", cls: "ok" });
+  } catch (err) {
+    await renderConfig({ text: `Couldn't change it: ${String(err)}`, cls: "warn" });
+  }
+}
+
+// Open the selected install's NetcodePlus plugin folder (the badge link). The
+// backend opens only a real folder under that install root, never an arbitrary
+// path — so this can't be turned into opening an attacker-chosen file.
+async function revealNcp(root: string): Promise<void> {
+  try {
+    await invoke("reveal_netcodeplus_folder", { root });
+  } catch (err) {
+    console.error("reveal_netcodeplus_folder failed:", err);
   }
 }
 
@@ -1764,5 +1793,12 @@ document
   ?.addEventListener("click", () => void renderServers());
 
 pickButton.addEventListener("click", () => void pickDir());
+// Delegated: the "✓ NetcodePlus installed" badge (rendered with a root) opens
+// that install's plugin folder. Delegated so it works across re-renders.
+document.addEventListener("click", (e) => {
+  const btn = (e.target as HTMLElement | null)?.closest<HTMLElement>(".ncp-reveal");
+  if (btn?.dataset.root) void revealNcp(btn.dataset.root);
+});
+
 void showVersion();
 void loadAll();

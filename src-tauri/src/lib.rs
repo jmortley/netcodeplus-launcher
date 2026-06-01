@@ -45,6 +45,8 @@ pub fn run() {
             commands::apply_engine_config,
             commands::restore_engine_config,
             commands::repair_master_server,
+            commands::clear_engine_ini_readonly,
+            commands::reveal_netcodeplus_folder,
             commands::launcher_version,
             auth::ut4_login,
             auth::ut4_auth_status,

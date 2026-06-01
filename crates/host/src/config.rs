@@ -179,6 +179,11 @@ pub struct ConfigState {
     pub master_server_ok: bool,
     /// Current editable values read from the ini (defaults if absent).
     pub tweaks: EngineTweaks,
+    /// Whether `Engine.ini` is marked read-only. Apply writes the file, so a
+    /// read-only ini makes it fail — the UI warns up front. Some players set it
+    /// read-only on purpose to lock their config, so it's surfaced with an
+    /// opt-in "make writable" rather than auto-cleared.
+    pub engine_ini_read_only: bool,
 }
 
 /// Failure modes for the config operations.
@@ -244,6 +249,7 @@ pub fn read_state(ini: &Path) -> ConfigState {
             has_backup,
             master_server_ok: master_server_intact(&text),
             tweaks: read_tweaks(&text),
+            engine_ini_read_only: is_read_only(ini),
         },
         // No readable ini yet — the UI shows "launch UT4 once"; master-server
         // state is irrelevant, so report it as fine to avoid a false alarm.
@@ -252,8 +258,37 @@ pub fn read_state(ini: &Path) -> ConfigState {
             has_backup,
             master_server_ok: true,
             tweaks: EngineTweaks::default(),
+            engine_ini_read_only: false,
         },
     }
+}
+
+/// Whether `path` exists and is marked read-only (best-effort; false if its
+/// metadata can't be read).
+fn is_read_only(path: &Path) -> bool {
+    std::fs::metadata(path)
+        .map(|m| m.permissions().readonly())
+        .unwrap_or(false)
+}
+
+/// Clear the read-only attribute on `ini` so [`apply`] can write it. A no-op if
+/// it's already writable. Opt-in (the UI offers it) because some players mark
+/// the file read-only deliberately.
+///
+/// # Errors
+/// [`ConfigError::Io`] if metadata can't be read or permissions can't be set.
+// Clearing the read-only attribute is the whole point, on Windows (the platform
+// the launcher targets), where `set_readonly(false)` simply removes that flag.
+// The clippy lint warns this would make a file world-writable on Unix, which
+// doesn't apply to the Windows UT4 config path.
+#[allow(clippy::permissions_set_readonly_false)]
+pub fn clear_read_only(ini: &Path) -> ConfigResult<()> {
+    let mut perms = std::fs::metadata(ini)?.permissions();
+    if perms.readonly() {
+        perms.set_readonly(false);
+        std::fs::set_permissions(ini, perms)?;
+    }
+    Ok(())
 }
 
 /// Apply the competitive baseline plus the editable knobs to `ini`,
@@ -892,5 +927,18 @@ Protocol=https
             ErrorKind::InvalidData,
             "x"
         )));
+    }
+
+    #[test]
+    fn clear_read_only_makes_a_readonly_ini_writable() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Engine.ini");
+        std::fs::write(&ini, "x").unwrap();
+        let mut perms = std::fs::metadata(&ini).unwrap().permissions();
+        perms.set_readonly(true);
+        std::fs::set_permissions(&ini, perms).unwrap();
+        assert!(is_read_only(&ini));
+        clear_read_only(&ini).unwrap();
+        assert!(!is_read_only(&ini));
     }
 }
