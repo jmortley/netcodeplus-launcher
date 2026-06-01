@@ -1693,7 +1693,11 @@ async function doDeleteOldLauncher(): Promise<void> {
   const status = document.getElementById("cleanup-status");
   try {
     await invoke("delete_old_launcher");
-    void renderLauncherCleanup(); // card should disappear now
+    // Keep the card up so the user can still create a shortcut — only the
+    // removal is done. Re-rendering would clear the whole card (the pending
+    // old-launcher record is gone now), which is what hid the shortcut button.
+    document.getElementById("cleanup-delete")?.remove();
+    if (status) status.innerHTML = `<span class="ok">✓ Old launcher removed.</span>`;
   } catch (err) {
     if (status) status.innerHTML = `<span class="warn">Couldn't remove it: ${escape(String(err))}</span>`;
     console.error("delete_old_launcher failed:", err);
