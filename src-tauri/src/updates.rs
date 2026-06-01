@@ -563,7 +563,8 @@ fn elevate_install(
         Ok(0) => Ok(()),
         Ok(n) => Err(format!(
             "the administrator install reported {n} install(s) failed — \
-             close Unreal Tournament if it is running, then try again"
+             close Unreal Tournament and any File Explorer window showing the \
+             plugin folder, then try again"
         )),
         Err(ncp_host::ElevateError::Cancelled) => Err(
             "you declined the administrator prompt, so the protected install \

@@ -95,6 +95,46 @@ fn annotate(e: io::Error, step: &str, path: &Path) -> io::Error {
     io::Error::new(e.kind(), format!("{step}: {}: {e}", path.display()))
 }
 
+/// `fs::rename`, retried briefly on a transient lock. Renaming a directory
+/// Windows has an open handle on (File Explorer showing the folder, an AV
+/// mid-scan of a freshly-extracted DLL, the game still closing) fails with
+/// access-denied / sharing-violation; those clear in moments, so a few short
+/// backoff retries ride through them without making the user do anything. A
+/// persistent failure (e.g. the game actually running) still surfaces after the
+/// last attempt. ~1.5s worst case (50+100+200+400+800ms).
+fn rename_with_retry(from: &Path, to: &Path) -> io::Result<()> {
+    const BACKOFFS_MS: [u64; 5] = [50, 100, 200, 400, 800];
+    let mut last = match fs::rename(from, to) {
+        Ok(()) => return Ok(()),
+        Err(e) => e,
+    };
+    for delay in BACKOFFS_MS {
+        // Only retry transient lock errors; a non-lock failure won't fix itself.
+        if !is_transient_lock(&last) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(delay));
+        match fs::rename(from, to) {
+            Ok(()) => return Ok(()),
+            Err(e) => last = e,
+        }
+    }
+    Err(last)
+}
+
+/// Whether an error is a transient file-lock worth retrying (vs. a hard
+/// failure). Covers the portable `PermissionDenied` plus the raw Windows
+/// `ERROR_ACCESS_DENIED` (5) and `ERROR_SHARING_VIOLATION` (32).
+fn is_transient_lock(e: &io::Error) -> bool {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    const ERROR_SHARING_VIOLATION: i32 = 32;
+    e.kind() == io::ErrorKind::PermissionDenied
+        || matches!(
+            e.raw_os_error(),
+            Some(ERROR_ACCESS_DENIED) | Some(ERROR_SHARING_VIOLATION)
+        )
+}
+
 /// Compute the lowercase hex SHA-256 of the file at `path`, streaming so a
 /// large ZIP is not fully buffered.
 fn file_sha256_hex(path: &Path) -> io::Result<String> {
@@ -261,9 +301,11 @@ pub fn install_plugin_zip(zip_path: &Path, root: &Path) -> Result<()> {
         if backup.exists() {
             fs::remove_dir_all(&backup).map_err(|e| annotate(e, "remove stale backup", &backup))?;
         }
-        fs::rename(&dest, &backup).map_err(|e| annotate(e, "move existing aside", &dest))?;
+        rename_with_retry(&dest, &backup).map_err(|e| annotate(e, "move existing aside", &dest))?;
     }
-    match fs::rename(&staging, &dest).map_err(|e| annotate(e, "move new into place", &staging)) {
+    match rename_with_retry(&staging, &dest)
+        .map_err(|e| annotate(e, "move new into place", &staging))
+    {
         Ok(()) => {
             if had_existing {
                 let _ = fs::remove_dir_all(&backup); // best-effort cleanup
@@ -314,6 +356,21 @@ fn extract_into(zip_path: &Path, staging: &Path) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn transient_lock_classifier() {
+        // Retryable: permission-denied + raw access-denied(5) / sharing(32).
+        assert!(is_transient_lock(&io::Error::from(
+            io::ErrorKind::PermissionDenied
+        )));
+        assert!(is_transient_lock(&io::Error::from_raw_os_error(5)));
+        assert!(is_transient_lock(&io::Error::from_raw_os_error(32)));
+        // Not retryable: not-found, and an unrelated raw error.
+        assert!(!is_transient_lock(&io::Error::from(
+            io::ErrorKind::NotFound
+        )));
+        assert!(!is_transient_lock(&io::Error::from_raw_os_error(2)));
+    }
 
     #[test]
     fn rejects_traversal_and_absolute_entries() {
