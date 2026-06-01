@@ -196,6 +196,19 @@ pub enum ConfigError {
     /// Underlying filesystem error.
     #[error(transparent)]
     Io(#[from] std::io::Error),
+    /// An atomic config write failed even after retries — usually antivirus
+    /// (e.g. Windows Defender) blocking the launcher from writing in the config
+    /// folder, a read-only file, or OneDrive mid-sync racing the temp file.
+    #[error(
+        "couldn't save {path} after several attempts — antivirus (e.g. Windows \
+         Defender) may be blocking the launcher from writing there, the file may \
+         be read-only, or OneDrive may be mid-sync. Add an exclusion for the \
+         launcher (or that folder), then try again. ({source})"
+    )]
+    AtomicWrite {
+        path: PathBuf,
+        source: std::io::Error,
+    },
 }
 
 /// Result alias for the config operations.
@@ -411,6 +424,13 @@ fn section_inner(header: &str) -> &str {
         .trim()
 }
 
+/// Max attempts for an atomic write. Antivirus (Windows Defender) real-time
+/// scanning, OneDrive sync, or a transient file lock can make the just-created
+/// temp file briefly vanish or be denied (os error 2/5/32); retrying lets a
+/// momentary race clear. A consistent block (a read-only file, or Defender
+/// quarantining every attempt) still fails — with a clearer error.
+const ATOMIC_WRITE_ATTEMPTS: u32 = 5;
+
 fn write_atomic(path: &Path, contents: &str) -> ConfigResult<()> {
     let parent = path.parent().ok_or_else(|| {
         ConfigError::Io(std::io::Error::new(
@@ -419,11 +439,45 @@ fn write_atomic(path: &Path, contents: &str) -> ConfigResult<()> {
         ))
     })?;
     std::fs::create_dir_all(parent)?;
+
+    let mut last = std::io::Error::other("atomic write did not run");
+    for attempt in 1..=ATOMIC_WRITE_ATTEMPTS {
+        match try_write_atomic(parent, path, contents) {
+            Ok(()) => return Ok(()),
+            Err(e) => {
+                let transient = is_transient_write_error(&e);
+                last = e;
+                if transient && attempt < ATOMIC_WRITE_ATTEMPTS {
+                    std::thread::sleep(std::time::Duration::from_millis(120 * u64::from(attempt)));
+                } else {
+                    break;
+                }
+            }
+        }
+    }
+    Err(ConfigError::AtomicWrite {
+        path: path.to_path_buf(),
+        source: last,
+    })
+}
+
+/// One atomic-write attempt: temp file in the target dir → write → fsync →
+/// rename over the target.
+fn try_write_atomic(parent: &Path, path: &Path, contents: &str) -> std::io::Result<()> {
     let mut tmp = NamedTempFile::new_in(parent)?;
     tmp.write_all(contents.as_bytes())?;
     tmp.as_file_mut().sync_all()?;
-    tmp.persist(path).map_err(|e| ConfigError::Io(e.error))?;
+    tmp.persist(path).map_err(|e| e.error)?;
     Ok(())
+}
+
+/// Filesystem errors that are commonly transient on Windows when antivirus,
+/// OneDrive, or another process races a just-created file: not-found,
+/// access-denied, sharing-violation. Worth a retry; a persistent cause fails
+/// after the attempts with a clearer [`ConfigError::AtomicWrite`].
+fn is_transient_write_error(e: &std::io::Error) -> bool {
+    matches!(e.raw_os_error(), Some(2) | Some(5) | Some(32))
+        || matches!(e.kind(), ErrorKind::NotFound | ErrorKind::PermissionDenied)
 }
 
 /// A minimal, order-preserving UE4 ini model: a list of sections, each a
@@ -819,5 +873,24 @@ Protocol=https
         let ini = dir.path().join("Engine.ini");
         std::fs::write(&ini, with_all_mcp("[X]\nk=v\n")).unwrap();
         assert!(!repair_master_server(&ini).unwrap());
+    }
+
+    #[test]
+    fn transient_write_errors_are_classified() {
+        use std::io::Error;
+        // Windows: 2 = not found, 5 = access denied, 32 = sharing violation —
+        // codes antivirus / OneDrive / a file lock surface; all retryable.
+        assert!(is_transient_write_error(&Error::from_raw_os_error(2)));
+        assert!(is_transient_write_error(&Error::from_raw_os_error(5)));
+        assert!(is_transient_write_error(&Error::from_raw_os_error(32)));
+        assert!(is_transient_write_error(&Error::new(
+            ErrorKind::NotFound,
+            "x"
+        )));
+        // A genuinely non-transient error is not retried.
+        assert!(!is_transient_write_error(&Error::new(
+            ErrorKind::InvalidData,
+            "x"
+        )));
     }
 }
