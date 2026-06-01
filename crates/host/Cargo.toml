@@ -20,6 +20,9 @@ thiserror = { workspace = true }
 tracing = { workspace = true }
 tempfile = { workspace = true }
 dirs = { workspace = true }
+# Semver compare for post-update detection (recorded vs running launcher
+# version) in `shortcut::detect_outdated_launcher`.
+semver = { workspace = true }
 
 # Plugin ZIP extraction. Decompression only, pure-Rust deflate
 # (flate2 + zlib-rs) — default features OFF drops bzip2/zstd/lzma/aes and
@@ -38,10 +41,11 @@ sha2 = { workspace = true }
 # other targets fall back to directory probing + the folder picker.
 [target.'cfg(windows)'.dependencies]
 lnk = { workspace = true }
+# Create the desktop shortcut to a freshly updated launcher exe.
+mslnk = { workspace = true }
 # One FFI call (SetProcessAffinityMask) for CPU-affinity pinning in
 # `launch`, behind a documented `#[allow(unsafe_code)]`.
 windows-sys = { workspace = true }
 
 [dev-dependencies]
 ncp-manifest = { path = "../manifest" }
-semver = { workspace = true }

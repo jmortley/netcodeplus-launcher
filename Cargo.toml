@@ -53,6 +53,11 @@ dirs = "6"
 # (the alternative, the `windows` crate's IShellLink, needs unsafe COM).
 lnk = "0.6"
 
+# Windows .lnk WRITING — creates the desktop shortcut to a freshly updated
+# launcher exe (post-update housekeeping). Pure Rust (writes the .lnk binary
+# directly), so it keeps `unsafe_code = deny`; the write counterpart to `lnk`.
+mslnk = "0.1"
+
 # A single Win32 FFI call (`SetProcessAffinityMask`) to pin the launched
 # game to a CPU-affinity mask — the one launch knob with no safe-Rust
 # equivalent. Used only on Windows, behind a documented

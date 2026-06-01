@@ -374,6 +374,145 @@ pub fn ulticross_status(root: String) -> bool {
     ncp_host::ulticross_installed(Path::new(&root))
 }
 
+// ===================================================================
+// Post-update housekeeping — after the notify-only update flow, help the
+// user delete the outdated launcher and create a fresh desktop shortcut.
+// ===================================================================
+
+/// What the post-update housekeeping prompt should show.
+#[derive(Debug, serde::Serialize)]
+pub struct HousekeepingResult {
+    /// Path of the previous, now-outdated launcher exe the user can remove, if
+    /// one was detected and still exists. `None` = nothing to clean up.
+    pub old_launcher_path: Option<String>,
+    /// This build's version, for the prompt copy.
+    pub current_version: String,
+}
+
+/// Record the running launcher's path + version, detect a post-update move, and
+/// report whether an outdated previous launcher is around to clean up.
+///
+/// Run once on startup. When a build with a HIGHER version than the recorded
+/// one starts from a DIFFERENT path, the recorded path is the outdated copy: it
+/// is stashed in `pending_old_launcher_path` so [`delete_old_launcher`] removes
+/// exactly that (never a webview-supplied path). A pending entry whose file has
+/// since gone is cleared. The running path/version are always recorded so the
+/// next update is detectable and the prompt doesn't re-fire for this build.
+#[tauri::command]
+pub fn launcher_update_housekeeping(app: tauri::AppHandle) -> Result<HousekeepingResult, String> {
+    let current_path = std::env::current_exe().map_err(|e| e.to_string())?;
+    let current_version = env!("CARGO_PKG_VERSION");
+    let current_semver = semver::Version::parse(current_version).map_err(|e| e.to_string())?;
+
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+
+    // Detect a genuine upgrade that started from a different location.
+    if let Some(old) = ncp_host::detect_outdated_launcher(
+        &current_path,
+        &current_semver,
+        state.installed_launcher_path.as_deref(),
+        state.installed_launcher_version.as_deref(),
+    ) {
+        if old.is_file() {
+            state.pending_old_launcher_path = Some(old.to_string_lossy().into_owned());
+        }
+    }
+
+    // A previously-pending old launcher that has since been removed is resolved.
+    if let Some(p) = &state.pending_old_launcher_path {
+        if !Path::new(p).is_file() {
+            state.pending_old_launcher_path = None;
+        }
+    }
+
+    // Always record where/which build is running now.
+    state.installed_launcher_path = Some(current_path.to_string_lossy().into_owned());
+    state.installed_launcher_version = Some(current_version.to_string());
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+
+    Ok(HousekeepingResult {
+        old_launcher_path: state.pending_old_launcher_path,
+        current_version: current_version.to_string(),
+    })
+}
+
+/// Create a Desktop shortcut ("UT4 Community Launcher.lnk") pointing at the
+/// running launcher exe. Returns the shortcut path on success.
+#[tauri::command]
+pub fn create_launcher_shortcut() -> Result<String, String> {
+    let current = std::env::current_exe().map_err(|e| e.to_string())?;
+    let lnk = ncp_host::create_desktop_shortcut(&current, "UT4 Community Launcher")
+        .map_err(|e| e.to_string())?;
+    Ok(lnk.to_string_lossy().into_owned())
+}
+
+/// Delete the previous, now-outdated launcher exe recorded in
+/// `pending_old_launcher_path`, then clear that record.
+///
+/// Only ever deletes the backend-recorded path (never a value from the
+/// webview), and only when it is a regular `.exe` file that is not the launcher
+/// currently running — so a tampered state file can't turn this into an
+/// arbitrary-file delete.
+#[tauri::command]
+pub fn delete_old_launcher(app: tauri::AppHandle) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let old = state
+        .pending_old_launcher_path
+        .clone()
+        .ok_or("there is no previous launcher recorded to remove")?;
+    let old_path = PathBuf::from(&old);
+
+    // Already gone — treat as resolved.
+    if !old_path.is_file() {
+        state.pending_old_launcher_path = None;
+        ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    // Safety: must be a regular .exe, and not the running launcher.
+    let is_exe = old_path
+        .extension()
+        .and_then(|e| e.to_str())
+        .is_some_and(|e| e.eq_ignore_ascii_case("exe"));
+    if !is_exe {
+        return Err("refused to remove a path that is not an .exe".into());
+    }
+    let current = std::env::current_exe().map_err(|e| e.to_string())?;
+    let same_as_running = match (
+        std::fs::canonicalize(&old_path),
+        std::fs::canonicalize(&current),
+    ) {
+        (Ok(a), Ok(b)) => a == b,
+        _ => old_path == current,
+    };
+    if same_as_running {
+        return Err("refused to remove the launcher that is currently running".into());
+    }
+
+    std::fs::remove_file(&old_path).map_err(|e| e.to_string())?;
+    state.pending_old_launcher_path = None;
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Dismiss the post-update cleanup prompt without deleting anything (clears the
+/// pending old-launcher record).
+#[tauri::command]
+pub fn dismiss_launcher_cleanup(app: tauri::AppHandle) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.pending_old_launcher_path = None;
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Apply the competitive Engine.ini baseline plus the editable knobs,
 /// merging into the existing ini (backing it up first).
 #[tauri::command]

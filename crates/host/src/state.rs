@@ -127,6 +127,28 @@ pub struct LauncherState {
     /// accepts any sequence).
     #[serde(default)]
     pub highest_manifest_sequence: u64,
+
+    /// Absolute path of the launcher exe that last recorded itself as the
+    /// installed build (from `std::env::current_exe()`), paired with
+    /// [`Self::installed_launcher_version`]. Used to detect a post-update move:
+    /// when a launcher of a *higher* version runs from a *different* path, the
+    /// recorded path is the now-outdated copy. `None` until a build with this
+    /// tracking has run once — so the cleanup prompt is forward-looking and
+    /// cannot point at a pre-tracking old build.
+    #[serde(default)]
+    pub installed_launcher_path: Option<String>,
+
+    /// Version (`CARGO_PKG_VERSION`) recorded with [`Self::installed_launcher_path`].
+    #[serde(default)]
+    pub installed_launcher_version: Option<String>,
+
+    /// Path of a previous, now-outdated launcher exe the user may want to
+    /// delete, set when a post-update move is detected. Surfaced by the
+    /// housekeeping UI and cleared once the user removes it or dismisses the
+    /// prompt. The delete command only ever removes THIS backend-recorded path,
+    /// never one supplied by the webview.
+    #[serde(default)]
+    pub pending_old_launcher_path: Option<String>,
 }
 
 fn default_channel() -> String {
@@ -156,6 +178,9 @@ impl Default for LauncherState {
             ut4_account_id: None,
             installed_plugins: HashMap::new(),
             highest_manifest_sequence: 0,
+            installed_launcher_path: None,
+            installed_launcher_version: None,
+            pending_old_launcher_path: None,
         }
     }
 }
@@ -260,5 +285,8 @@ mod tests {
         // with the floor defaulting to 0.
         let state: LauncherState = serde_json::from_str(r#"{"channel":"stable"}"#).unwrap();
         assert_eq!(state.highest_manifest_sequence, 0);
+        assert_eq!(state.installed_launcher_path, None);
+        assert_eq!(state.installed_launcher_version, None);
+        assert_eq!(state.pending_old_launcher_path, None);
     }
 }

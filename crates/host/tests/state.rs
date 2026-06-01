@@ -61,6 +61,9 @@ fn sample_state() -> LauncherState {
         ut4_account_id: Some("64bf8c6d81004e88823d577abe157373".to_string()),
         installed_plugins,
         highest_manifest_sequence: 42,
+        installed_launcher_path: Some("C:/Games/UT4-Community-Launcher-0.2.0.exe".to_string()),
+        installed_launcher_version: Some("0.2.0".to_string()),
+        pending_old_launcher_path: Some("C:/Old/launcher-0.1.0.exe".to_string()),
     }
 }
 

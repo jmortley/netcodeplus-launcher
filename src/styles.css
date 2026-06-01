@@ -539,6 +539,30 @@ footer {
   font-size: 0.9rem;
 }
 
+/* Post-update housekeeping card — shows once after the launcher updates to a
+   new exe, offering to create a shortcut + remove the outdated copy. Neutral
+   slate accent (informational, not an error or a call-to-action). */
+.cleanup-card {
+  background: rgba(148, 163, 184, 0.1);
+  border: 1px solid rgba(148, 163, 184, 0.4);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.cleanup-text {
+  font-weight: 600;
+  margin-bottom: 0.25rem;
+}
+
+.cleanup-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  margin-top: 0.6rem;
+}
+
 /* ---- news (pinned to the Launch tab) ---- */
 
 .news {

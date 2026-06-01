@@ -52,6 +52,12 @@ interface LauncherUpdateResult {
   url: string | null;
 }
 
+// Post-update housekeeping status from `launcher_update_housekeeping`.
+interface HousekeepingResult {
+  old_launcher_path: string | null;
+  current_version: string;
+}
+
 // Stray (misplaced) NetcodePlus copies from `scan_strays`.
 interface StrayReport {
   kind: string;
@@ -889,6 +895,7 @@ async function loadAll() {
     void renderConfig();
     void renderAddons();
     void renderLauncherUpdate();
+    void renderLauncherCleanup();
     void renderNews();
     if (state.launcherToken) {
       void pollPugStatus();
@@ -1625,6 +1632,81 @@ async function renderLauncherUpdate(): Promise<void> {
   document
     .getElementById("launcher-update-btn")
     ?.addEventListener("click", () => openExternal(url));
+}
+
+// ---- post-update housekeeping (remove old launcher + make a shortcut) ------
+
+// After the user downloads + runs a newer launcher from a new spot, the old exe
+// and any shortcut to it are stale. This offers to drop a fresh desktop shortcut
+// to the new exe and remove the outdated copy. The backend only ever deletes the
+// path IT recorded (never one from here). Silent until an update is detected;
+// the card persists across runs until the user removes the old one or dismisses.
+async function renderLauncherCleanup(): Promise<void> {
+  const panel = document.getElementById("launcher-cleanup-panel");
+  if (!panel) return;
+  let st: HousekeepingResult;
+  try {
+    st = await invoke<HousekeepingResult>("launcher_update_housekeeping");
+  } catch (err) {
+    console.error("launcher_update_housekeeping failed:", err);
+    panel.innerHTML = "";
+    return;
+  }
+  if (!st.old_launcher_path) {
+    panel.innerHTML = "";
+    return;
+  }
+  panel.innerHTML = `
+    <div class="cleanup-card">
+      <div class="cleanup-text">You're now on v${escape(st.current_version)}. Tidy up the old launcher:</div>
+      <div class="src">Previous version still at: ${escape(st.old_launcher_path)}</div>
+      <div class="cleanup-actions">
+        <button id="cleanup-shortcut" type="button">Create desktop shortcut</button>
+        <button id="cleanup-delete" type="button">Remove old launcher</button>
+        <button id="cleanup-dismiss" type="button" class="link-btn">Dismiss</button>
+      </div>
+      <div id="cleanup-status" class="launch-status"></div>
+    </div>`;
+  document.getElementById("cleanup-shortcut")?.addEventListener("click", () => void doCreateShortcut());
+  document.getElementById("cleanup-delete")?.addEventListener("click", () => void doDeleteOldLauncher());
+  document.getElementById("cleanup-dismiss")?.addEventListener("click", () => void doDismissCleanup());
+}
+
+async function doCreateShortcut(): Promise<void> {
+  const status = document.getElementById("cleanup-status");
+  try {
+    const lnk = await invoke<string>("create_launcher_shortcut");
+    if (status) status.innerHTML = `<span class="ok">✓ Desktop shortcut created.</span>`;
+    console.info("shortcut created:", lnk);
+  } catch (err) {
+    if (status) status.innerHTML = `<span class="warn">Couldn't create the shortcut: ${escape(String(err))}</span>`;
+    console.error("create_launcher_shortcut failed:", err);
+  }
+}
+
+async function doDeleteOldLauncher(): Promise<void> {
+  const ok = await confirm(
+    "Remove the old launcher? This deletes the previous version's .exe. Your settings and login stay — they're shared.",
+    { title: "Remove old launcher", kind: "warning" },
+  );
+  if (!ok) return;
+  const status = document.getElementById("cleanup-status");
+  try {
+    await invoke("delete_old_launcher");
+    void renderLauncherCleanup(); // card should disappear now
+  } catch (err) {
+    if (status) status.innerHTML = `<span class="warn">Couldn't remove it: ${escape(String(err))}</span>`;
+    console.error("delete_old_launcher failed:", err);
+  }
+}
+
+async function doDismissCleanup(): Promise<void> {
+  try {
+    await invoke("dismiss_launcher_cleanup");
+  } catch (err) {
+    console.error("dismiss_launcher_cleanup failed:", err);
+  }
+  void renderLauncherCleanup();
 }
 
 // ---- news (pinned to the Launch tab) ---------------------------------------
