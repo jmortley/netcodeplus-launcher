@@ -23,6 +23,7 @@ pub mod plugin_install;
 pub mod state;
 pub mod stray;
 
+pub use crate::elevate::{dir_writable, run_elevated, ElevateError};
 pub use crate::error::{Result, StateError};
 pub use crate::install::{
     check_install, default_mod_paks_dir, detect, detect_installs, netcodeplus_dir,
@@ -32,6 +33,8 @@ pub use crate::install::{
 pub use crate::launch::{
     affinity_presets, launch, logical_cpus, parse_mask_hex, AffinityPreset, LaunchOptions, Priority,
 };
-pub use crate::plugin_install::{install_plugin_zip, PluginInstallError};
+pub use crate::plugin_install::{
+    install_plugin_zip, install_plugin_zip_verified, PluginInstallError,
+};
 pub use crate::state::{LauncherState, DEFAULT_CHANNEL};
 pub use crate::stray::{remove_stray, scan_strays, StrayKind, StrayPlugin, StrayRemoveError};

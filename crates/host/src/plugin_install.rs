@@ -53,6 +53,17 @@ pub enum PluginInstallError {
     #[error("could not read plugin archive: {0}")]
     Zip(#[from] zip::result::ZipError),
 
+    /// The ZIP's SHA-256 did not match the expected (signed-manifest) digest.
+    /// Surfaced by [`install_plugin_zip_verified`] — the elevated install child
+    /// re-checks integrity itself rather than trusting the parent's verdict.
+    #[error("plugin archive hash mismatch: expected {expected}, got {got}")]
+    HashMismatch {
+        /// The hex digest from the signed manifest.
+        expected: String,
+        /// The hex digest actually computed from the ZIP on disk.
+        got: String,
+    },
+
     /// Filesystem error during extraction or the swap.
     #[error("plugin install I/O error: {0}")]
     Io(#[from] io::Error),
@@ -60,6 +71,45 @@ pub enum PluginInstallError {
 
 /// Result alias for plugin installation.
 pub type Result<T> = std::result::Result<T, PluginInstallError>;
+
+/// Compute the lowercase hex SHA-256 of the file at `path`, streaming so a
+/// large ZIP is not fully buffered.
+fn file_sha256_hex(path: &Path) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut file = fs::File::open(path)?;
+    let mut hasher = Sha256::new();
+    io::copy(&mut file, &mut hasher)?;
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
+/// Re-verify the ZIP's SHA-256 against `expected_sha256_hex`, then install it
+/// into `root`. This is what the **elevated** install child calls: it does NOT
+/// trust that the (unelevated) parent already verified the bytes — it re-hashes
+/// the file itself, closing the window between the parent's verify and the
+/// privileged extract. `expected_sha256_hex` originates from the signed
+/// manifest and is passed across the elevation boundary as an argument.
+///
+/// # Errors
+/// [`PluginInstallError::HashMismatch`] if the digest differs, otherwise the
+/// same errors as [`install_plugin_zip`].
+pub fn install_plugin_zip_verified(
+    zip_path: &Path,
+    root: &Path,
+    expected_sha256_hex: &str,
+) -> Result<()> {
+    let got = file_sha256_hex(zip_path)?;
+    if !got.eq_ignore_ascii_case(expected_sha256_hex) {
+        return Err(PluginInstallError::HashMismatch {
+            expected: expected_sha256_hex.to_string(),
+            got,
+        });
+    }
+    install_plugin_zip(zip_path, root)
+}
 
 /// `true` only when `name` is a flat, relative, safe path to join under the
 /// destination: no absolute root, no `..` parent escape, no drive/UNC prefix,

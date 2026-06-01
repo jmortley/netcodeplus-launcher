@@ -29,6 +29,10 @@ dirs = { workspace = true }
 # already SHA-256-verified by ncp-net::download before extraction, so this
 # crate does no hashing — it stays the filesystem boundary, no network dep.
 zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
+# Re-hash the plugin ZIP inside the elevated install child, so the elevated
+# step re-verifies integrity itself (closes the verify→install TOCTOU) rather
+# than trusting bytes the unelevated parent verified.
+sha2 = { workspace = true }
 
 # .lnk parsing is only used on Windows (desktop-shortcut detection);
 # other targets fall back to directory probing + the folder picker.
