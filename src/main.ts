@@ -920,6 +920,7 @@ function renderSummary(s: PlayerSummary | null, error?: string) {
     <div class="stat-head">
       <strong>${escape(s.playername)}</strong>
       <span class="src">${escape(s.flag || "")}</span>
+      <button id="ut4-refresh" type="button" class="link-btn">refresh</button>
       <button id="ut4-change" type="button" class="link-btn">change</button>
     </div>
     <div class="ratings">${ratings}</div>
@@ -930,6 +931,11 @@ function renderSummary(s: PlayerSummary | null, error?: string) {
     ${recent ? `<div class="src">Recent rated matches</div>${recent}` : ""}
   `;
   document.getElementById("ut4-change")?.addEventListener("click", () => void unlink());
+  // Re-pull the summary on demand: it's otherwise only fetched at startup, so
+  // ratings / recent matches would stay stale until the launcher is reopened.
+  document.getElementById("ut4-refresh")?.addEventListener("click", () => {
+    if (state.linkedId) void fetchSummary(state.linkedId);
+  });
   statsPanel.querySelectorAll<HTMLButtonElement>(".match-link").forEach((btn) => {
     btn.addEventListener("click", () => {
       const url = btn.dataset.url;
