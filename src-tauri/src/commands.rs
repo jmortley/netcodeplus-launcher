@@ -455,6 +455,9 @@ pub fn launcher_update_housekeeping(app: tauri::AppHandle) -> Result<Housekeepin
     let mut state = ncp_host::state::read(&path)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
+    // The version running at the previous launch, captured before we overwrite
+    // it below — lets us spot a downgrade (an older build being run again).
+    let prev_version = state.installed_launcher_version.clone();
 
     // Detect a genuine upgrade that started from a different location.
     if let Some(old) = ncp_host::detect_outdated_launcher(
@@ -468,9 +471,21 @@ pub fn launcher_update_housekeeping(app: tauri::AppHandle) -> Result<Housekeepin
         }
     }
 
-    // A previously-pending old launcher that has since been removed is resolved.
-    if let Some(p) = &state.pending_old_launcher_path {
-        if !Path::new(p).is_file() {
+    // Revalidate any pending old-launcher record: drop it if its file is gone,
+    // if it points at the launcher running right now (you can't tidy yourself
+    // away — this is what surfaced when an older build was re-run after a newer
+    // one had recorded it as the "old" copy), or if this run is older than the
+    // previous one (the user went back to an earlier build, so the post-update
+    // prompt no longer applies).
+    if let Some(p) = state.pending_old_launcher_path.clone() {
+        let p_path = Path::new(&p);
+        if ncp_host::is_stale_pending(
+            p_path,
+            p_path.is_file(),
+            &current_path,
+            &current_semver,
+            prev_version.as_deref(),
+        ) {
             state.pending_old_launcher_path = None;
         }
     }

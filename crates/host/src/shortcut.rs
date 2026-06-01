@@ -75,6 +75,40 @@ pub fn detect_outdated_launcher(
     Some(recorded_path)
 }
 
+/// Whether a recorded `pending_old_launcher_path` should be discarded rather
+/// than offered for cleanup. Pure (the caller supplies whether the file still
+/// exists), so the decision is deterministic and testable.
+///
+/// A pending old-launcher is stale when any of these hold:
+/// - its file is gone (`exists == false`) — nothing left to remove;
+/// - it is the launcher running right now (same path) — you can't tidy yourself
+///   away, which is exactly what happens when an older build is re-launched
+///   after a newer one had recorded it as the "old" copy;
+/// - this run is **older** than the previous one (`current_version <
+///   previous_version`) — the user went back to an earlier build, so the
+///   "you just updated, here's the old one" prompt no longer applies.
+#[must_use]
+pub fn is_stale_pending(
+    pending_path: &Path,
+    exists: bool,
+    current_path: &Path,
+    current_version: &Version,
+    previous_version: Option<&str>,
+) -> bool {
+    if !exists {
+        return true;
+    }
+    if !paths_differ(pending_path, current_path) {
+        return true;
+    }
+    if let Some(prev) = previous_version.and_then(|v| Version::parse(v).ok()) {
+        if *current_version < prev {
+            return true;
+        }
+    }
+    false
+}
+
 /// Create (overwriting any existing) a Desktop shortcut named `<name>.lnk`
 /// pointing at `target`. Returns the path of the written `.lnk`.
 ///
@@ -237,6 +271,81 @@ mod tests {
         assert!(!paths_differ(
             Path::new(r"C:\A\Launcher.exe"),
             Path::new(r"c:\a\launcher.exe")
+        ));
+    }
+
+    #[test]
+    fn pending_is_stale_when_file_is_gone() {
+        assert!(is_stale_pending(
+            Path::new(r"C:\old\launcher-0.2.2.exe"),
+            false, // file no longer on disk
+            Path::new(r"C:\new\launcher-0.2.4.exe"),
+            &v("0.2.4"),
+            Some("0.2.3"),
+        ));
+    }
+
+    #[test]
+    fn pending_is_stale_when_it_is_the_running_launcher() {
+        // The reported bug: run 0.2.3 (records the 0.2.2 exe as pending), then
+        // run that same 0.2.2 exe again — it must not offer to remove itself.
+        assert!(is_stale_pending(
+            Path::new(r"C:\Users\me\Desktop\launcher-0.2.2.exe"),
+            true,
+            Path::new(r"C:\Users\me\Desktop\launcher-0.2.2.exe"),
+            &v("0.2.2"),
+            Some("0.2.3"),
+        ));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pending_running_match_is_case_insensitive() {
+        assert!(is_stale_pending(
+            Path::new(r"C:\A\Launcher.exe"),
+            true,
+            Path::new(r"c:\a\launcher.exe"),
+            &v("0.2.2"),
+            Some("0.2.3"),
+        ));
+    }
+
+    #[test]
+    fn pending_is_stale_on_version_regression_from_a_different_path() {
+        // Ran a newer build, ignored cleanup, then ran an OLDER build from a
+        // different path: the "you just updated" card must not resurface.
+        assert!(is_stale_pending(
+            Path::new(r"C:\a\launcher-0.2.2.exe"),
+            true,
+            Path::new(r"C:\b\launcher-0.2.2.exe"),
+            &v("0.2.2"),
+            Some("0.2.3"),
+        ));
+    }
+
+    #[test]
+    fn pending_survives_a_genuine_forward_update() {
+        // The normal case: on the new build, the recorded old exe is still a
+        // valid cleanup target.
+        assert!(!is_stale_pending(
+            Path::new(r"C:\old\launcher-0.2.3.exe"),
+            true,
+            Path::new(r"C:\new\launcher-0.2.4.exe"),
+            &v("0.2.4"),
+            Some("0.2.3"),
+        ));
+    }
+
+    #[test]
+    fn pending_survives_when_no_previous_version_recorded() {
+        // No previous version to regress against; a different, existing path is
+        // a legitimate cleanup target.
+        assert!(!is_stale_pending(
+            Path::new(r"C:\old\launcher-0.2.3.exe"),
+            true,
+            Path::new(r"C:\new\launcher-0.2.4.exe"),
+            &v("0.2.4"),
+            None,
         ));
     }
 }
