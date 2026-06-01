@@ -44,6 +44,14 @@ interface PluginInstallOutcome {
   detail: string;
 }
 
+// Notify-only launcher self-update status from `launcher_update_status`.
+interface LauncherUpdateResult {
+  update_available: boolean;
+  current_version: string;
+  available_version: string | null;
+  url: string | null;
+}
+
 // Stray (misplaced) NetcodePlus copies from `scan_strays`.
 interface StrayReport {
   kind: string;
@@ -879,6 +887,7 @@ async function loadAll() {
     renderStats();
     renderPug();
     void renderConfig();
+    void renderLauncherUpdate();
     void renderNews();
     if (state.launcherToken) {
       void pollPugStatus();
@@ -1544,6 +1553,44 @@ async function autoFixMasterServer() {
   } catch (err) {
     console.error("master-server auto-repair failed:", err);
   }
+}
+
+// ---- launcher self-update (notify-only) ------------------------------------
+
+// Compares the signed manifest's advertised launcher version to this build (in
+// Rust) and, when newer, shows a banner + a button that opens the release page
+// so the user downloads + runs the new launcher themselves — there is no
+// in-place exe swap (that needs code signing). Surfaces this BEFORE the
+// manifest's min_launcher_version hard-gate would reject an old launcher
+// outright. Silent when current; a network/verify hiccup just leaves the slot
+// empty (the game still launches fine).
+async function renderLauncherUpdate(): Promise<void> {
+  const panel = document.getElementById("launcher-update-panel");
+  if (!panel) return;
+  let st: LauncherUpdateResult;
+  try {
+    st = await invoke<LauncherUpdateResult>("launcher_update_status");
+  } catch (err) {
+    console.error("launcher_update_status failed:", err);
+    panel.innerHTML = "";
+    return;
+  }
+  if (!st.update_available || !st.url) {
+    panel.innerHTML = "";
+    return;
+  }
+  const url = st.url;
+  const newer = st.available_version ? ` ${escape(st.available_version)}` : "";
+  panel.innerHTML = `
+    <div class="launcher-update">
+      <div class="launcher-update-text">A newer launcher${newer} is available — you have v${escape(
+        st.current_version,
+      )}. Download and run it to update.</div>
+      <button id="launcher-update-btn" type="button">Get the update</button>
+    </div>`;
+  document
+    .getElementById("launcher-update-btn")
+    ?.addEventListener("click", () => openExternal(url));
 }
 
 // ---- news (pinned to the Launch tab) ---------------------------------------

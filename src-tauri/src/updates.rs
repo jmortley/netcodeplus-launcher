@@ -656,3 +656,73 @@ pub fn remove_stray_plugin(root: String, kind: String, path: String) -> Result<(
     };
     ncp_host::remove_stray(std::path::Path::new(&root), &stray).map_err(|e| e.to_string())
 }
+
+// ===================================================================
+// Launcher self-update — NOTIFY ONLY. Compares the manifest's
+// advertised launcher version to this build and, when newer, hands the
+// UI a download URL. No download, no exe swap (that needs code signing
+// to dodge AV/SmartScreen quarantine); the user fetches + runs the new
+// launcher themselves — the same trust path as their first install.
+// ===================================================================
+
+/// Whether a newer launcher is available, summarised for the UI banner.
+///
+/// Notify-only: `url` is a release page the user opens in their browser (via
+/// the https-gated opener command), never an auto-applied download. The silent
+/// state (`update_available: false`, `url: None`) covers both "the manifest
+/// advertises no launcher" and "the advertised version is not newer than this
+/// build".
+#[derive(Debug, Serialize)]
+pub struct LauncherUpdateResult {
+    /// `true` when the manifest advertises a strictly newer launcher version.
+    pub update_available: bool,
+    /// This build's own version (`CARGO_PKG_VERSION`).
+    pub current_version: String,
+    /// The version the manifest advertises, if it advertises a launcher at all.
+    pub available_version: Option<String>,
+    /// HTTPS release URL to download the new launcher — set only when
+    /// `update_available` is true.
+    pub url: Option<String>,
+}
+
+/// Check whether the signed manifest advertises a newer launcher than this
+/// build (notify-only self-update).
+///
+/// Re-verifies the manifest in Rust via [`fetch_verify`] — the same trust path
+/// as every other command, so nothing trusts a round-tripped value — then
+/// compares the top-level [`ncp_manifest::LauncherEntry::version`] to this
+/// build's `CARGO_PKG_VERSION` with semver, surfacing the download URL only
+/// when the manifest's version is strictly greater.
+///
+/// This is meant to fire the banner *before* the manifest's
+/// `min_launcher_version` hard-gate (enforced inside `load_and_verify`) would
+/// reject an outdated launcher with `LauncherTooOld` — so a user sees "update
+/// available" rather than a wall, as long as the launcher is still new enough
+/// to parse and verify the manifest at all.
+#[tauri::command]
+pub async fn launcher_update_status(app: AppHandle) -> Result<LauncherUpdateResult, String> {
+    let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .map_err(|e| format!("launcher version is not valid semver: {e}"))?;
+    let (manifest, _state) = fetch_verify(&app).await?;
+
+    Ok(match manifest.launcher {
+        Some(entry) if entry.version > current => LauncherUpdateResult {
+            update_available: true,
+            current_version: current.to_string(),
+            available_version: Some(entry.version.to_string()),
+            url: Some(entry.url),
+        },
+        Some(entry) => LauncherUpdateResult {
+            update_available: false,
+            current_version: current.to_string(),
+            available_version: Some(entry.version.to_string()),
+            url: None,
+        },
+        None => LauncherUpdateResult {
+            update_available: false,
+            current_version: current.to_string(),
+            available_version: None,
+            url: None,
+        },
+    })
+}

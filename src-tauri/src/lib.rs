@@ -48,6 +48,7 @@ pub fn run() {
             updates::install_plugin,
             updates::scan_strays,
             updates::remove_stray_plugin,
+            updates::launcher_update_status,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

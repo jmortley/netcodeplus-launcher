@@ -517,6 +517,28 @@ footer {
   box-shadow: 0 6px 28px rgba(34, 197, 94, 0.75);
 }
 
+/* Launcher self-update notice (notify-only) — pinned to the very top of the
+   Launch tab when the signed manifest advertises a newer launcher. Positive and
+   actionable, so a green accent, distinct from the amber plugin card and the
+   red stray card. Quiet when the launcher is current. */
+.launcher-update {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  background: rgba(34, 197, 94, 0.1);
+  border: 1px solid rgba(34, 197, 94, 0.45);
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  margin-bottom: 1.25rem;
+}
+
+.launcher-update-text {
+  flex: 1;
+  min-width: 12rem;
+  font-size: 0.9rem;
+}
+
 /* ---- news (pinned to the Launch tab) ---- */
 
 .news {
