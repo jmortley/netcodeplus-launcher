@@ -44,6 +44,8 @@ pub fn run() {
             auth::ut4_prepare_launch,
             updates::fetch_and_verify_manifest,
             updates::compute_plan,
+            updates::plugin_status,
+            updates::install_plugin,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
