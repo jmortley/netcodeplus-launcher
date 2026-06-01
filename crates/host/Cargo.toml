@@ -43,6 +43,8 @@ sha2 = { workspace = true }
 lnk = { workspace = true }
 # Create the desktop shortcut to a freshly updated launcher exe.
 mslnk = { workspace = true }
+# Detect/clear the game exe's "Run as administrator" compat flag (the os-740 fix).
+winreg = { workspace = true }
 # One FFI call (SetProcessAffinityMask) for CPU-affinity pinning in
 # `launch`, behind a documented `#[allow(unsafe_code)]`.
 windows-sys = { workspace = true }

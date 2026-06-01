@@ -94,6 +94,52 @@ pub fn launch_game(
     Ok(())
 }
 
+/// Whether the game exe is flagged "Run as administrator" (the per-user compat
+/// layer), which blocks the launcher's normal launch with os error 740.
+/// Read-only — drives the up-front warning on the Launch tab.
+#[tauri::command]
+pub fn game_requires_admin(executable: String) -> bool {
+    ncp_host::compat::requires_admin(Path::new(&executable))
+}
+
+/// Clear the "Run as administrator" compat flag on the game exe so it launches
+/// normally — the recommended fix for the os-740 case. HKCU only, no elevation.
+#[tauri::command]
+pub fn clear_game_requires_admin(executable: String) -> Result<(), String> {
+    ncp_host::compat::clear_requires_admin(Path::new(&executable)).map_err(|e| e.to_string())
+}
+
+/// Launch the game ELEVATED (one UAC prompt) — an escape hatch for setups that
+/// insist on it. NOT recommended: it runs the game as admin, and because it goes
+/// through the elevated-launch primitive the CPU priority/affinity knobs do not
+/// apply. Fire-and-forget: that primitive waits on the child, so it runs on a
+/// detached thread and the command returns once the UAC prompt is handled.
+#[tauri::command]
+pub fn launch_game_elevated(
+    app: tauri::AppHandle,
+    executable: String,
+    args: Vec<String>,
+    window_action: String,
+) -> Result<(), String> {
+    let exe = PathBuf::from(&executable);
+    if !exe.is_file() {
+        return Err("the game executable was not found".into());
+    }
+    std::thread::spawn(move || {
+        let _ = ncp_host::run_elevated(&exe, &args);
+    });
+    match window_action.as_str() {
+        "close" => app.exit(0),
+        "minimize" => {
+            if let Some(win) = app.get_webview_window("main") {
+                let _ = win.minimize();
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
 /// Path to the persistent launcher state file in the per-app config dir.
 pub(crate) fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;

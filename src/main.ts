@@ -400,6 +400,7 @@ function renderLaunch() {
           <div class="play-sub">${netcodeplusBadge(di.netcodeplus, di.install.root)}</div>
         </div>
       </div>
+      <div id="admin-warn-panel"></div>
       <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;Launch</button>
       <div id="launch-status" class="launch-status"></div>
       <div id="plugin-panel"></div>
@@ -411,6 +412,7 @@ function renderLaunch() {
   );
   void renderPluginStatus();
   void renderStrays();
+  void renderAdminWarning();
   wireUt4Account();
 }
 
@@ -571,8 +573,94 @@ async function launch() {
       state.affinityHex ? `, affinity ${escape(state.affinityHex)}` : ""
     })</span>`;
   } catch (err) {
-    status.innerHTML = `<span class="warn">Launch failed: ${escape(String(err))}</span>`;
+    const msg = String(err);
+    if (msg.includes("740") || msg.toLowerCase().includes("elevation")) {
+      status.innerHTML = `<span class="warn">Launch failed: Windows says the game needs administrator. It's likely set to "Run as administrator" — use the notice above to clear that flag (recommended), or launch as admin.</span>`;
+      void renderAdminWarning();
+    } else {
+      status.innerHTML = `<span class="warn">Launch failed: ${escape(msg)}</span>`;
+    }
     console.error("launch_game failed:", err);
+  }
+}
+
+// Up-front warning when the game exe is set to "Run as administrator" (the
+// os-740 cause). Offers the recommended one-click fix (clear the flag) and a
+// warned escape hatch (launch elevated anyway). Silent when not set; a check
+// failure just leaves the slot empty.
+async function renderAdminWarning(): Promise<void> {
+  const panel = document.getElementById("admin-warn-panel");
+  if (!panel) return;
+  const exe = state.installs[state.selInstall]?.install.executable;
+  if (!exe) {
+    panel.innerHTML = "";
+    return;
+  }
+  let requires = false;
+  try {
+    requires = await invoke<boolean>("game_requires_admin", { executable: exe });
+  } catch (err) {
+    console.error("game_requires_admin failed:", err);
+    panel.innerHTML = "";
+    return;
+  }
+  if (!requires) {
+    panel.innerHTML = "";
+    return;
+  }
+  panel.innerHTML = `
+    <div class="alert">
+      <div>⚠ Your UT4 is set to <strong>"Run as administrator"</strong>, which stops one-click Launch — Windows won't let the launcher start it without elevation.</div>
+      <div class="cleanup-actions">
+        <button id="admin-fix" type="button">Fix it (recommended)</button>
+        <button id="admin-run" type="button" class="link-btn">Launch as admin anyway</button>
+      </div>
+      <div id="admin-warn-status" class="launch-status"></div>
+    </div>`;
+  document.getElementById("admin-fix")?.addEventListener("click", () => void doClearAdmin(exe));
+  document.getElementById("admin-run")?.addEventListener("click", () => void doLaunchElevated());
+}
+
+async function doClearAdmin(exe: string): Promise<void> {
+  const status = document.getElementById("admin-warn-status");
+  try {
+    await invoke("clear_game_requires_admin", { executable: exe });
+    if (status) status.innerHTML = `<span class="ok">✓ Cleared — Launch should work normally now.</span>`;
+    void renderAdminWarning(); // re-detect; the warning clears itself
+  } catch (err) {
+    if (status) status.innerHTML = `<span class="warn">Couldn't change it: ${escape(String(err))}</span>`;
+    console.error("clear_game_requires_admin failed:", err);
+  }
+}
+
+async function doLaunchElevated(): Promise<void> {
+  const ok = await confirm(
+    'Run the game as administrator? Not recommended — it can interfere with overlays, and the launcher’s CPU priority/affinity won’t apply. The cleaner option is "Fix it", which clears the flag so the game launches normally.',
+    { title: "Launch as administrator", kind: "warning" },
+  );
+  if (!ok) return;
+  const di = state.installs[state.selInstall];
+  const profile =
+    di.profiles.find((p) => p.label === state.profileLabel) ?? di.profiles[selectedProfileIndex(di)];
+  const status = document.getElementById("admin-warn-status");
+  let authArgs: string[];
+  try {
+    authArgs = await ut4AuthArgs();
+  } catch (err) {
+    if (handleReloginError(err, null)) return;
+    if (status) status.innerHTML = `<span class="warn">UT4 login failed: ${escape(String(err))}</span>`;
+    return;
+  }
+  try {
+    await invoke("launch_game_elevated", {
+      executable: di.install.executable,
+      args: [...profile.args, ...authArgs],
+      windowAction: state.launchWindowAction,
+    });
+    if (status) status.innerHTML = `<span class="ok">Launching as administrator…</span>`;
+  } catch (err) {
+    if (status) status.innerHTML = `<span class="warn">Elevated launch failed: ${escape(String(err))}</span>`;
+    console.error("launch_game_elevated failed:", err);
   }
 }
 

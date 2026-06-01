@@ -14,6 +14,7 @@
 //! pure-logic crates [`ncp_manifest`](https://docs.rs/ncp-manifest)
 //! and [`ncp_planner`](https://docs.rs/ncp-planner).
 
+pub mod compat;
 pub mod config;
 pub mod elevate;
 mod error;

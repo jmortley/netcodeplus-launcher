@@ -58,6 +58,11 @@ lnk = "0.6"
 # directly), so it keeps `unsafe_code = deny`; the write counterpart to `lnk`.
 mslnk = "0.1"
 
+# Windows registry — read/clear the per-user "Run as administrator" compat flag
+# (AppCompatFlags\Layers) on the game exe, which otherwise blocks launch with os
+# error 740. Safe wrapper over the registry API, so no unsafe in our code.
+winreg = "0.52"
+
 # A single Win32 FFI call (`SetProcessAffinityMask`) to pin the launched
 # game to a CPU-affinity mask — the one launch knob with no safe-Rust
 # equivalent. Used only on Windows, behind a documented
