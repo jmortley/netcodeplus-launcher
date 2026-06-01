@@ -466,10 +466,11 @@ async function ut4AuthArgs(): Promise<string[]> {
   // showing the account picker. Only sent when captured (a session from before
   // account-id capture leaves it empty — the user re-logs in once to populate
   // it). account_id is a hex GUID, so no launch-arg quoting concern.
-  // (-epicusername is intentionally not sent: a display name can contain spaces,
-  // which our argv launch path would truncate, and it is cosmetic-only.)
+  // (-epicusername / -epiclocale deliberately omitted: a display name can
+  // contain spaces our argv launch path would truncate, and both are cosmetic;
+  // the account picker is driven by the id.)
   if (a.account_id) {
-    args.push(`-epicuserid=${a.account_id}`, `-epiclocale=en`);
+    args.push(`-epicuserid=${a.account_id}`);
   }
   return args;
 }

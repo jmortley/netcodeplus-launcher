@@ -49,6 +49,7 @@ fn sample_state() -> LauncherState {
         launcher_token: Some("tok_example".to_string()),
         ut4_username: Some("phantaci".to_string()),
         ut4_display_name: Some("phantaci".to_string()),
+        ut4_account_id: Some("64bf8c6d81004e88823d577abe157373".to_string()),
         highest_manifest_sequence: 42,
     }
 }
