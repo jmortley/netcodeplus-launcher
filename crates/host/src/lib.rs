@@ -15,6 +15,7 @@
 //! and [`ncp_planner`](https://docs.rs/ncp-planner).
 
 pub mod config;
+pub mod elevate;
 mod error;
 pub mod install;
 pub mod launch;

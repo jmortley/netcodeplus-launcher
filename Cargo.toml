@@ -57,7 +57,7 @@ lnk = "0.6"
 # game to a CPU-affinity mask — the one launch knob with no safe-Rust
 # equivalent. Used only on Windows, behind a documented
 # `#[allow(unsafe_code)]`; the workspace default stays `unsafe_code = deny`.
-windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading"] }
+windows-sys = { version = "0.61", features = ["Win32_Foundation", "Win32_System_Threading", "Win32_UI_Shell", "Win32_System_Registry"] }
 
 # Network + streaming hashing (net crate).
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls", "stream"] }
