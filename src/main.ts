@@ -192,7 +192,7 @@ function sourceText(source: DetectSource): string {
 function netcodeplusBadge(status: NetcodePlusStatus): string {
   switch (status) {
     case "installed":
-      return `<span class="ok">✓ NetcodePlus installed here</span>`;
+      return `<span class="ok">✓ NetcodePlus installed</span>`;
     case "missing":
       return `<span class="warn">NetcodePlus is not installed in this UT4 install</span>`;
     case "malformed":
@@ -585,10 +585,10 @@ function ut4AccountHtml(): string {
     </div>`;
   }
   return `<div class="ut4-account" style="margin-top:14px">
-    <p class="src">Sign in to UT4 so the launcher logs you in directly (skips the in-game login window).
+    <p class="src"><strong>Optional</strong> — sign in so the launcher logs you in directly (skips the in-game login window, avoids the account picker, and enables one-click PUG connect).
       Use the same username &amp; password as your account at
-      <button id="ut4-site-link" type="button" class="link-btn">ut4.timiimit.com</button> —
-      the same login the game itself uses.</p>
+      <button id="ut4-site-link" type="button" class="link-btn">ut4.timiimit.com</button> — the same login the game itself uses.
+      <strong>Just your username and password — you do not need any auth code from the website.</strong></p>
     <div class="controls">
       <input id="ut4-user" type="text" placeholder="UT4 username" autocomplete="username" spellcheck="false" />
       <input id="ut4-pass" type="password" placeholder="password" autocomplete="current-password" />
@@ -1521,7 +1521,7 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
 
   const t = cfg.tweaks;
   configPanel.innerHTML = `
-    <p>Competitive graphics: high FPS, still readable. Your <code>Engine.ini</code> is backed up before the first apply; online and login settings are left untouched.</p>
+    <p>Applies a <strong>complete, competitively-tuned <code>Engine.ini</code> baseline</strong> — high FPS, still readable. The controls below let you <strong>customize a few parts</strong> of that config; the rest is applied as-is. Your existing <code>Engine.ini</code> is backed up before the first apply, and your online/login settings are left untouched.</p>
     <div class="controls">
       <label>Frame rate cap
         <input id="cfg-fps" type="number" min="0" step="10" value="${escape(String(t.frame_rate_cap))}" />
