@@ -959,7 +959,10 @@ function applyPrefs(prefs: LauncherState) {
 
 async function showVersion() {
   try {
-    versionLabel.textContent = `v${await invoke<string>("launcher_version")}`;
+    const v = `v${await invoke<string>("launcher_version")}`;
+    versionLabel.textContent = v;
+    const about = document.getElementById("about-version");
+    if (about) about.textContent = v;
   } catch (err) {
     versionLabel.textContent = "(version unknown)";
     console.error("launcher_version failed:", err);
@@ -1881,11 +1884,19 @@ document
   ?.addEventListener("click", () => void renderServers());
 
 pickButton.addEventListener("click", () => void pickDir());
-// Delegated: the "✓ NetcodePlus installed" badge (rendered with a root) opens
-// that install's plugin folder. Delegated so it works across re-renders.
+// Delegated click handlers (survive re-renders):
+// - the "✓ NetcodePlus installed" badge opens that install's plugin folder;
+// - any [data-extlink] button (the About tab) opens its URL via the https-gated
+//   opener.
 document.addEventListener("click", (e) => {
-  const btn = (e.target as HTMLElement | null)?.closest<HTMLElement>(".ncp-reveal");
-  if (btn?.dataset.root) void revealNcp(btn.dataset.root);
+  const t = e.target as HTMLElement | null;
+  const ncp = t?.closest<HTMLElement>(".ncp-reveal");
+  if (ncp?.dataset.root) {
+    void revealNcp(ncp.dataset.root);
+    return;
+  }
+  const ext = t?.closest<HTMLElement>("[data-extlink]");
+  if (ext?.dataset.extlink) openExternal(ext.dataset.extlink);
 });
 
 void showVersion();

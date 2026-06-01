@@ -36,6 +36,7 @@
         <button class="tab" type="button" data-tab="stats">Stats</button>
         <button class="tab" type="button" data-tab="community">Community</button>
         <button class="tab" type="button" data-tab="advanced">Advanced</button>
+        <button class="tab" type="button" data-tab="about">About</button>
       </nav>
 
       <section id="tab-launch" class="tab-panel active">
@@ -72,6 +73,51 @@
         <div id="addons-panel" class="status">…</div>
         <h2>Performance config</h2>
         <div id="config-panel" class="status">…</div>
+      </section>
+
+      <section id="tab-about" class="tab-panel">
+        <div class="status about">
+          <h2>UT4 Community Launcher <span id="about-version" class="version"></span></h2>
+          <p>
+            A small, source-available launcher for Unreal Tournament 4 community
+            play — sign in, find a game and launch in one click, keep NetcodePlus
+            up to date, and check your stats. The update path is
+            <strong>cryptographically verified end to end</strong> (a signed
+            manifest plus a key baked into the app), so getting set up never
+            means trusting a random download.
+          </p>
+          <p class="src">
+            Built by <strong>jmortley</strong> for the UTPugs / UT4 community.
+            Open source under Apache 2.0. Not affiliated with Epic Games or the
+            Unreal Tournament brand.
+          </p>
+
+          <h3>Source &amp; links</h3>
+          <div class="about-links">
+            <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher">Launcher source (GitHub)</button>
+            <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/NetcodePlusUT4">NetcodePlus plugin (GitHub)</button>
+            <button class="link-btn" type="button" data-extlink="https://ut4stats.com">ut4stats.com — community stats</button>
+            <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher/blob/main/PRIVACY.md">Privacy</button>
+            <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher/blob/main/SECURITY.md">Security policy</button>
+            <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher/blob/main/LICENSE">License (Apache 2.0)</button>
+          </div>
+
+          <h3>Community</h3>
+          <div class="about-links">
+            <button class="link-btn" type="button" data-extlink="https://discord.gg/utpugs">UTPugs Discord</button>
+            <button class="link-btn" type="button" data-extlink="https://discord.gg/EcUMZjFY3q">Instagib Nation Discord</button>
+          </div>
+
+          <h3>Credits</h3>
+          <p class="src">
+            NetcodePlus originally by phantaci. Community master server by
+            <button class="link-btn" type="button" data-extlink="https://ut4.timiimit.com/">timiimit</button>.
+            Optional add-ons:
+            <button class="link-btn" type="button" data-extlink="https://github.com/aldehir/UT4-UltiCross">UltiCross</button>
+            (aldehir) and
+            <button class="link-btn" type="button" data-extlink="https://github.com/main-exe/UT4-OpenAL">UT4-OpenAL</button>.
+          </p>
+        </div>
       </section>
 
       <footer>
