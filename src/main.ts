@@ -887,6 +887,7 @@ async function loadAll() {
     renderStats();
     renderPug();
     void renderConfig();
+    void renderAddons();
     void renderLauncherUpdate();
     void renderNews();
     if (state.launcherToken) {
@@ -1444,6 +1445,39 @@ async function pollPugStatus() {
   } catch (err) {
     console.error("pug_status failed:", err);
   }
+}
+
+// ---- recommended add-ons (Advanced) ----------------------------------------
+
+// Recommends optional community plugins for the selected install, mirroring the
+// UT4-OpenAL recommendation: detect the shipping DLL and, if it's missing, link
+// out to the project so the player installs it themselves (the launcher never
+// installs these). Currently just UltiCross — parameterized custom crosshairs.
+async function renderAddons(): Promise<void> {
+  const panel = document.getElementById("addons-panel");
+  if (!panel) return;
+  const root = state.installs[state.selInstall]?.install.root;
+  if (!root) {
+    panel.innerHTML = `<p class="src">Detect a UT4 install to see recommended add-ons.</p>`;
+    return;
+  }
+  let hasUlti = false;
+  try {
+    hasUlti = await invoke<boolean>("ulticross_status", { root });
+  } catch (err) {
+    console.error("ulticross_status failed:", err);
+    panel.innerHTML = "";
+    return;
+  }
+  const ulti = hasUlti
+    ? `<div class="ok">✓ UltiCross detected — fully customizable crosshairs (type <code>ulticross</code> in the console).</div>`
+    : `<p class="src">UltiCross not detected — get <button id="get-ulticross" type="button" class="link-btn">UltiCross</button> for fully customizable crosshairs. Extract it into your UT4 folder, then relaunch.</p>`;
+  panel.innerHTML = `
+    <p>Optional community plugins for this install — the launcher only checks whether you have them.</p>
+    ${ulti}`;
+  document
+    .getElementById("get-ulticross")
+    ?.addEventListener("click", () => openExternal("https://github.com/aldehir/UT4-UltiCross"));
 }
 
 // ---- performance config ---------------------------------------------------

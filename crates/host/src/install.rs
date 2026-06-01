@@ -178,6 +178,26 @@ pub fn netcodeplus_status(root: &Path) -> NetcodePlusStatus {
     }
 }
 
+/// True if the UltiCross crosshair plugin is installed under `root`.
+///
+/// Keyed on its compiled shipping module
+/// (`<root>/UnrealTournament/Plugins/UltiCross/Binaries/Win64/UE4-UltiCross-Win64-Shipping.dll`)
+/// — the load-bearing artifact the shipping client actually loads, the same
+/// "is the shipping DLL present" signal used for UT4-OpenAL. UltiCross also
+/// ships a content pak, but a stray empty plugin folder wouldn't carry this
+/// DLL, so it is the most reliable single check. Used only to *recommend*
+/// UltiCross to players who lack it; the launcher never installs or edits it.
+#[must_use]
+pub fn ulticross_installed(root: &Path) -> bool {
+    root.join(GAME_NAME)
+        .join("Plugins")
+        .join("UltiCross")
+        .join("Binaries")
+        .join("Win64")
+        .join("UE4-UltiCross-Win64-Shipping.dll")
+        .is_file()
+}
+
 /// How a [`DetectedInstall`] was found. Surfaced in the UI because
 /// "found via your desktop shortcut" carries very different confidence
 /// from a directory guess.
@@ -571,6 +591,30 @@ mod detect_tests {
         fs::write(dir.join("NetcodePlus.uplugin"), b"{}").unwrap();
         fs::create_dir_all(dir.join("Binaries")).unwrap();
         assert_eq!(netcodeplus_status(tmp.path()), NetcodePlusStatus::Installed);
+    }
+
+    #[test]
+    fn ulticross_installed_detects_the_shipping_dll() {
+        let tmp = TempDir::new().unwrap();
+        build_play_install(tmp.path());
+
+        // Absent until the shipping DLL exists.
+        assert!(!ulticross_installed(tmp.path()));
+
+        // A bare plugin folder (no shipping DLL) must NOT count as installed.
+        let win64 = tmp
+            .path()
+            .join(GAME_NAME)
+            .join("Plugins")
+            .join("UltiCross")
+            .join("Binaries")
+            .join("Win64");
+        fs::create_dir_all(&win64).unwrap();
+        assert!(!ulticross_installed(tmp.path()));
+
+        // Present once the shipping module DLL is in place.
+        fs::write(win64.join("UE4-UltiCross-Win64-Shipping.dll"), b"fake dll").unwrap();
+        assert!(ulticross_installed(tmp.path()));
     }
 
     #[test]

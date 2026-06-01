@@ -366,6 +366,14 @@ pub fn openal_status(root: String) -> bool {
     ncp_host::config::openal_installed(Path::new(&root))
 }
 
+/// Whether the UltiCross crosshair plugin is installed in `root`. Read-only;
+/// drives an Advanced-tab recommendation for players who don't have it. The
+/// launcher never installs or modifies UltiCross.
+#[tauri::command]
+pub fn ulticross_status(root: String) -> bool {
+    ncp_host::ulticross_installed(Path::new(&root))
+}
+
 /// Apply the competitive Engine.ini baseline plus the editable knobs,
 /// merging into the existing ini (backing it up first).
 #[tauri::command]

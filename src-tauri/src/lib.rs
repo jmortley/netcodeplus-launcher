@@ -34,6 +34,7 @@ pub fn run() {
             commands::save_launcher_token,
             commands::engine_config_state,
             commands::openal_status,
+            commands::ulticross_status,
             commands::apply_engine_config,
             commands::restore_engine_config,
             commands::repair_master_server,
