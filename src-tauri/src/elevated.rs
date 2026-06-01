@@ -40,6 +40,35 @@ fn finish(log_path: &Path, log: &str, code: i32) -> i32 {
     code
 }
 
+/// The Tauri app identifier — must match `tauri.conf.json`. Used to locate the
+/// persisted state file independently, since the worker has no `AppHandle`.
+const APP_IDENTIFIER: &str = "org.netcodeplus.launcher";
+
+/// Read the persisted replay floor (`highest_manifest_sequence`) from the
+/// launcher's own state file, located the way Tauri's `app_config_dir` does
+/// (`%APPDATA%\<identifier>\state.json`). Returns 0 if it can't be read (first
+/// run / absent) — the same baseline the parent uses.
+///
+/// The worker reads this **itself** rather than taking it as an argument: a
+/// caller-supplied floor would be attacker-controlled, defeating the point. It
+/// enforces the same floor the parent does, so a local caller can't downgrade
+/// the plugin to an older, signed-but-superseded build by invoking the worker
+/// directly. (A local attacker who can also edit the user-writable state file
+/// could still lower the floor — that is a broader limitation of where the
+/// floor lives, not specific to this path; the floor is primarily a defense
+/// against network replay, where the worker is not the attack surface.)
+fn persisted_replay_floor() -> u64 {
+    std::env::var_os("APPDATA")
+        .map(|appdata| {
+            std::path::PathBuf::from(appdata)
+                .join(APP_IDENTIFIER)
+                .join("state.json")
+        })
+        .and_then(|p| ncp_host::state::read(&p).ok().flatten())
+        .map(|s| s.highest_manifest_sequence)
+        .unwrap_or(0)
+}
+
 /// Run the elevated install worker.
 ///
 /// Args: `--zip <path>`, `--manifest <path>`, `--sig <path>`, `--channel
@@ -131,9 +160,10 @@ pub fn run_elevated_install(args: &[String]) -> i32 {
         &crate::trust_root::public_key(),
         chrono::Utc::now(),
         &current_version,
-        // The parent already advanced the persisted replay floor; the worker is
-        // not the floor authority, it just needs a valid, fresh signature.
-        0,
+        // Enforce the SAME replay floor the parent does (read independently from
+        // the persisted state), so a local caller can't downgrade the plugin to
+        // an older signed-but-superseded build by invoking this worker directly.
+        persisted_replay_floor(),
     ) {
         Ok(m) => m,
         Err(e) => {
