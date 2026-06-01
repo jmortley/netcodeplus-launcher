@@ -63,7 +63,15 @@ const MANIFEST_SIG_URL: &str =
 /// public commands return summaries built from it.
 async fn fetch_verify(
     app: &AppHandle,
-) -> Result<(ncp_manifest::Manifest, ncp_host::LauncherState), String> {
+) -> Result<
+    (
+        ncp_manifest::Manifest,
+        ncp_host::LauncherState,
+        String,
+        String,
+    ),
+    String,
+> {
     // Load persisted state for the channel + the replay floor. A missing state
     // file is a legitimate first run (floor 0, default channel).
     let path = state_path(app)?;
@@ -110,7 +118,10 @@ async fn fetch_verify(
         ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
     }
 
-    Ok((manifest, state))
+    // Return the raw JSON + signature too: the elevated installer re-verifies
+    // them against the trust root itself (it must not trust a caller-supplied
+    // hash). Callers that don't need them ignore the last two fields.
+    Ok((manifest, state, json, sig))
 }
 
 /// Outcome of a manifest check, summarised for the UI.
@@ -142,7 +153,7 @@ pub struct ManifestCheckResult {
 /// error for the webview — the manifest is never partially trusted.
 #[tauri::command]
 pub async fn fetch_and_verify_manifest(app: AppHandle) -> Result<ManifestCheckResult, String> {
-    let (manifest, state) = fetch_verify(&app).await?;
+    let (manifest, state, _, _) = fetch_verify(&app).await?;
     let channel = state.channel;
     let channel_entry = manifest.channels.get(&channel);
     Ok(ManifestCheckResult {
@@ -212,7 +223,7 @@ pub struct PlanResult {
 /// re-verifies before installing anything.
 #[tauri::command]
 pub async fn compute_plan(app: AppHandle) -> Result<PlanResult, String> {
-    let (manifest, state) = fetch_verify(&app).await?;
+    let (manifest, state, _, _) = fetch_verify(&app).await?;
     let channel = state.channel.clone();
 
     let plan = ncp_planner::plan(&manifest, &channel, &state.local_install, &state.opted_out)
@@ -324,7 +335,7 @@ fn decide_for_install(
 /// against the channel's plugin entry. Read-only (no download, no write).
 #[tauri::command]
 pub async fn plugin_status(app: AppHandle) -> Result<PluginStatusResult, String> {
-    let (manifest, state) = fetch_verify(&app).await?;
+    let (manifest, state, _, _) = fetch_verify(&app).await?;
     let channel = manifest.channels.get(&state.channel);
     let entry = channel.and_then(|c| c.plugin.as_ref());
     let available_version = entry.map(|e| e.version);
@@ -384,7 +395,7 @@ pub struct PluginInstallOutcome {
 pub async fn install_plugin(app: AppHandle) -> Result<Vec<PluginInstallOutcome>, String> {
     use ncp_planner::PluginAction;
 
-    let (manifest, mut state) = fetch_verify(&app).await?;
+    let (manifest, mut state, manifest_json, manifest_sig) = fetch_verify(&app).await?;
     let channel = manifest.channels.get(&state.channel);
     let Some(entry) = channel.and_then(|c| c.plugin.as_ref()).cloned() else {
         return Err("This channel does not offer a NetcodePlus plugin.".into());
@@ -480,7 +491,30 @@ pub async fn install_plugin(app: AppHandle) -> Result<Vec<PluginInstallOutcome>,
     // Elevated pass: one UAC prompt installs the plugin into every protected
     // root at once. The elevated child re-verifies the ZIP's SHA-256 itself.
     if !needs_elevation.is_empty() {
-        match elevate_install(&zip_path, &entry.sha256.to_string(), &needs_elevation) {
+        // Stage the already-verified manifest + signature as files for the
+        // elevated child to re-verify against the trust root itself (it must not
+        // trust a caller-supplied hash). Public data; removed right after.
+        let tmp = std::env::temp_dir();
+        let pid = std::process::id();
+        let manifest_path = tmp.join(format!("ncp-elev-{pid}.json"));
+        let sig_path = tmp.join(format!("ncp-elev-{pid}.json.minisig"));
+        let staged = std::fs::write(&manifest_path, manifest_json.as_bytes())
+            .and_then(|()| std::fs::write(&sig_path, manifest_sig.as_bytes()));
+        let elevate_result = match staged {
+            Ok(()) => elevate_install(
+                &zip_path,
+                &manifest_path,
+                &sig_path,
+                &state.channel,
+                &needs_elevation,
+            ),
+            Err(e) => Err(format!(
+                "could not stage the manifest for the administrator install: {e}"
+            )),
+        };
+        let _ = std::fs::remove_file(&manifest_path);
+        let _ = std::fs::remove_file(&sig_path);
+        match elevate_result {
             Ok(()) => {
                 for root in &needs_elevation {
                     state.installed_plugins.insert(
@@ -538,13 +572,18 @@ fn is_permission_denied(e: &ncp_host::PluginInstallError) -> bool {
 }
 
 /// Run the elevated install helper for `roots` (one UAC prompt). Re-launches
-/// this exe with `--elevated-install`, passing the verified ZIP path, the
-/// expected SHA-256 (so the elevated child re-verifies), and each root. Returns
-/// `Ok(())` only if the child reports every root installed (exit code 0); maps
-/// a declined prompt and a non-zero exit to a user-facing error string.
+/// this exe with `--elevated-install`, passing the verified ZIP plus the signed
+/// manifest + detached signature (as file paths) and the channel. The elevated
+/// child re-verifies the manifest against the compiled-in trust root itself and
+/// takes the expected hash from the verified manifest, so it trusts none of
+/// these arguments for integrity — they only tell it *what* to verify. Returns
+/// `Ok(())` only if the child reports every root installed (exit code 0); maps a
+/// declined prompt and a non-zero exit to a user-facing error string.
 fn elevate_install(
     zip_path: &std::path::Path,
-    sha256_hex: &str,
+    manifest_path: &std::path::Path,
+    sig_path: &std::path::Path,
+    channel: &str,
     roots: &[std::path::PathBuf],
 ) -> std::result::Result<(), String> {
     let exe = std::env::current_exe().map_err(|e| format!("cannot locate launcher exe: {e}"))?;
@@ -552,8 +591,12 @@ fn elevate_install(
         "--elevated-install".to_string(),
         "--zip".to_string(),
         zip_path.to_string_lossy().into_owned(),
-        "--sha256".to_string(),
-        sha256_hex.to_string(),
+        "--manifest".to_string(),
+        manifest_path.to_string_lossy().into_owned(),
+        "--sig".to_string(),
+        sig_path.to_string_lossy().into_owned(),
+        "--channel".to_string(),
+        channel.to_string(),
     ];
     for root in roots {
         args.push("--root".to_string());
@@ -703,7 +746,7 @@ pub struct LauncherUpdateResult {
 pub async fn launcher_update_status(app: AppHandle) -> Result<LauncherUpdateResult, String> {
     let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|e| format!("launcher version is not valid semver: {e}"))?;
-    let (manifest, _state) = fetch_verify(&app).await?;
+    let (manifest, _state, _, _) = fetch_verify(&app).await?;
 
     Ok(match manifest.launcher {
         Some(entry) if entry.version > current => LauncherUpdateResult {
