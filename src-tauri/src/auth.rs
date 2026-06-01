@@ -75,6 +75,12 @@ pub struct Ut4Auth {
     pub username: Option<String>,
     /// Account display name for the UI, if signed in.
     pub display_name: Option<String>,
+    /// Set by [`ut4_login`] only when this sign-in replaced a *different* account
+    /// that was already signed in: the display name of that previous account, so
+    /// the UI can warn "now signed in as X (was Y)". `None` for a first sign-in, a
+    /// same-account re-login, or [`ut4_auth_status`].
+    #[serde(default)]
+    pub switched_from: Option<String>,
 }
 
 /// What a launch needs to authenticate the game without the in-game window.
@@ -174,6 +180,10 @@ pub async fn ut4_login(
         return Err("Enter your UT4 username and password.".into());
     }
 
+    // Was a session already active? Captured before `store_refresh` overwrites
+    // the keyring, so we can warn below about replacing a *different* account.
+    let was_logged_in = load_refresh().unwrap_or(None).is_some();
+
     let body = post_token(&[
         ("grant_type", "password"),
         ("username", &username),
@@ -199,21 +209,42 @@ pub async fn ut4_login(
     let mut st = ncp_host::state::read(&path)
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
-    st.ut4_username = Some(username.clone());
-    st.ut4_display_name = Some(display.clone());
-    // Capture the canonical account id for the `-epicuserid` launch arg. Empty
-    // if the server omitted it; the launch path simply skips the arg then.
-    st.ut4_account_id = if tok.account_id.is_empty() {
+
+    // The canonical account id for the `-epicuserid` launch arg. Empty if the
+    // server omitted it; the launch path simply skips the arg then.
+    let new_account_id = if tok.account_id.is_empty() {
         None
     } else {
         Some(tok.account_id.clone())
     };
+    // A "switch" = a session was already active and this sign-in resolved to a
+    // *different* account (compared by canonical id). The display name of the
+    // replaced account drives the UI's "now signed in as X (was Y)" warning, so
+    // an accidental login to the wrong account is caught before a launch writes
+    // it into UT4's saved-account list. Needs both ids; an empty new id can't be
+    // proven different, so it never warns. Read before we overwrite the fields.
+    let switched_from = if was_logged_in
+        && st.ut4_account_id.is_some()
+        && new_account_id.is_some()
+        && st.ut4_account_id != new_account_id
+    {
+        st.ut4_display_name
+            .clone()
+            .or_else(|| st.ut4_username.clone())
+    } else {
+        None
+    };
+
+    st.ut4_username = Some(username.clone());
+    st.ut4_display_name = Some(display.clone());
+    st.ut4_account_id = new_account_id;
     ncp_host::state::write(&path, &st).map_err(|e| e.to_string())?;
 
     Ok(Ut4Auth {
         logged_in: true,
         username: Some(username),
         display_name: Some(display),
+        switched_from,
     })
 }
 
@@ -230,6 +261,7 @@ pub fn ut4_auth_status(app: tauri::AppHandle) -> Result<Ut4Auth, String> {
         logged_in,
         username: if logged_in { st.ut4_username } else { None },
         display_name: if logged_in { st.ut4_display_name } else { None },
+        switched_from: None,
     })
 }
 
@@ -243,6 +275,7 @@ pub fn ut4_logout(app: tauri::AppHandle) -> Result<(), String> {
         .unwrap_or_default();
     st.ut4_username = None;
     st.ut4_display_name = None;
+    st.ut4_account_id = None;
     ncp_host::state::write(&path, &st).map_err(|e| e.to_string())
 }
 

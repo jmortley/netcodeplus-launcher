@@ -143,6 +143,9 @@ interface Ut4Auth {
   logged_in: boolean;
   username: string | null;
   display_name: string | null;
+  // Set by ut4_login only when the sign-in replaced a different account that was
+  // already signed in: the previous account's display name (for the switch warning).
+  switched_from?: string | null;
 }
 
 const launchPanel = document.getElementById("launch-panel")!;
@@ -722,6 +725,18 @@ async function ut4Login() {
   try {
     state.ut4 = await invoke<Ut4Auth>("ut4_login", { username, password });
     renderLaunch();
+    // Guard against an accidental login to the wrong account (e.g. the wrong
+    // saved entry from a password manager): if this replaced a different account
+    // that was signed in, confirm the switch before it can reach a game launch.
+    if (state.ut4.switched_from) {
+      const now = state.ut4.display_name ?? username;
+      const prev = state.ut4.switched_from;
+      const keep = await confirm(
+        `Now signed in as ${now} (was ${prev}). Keep this account? "Sign out" reverts it so you can sign in as ${prev} again.`,
+        { title: "Switched account", kind: "warning", okLabel: "Keep", cancelLabel: "Sign out" },
+      );
+      if (!keep) await ut4Logout();
+    }
   } catch (err) {
     if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
   }
