@@ -13,12 +13,22 @@ workspace = true
 
 [dependencies]
 ncp-planner = { path = "../planner" }
+ncp-manifest = { path = "../manifest" }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
 tracing = { workspace = true }
 tempfile = { workspace = true }
 dirs = { workspace = true }
+
+# Plugin ZIP extraction. Decompression only, pure-Rust deflate
+# (flate2 + zlib-rs) — default features OFF drops bzip2/zstd/lzma/aes and
+# their C deps, keeping the supply-chain surface (and `unsafe_code = deny`)
+# minimal. UE4 plugin zips are standard deflate. The extractor enforces its
+# own zip-slip guard; we never trust archive-internal paths. The ZIP bytes are
+# already SHA-256-verified by ncp-net::download before extraction, so this
+# crate does no hashing — it stays the filesystem boundary, no network dep.
+zip = { version = "8", default-features = false, features = ["deflate-flate2-zlib-rs"] }
 
 # .lnk parsing is only used on Windows (desktop-shortcut detection);
 # other targets fall back to directory probing + the folder picker.

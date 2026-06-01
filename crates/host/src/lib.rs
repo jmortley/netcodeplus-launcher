@@ -18,6 +18,7 @@ pub mod config;
 mod error;
 pub mod install;
 pub mod launch;
+pub mod plugin_install;
 pub mod state;
 
 pub use crate::error::{Result, StateError};
@@ -29,4 +30,5 @@ pub use crate::install::{
 pub use crate::launch::{
     affinity_presets, launch, logical_cpus, parse_mask_hex, AffinityPreset, LaunchOptions, Priority,
 };
+pub use crate::plugin_install::{install_plugin_zip, PluginInstallError};
 pub use crate::state::{LauncherState, DEFAULT_CHANNEL};
