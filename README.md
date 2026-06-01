@@ -52,6 +52,16 @@ verifiable end to end** (no bundled secrets, no telemetry, source public), so
 Download the release `.exe` and run it — no installer, no admin rights. It runs
 at your normal user privilege. **Windows 10 or 11.**
 
+**The one time you'll see an administrator (UAC) prompt** is when it updates the
+NetcodePlus plugin and your UT4 lives in a protected folder like
+`C:\Program Files\…` — Windows requires elevation to write there. The launcher
+asks once, installs the update, and drops straight back to normal privilege; it
+never runs the game itself as administrator. If your UT4 is in a normal,
+user-writable location you won't be prompted at all, and declining the prompt
+just leaves that install untouched (any other installs still update). Updating
+the **launcher itself** never needs admin — you download and run the new build
+like any other app.
+
 First time: sign in, let it detect your UT4 install, and you're set. To use PUGs
 or stats, link your account once (the in-app steps walk you through it).
 
@@ -99,6 +109,15 @@ The verify-before-install machinery is built and tested, but the production
 signing key isn't provisioned yet, so the **auto-update feature is not live in
 this beta** — everything else is. Code signing for the released `.exe`
 (SmartScreen/AV reputation) is planned alongside it.
+
+## Privacy
+
+No telemetry, no analytics, no ads, no background phone-home. The launcher only
+contacts the UT4 master server, ut4stats.com, the PUG bot, and GitHub (for
+updates) — each only when a feature needs it. Your password is never stored;
+your login token lives in the Windows Credential Manager, not in any file.
+Exactly what's kept on your machine and what's sent where is spelled out in
+[`PRIVACY.md`](PRIVACY.md).
 
 ## Reporting issues
 
