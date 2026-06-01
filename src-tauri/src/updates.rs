@@ -399,6 +399,9 @@ pub async fn install_plugin(app: AppHandle) -> Result<Vec<PluginInstallOutcome>,
     let mut outcomes: Vec<PluginInstallOutcome> = Vec::new();
     let mut downloaded = false;
     let mut state_dirty = false;
+    // Roots whose user-level install hit access-denied (Program Files etc.) —
+    // batched into ONE elevated pass after the user-writable installs.
+    let mut needs_elevation: Vec<std::path::PathBuf> = Vec::new();
 
     for d in ncp_host::detect_installs() {
         let root = d.install.root;
@@ -460,11 +463,48 @@ pub async fn install_plugin(app: AppHandle) -> Result<Vec<PluginInstallOutcome>,
                             detail: format!("build {}", entry.version),
                         });
                     }
+                    // Access-denied = a protected location (Program Files). Defer
+                    // to one elevated pass rather than failing; any other error is
+                    // a genuine failure for this root.
+                    Err(e) if is_permission_denied(&e) => needs_elevation.push(root.clone()),
                     Err(e) => outcomes.push(PluginInstallOutcome {
                         root: root_key,
                         result: "failed",
                         detail: e.to_string(),
                     }),
+                }
+            }
+        }
+    }
+
+    // Elevated pass: one UAC prompt installs the plugin into every protected
+    // root at once. The elevated child re-verifies the ZIP's SHA-256 itself.
+    if !needs_elevation.is_empty() {
+        match elevate_install(&zip_path, &entry.sha256.to_string(), &needs_elevation) {
+            Ok(()) => {
+                for root in &needs_elevation {
+                    state.installed_plugins.insert(
+                        root.to_string_lossy().to_string(),
+                        ncp_planner::InstalledPlugin {
+                            version: entry.version,
+                            sha256: entry.sha256,
+                        },
+                    );
+                    state_dirty = true;
+                    outcomes.push(PluginInstallOutcome {
+                        root: root.to_string_lossy().into_owned(),
+                        result: "installed",
+                        detail: format!("build {} (administrator)", entry.version),
+                    });
+                }
+            }
+            Err(detail) => {
+                for root in &needs_elevation {
+                    outcomes.push(PluginInstallOutcome {
+                        root: root.to_string_lossy().into_owned(),
+                        result: "failed",
+                        detail: detail.clone(),
+                    });
                 }
             }
         }
@@ -478,6 +518,60 @@ pub async fn install_plugin(app: AppHandle) -> Result<Vec<PluginInstallOutcome>,
     }
 
     Ok(outcomes)
+}
+
+/// Whether a plugin-install error is an OS permission denial (the signal that a
+/// root lives in a protected location and needs elevation).
+///
+/// Checks both the portable `PermissionDenied` kind AND the raw Windows
+/// `ERROR_ACCESS_DENIED` (5), because `fs::rename` / `remove_dir_all` on a
+/// protected dir don't always map to the portable kind — we must not misclassify
+/// a Program Files denial as a hard failure (it would skip elevation).
+fn is_permission_denied(e: &ncp_host::PluginInstallError) -> bool {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    matches!(
+        e,
+        ncp_host::PluginInstallError::Io(io)
+            if io.kind() == std::io::ErrorKind::PermissionDenied
+                || io.raw_os_error() == Some(ERROR_ACCESS_DENIED)
+    )
+}
+
+/// Run the elevated install helper for `roots` (one UAC prompt). Re-launches
+/// this exe with `--elevated-install`, passing the verified ZIP path, the
+/// expected SHA-256 (so the elevated child re-verifies), and each root. Returns
+/// `Ok(())` only if the child reports every root installed (exit code 0); maps
+/// a declined prompt and a non-zero exit to a user-facing error string.
+fn elevate_install(
+    zip_path: &std::path::Path,
+    sha256_hex: &str,
+    roots: &[std::path::PathBuf],
+) -> std::result::Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate launcher exe: {e}"))?;
+    let mut args = vec![
+        "--elevated-install".to_string(),
+        "--zip".to_string(),
+        zip_path.to_string_lossy().into_owned(),
+        "--sha256".to_string(),
+        sha256_hex.to_string(),
+    ];
+    for root in roots {
+        args.push("--root".to_string());
+        args.push(root.to_string_lossy().into_owned());
+    }
+    match ncp_host::run_elevated(&exe, &args) {
+        Ok(0) => Ok(()),
+        Ok(n) => Err(format!(
+            "the administrator install reported {n} install(s) failed — \
+             close Unreal Tournament if it is running, then try again"
+        )),
+        Err(ncp_host::ElevateError::Cancelled) => Err(
+            "you declined the administrator prompt, so the protected install \
+                 was not updated"
+                .to_string(),
+        ),
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 // ===================================================================
