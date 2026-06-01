@@ -24,6 +24,26 @@ interface DetectedInstall {
   profiles: LaunchProfile[];
 }
 
+// Per-install NetcodePlus plugin status from the `plugin_status` command.
+type PluginAction = "none" | "install" | "update" | "up_to_date" | "downgrade_blocked";
+interface PluginInstallStatus {
+  root: string;
+  action: PluginAction;
+  installed_version: number | null;
+  available_version: number | null;
+}
+interface PluginStatusResult {
+  plugin_offered: boolean;
+  available_version: number | null;
+  installs: PluginInstallStatus[];
+  any_update_needed: boolean;
+}
+interface PluginInstallOutcome {
+  root: string;
+  result: "installed" | "skipped" | "failed";
+  detail: string;
+}
+
 interface AffinityPreset {
   label: string;
   mask_hex: string;
@@ -155,6 +175,67 @@ function netcodeplusBadge(status: NetcodePlusStatus): string {
   }
 }
 
+// Render the NetcodePlus plugin update card into #plugin-panel. Calls the
+// signed-manifest-backed `plugin_status` (which re-verifies in Rust) and offers
+// a one-click update that installs into EVERY detected install. Silent when the
+// channel offers no plugin or everything is already up to date — beta-quiet.
+async function renderPluginStatus(): Promise<void> {
+  const panel = document.getElementById("plugin-panel");
+  if (!panel) return;
+  let st: PluginStatusResult;
+  try {
+    st = await invoke<PluginStatusResult>("plugin_status");
+  } catch (err) {
+    // A manifest/verify/network hiccup must not break the Launch tab — the
+    // plugin card just stays empty (the game still launches fine).
+    console.error("plugin_status failed:", err);
+    panel.innerHTML = "";
+    return;
+  }
+  if (!st.plugin_offered || !st.any_update_needed) {
+    // Nothing to nag about: no plugin in this channel, or all installs current.
+    panel.innerHTML = "";
+    return;
+  }
+  const n = st.installs.filter((i) => i.action === "install" || i.action === "update").length;
+  const ver = st.available_version != null ? ` (build ${st.available_version})` : "";
+  panel.innerHTML = `
+    <div class="plugin-card">
+      <div>NetcodePlus update available${escape(ver)} — ${n} install${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} it.</div>
+      <button id="plugin-update-btn" type="button">Update NetcodePlus</button>
+      <div id="plugin-status" class="launch-status"></div>
+    </div>`;
+  document.getElementById("plugin-update-btn")?.addEventListener("click", () => void doInstallPlugin());
+}
+
+async function doInstallPlugin(): Promise<void> {
+  const btn = document.getElementById("plugin-update-btn") as HTMLButtonElement | null;
+  const status = document.getElementById("plugin-status");
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = "Downloading and installing… this can take a moment.";
+  try {
+    const outcomes = await invoke<PluginInstallOutcome[]>("install_plugin");
+    const installed = outcomes.filter((o) => o.result === "installed").length;
+    const failed = outcomes.filter((o) => o.result === "failed");
+    if (failed.length) {
+      if (status)
+        status.innerHTML = `<span class="warn">Installed ${installed}, but ${failed.length} failed: ${escape(
+          failed.map((f) => f.detail).join("; "),
+        )}</span>`;
+    } else if (status) {
+      status.innerHTML = `<span class="ok">✓ NetcodePlus updated in ${installed} install${installed === 1 ? "" : "s"}.</span>`;
+    }
+    // Re-detect so the install badges + plugin card reflect the new state.
+    state.installs = await invoke<DetectedInstall[]>("detect_installs");
+    renderLaunch();
+    renderAdvanced();
+  } catch (err) {
+    if (status) status.innerHTML = `<span class="warn">Update failed: ${escape(String(err))}</span>`;
+    if (btn) btn.disabled = false;
+    console.error("install_plugin failed:", err);
+  }
+}
+
 function selectedProfileIndex(di: DetectedInstall): number {
   if (state.profileLabel) {
     const saved = di.profiles.findIndex((p) => p.label === state.profileLabel);
@@ -212,12 +293,14 @@ function renderLaunch() {
       </div>
       <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;Launch</button>
       <div id="launch-status" class="launch-status"></div>
+      <div id="plugin-panel"></div>
       ${ut4AccountHtml()}
     </div>`;
   (document.getElementById("launch-btn") as HTMLButtonElement | null)?.addEventListener(
     "click",
     () => void launch(),
   );
+  void renderPluginStatus();
   wireUt4Account();
 }
 

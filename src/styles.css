@@ -456,6 +456,21 @@ footer {
   transform: translateY(1px);
 }
 
+/* NetcodePlus plugin-update card on the Launch tab. Shown only when an update
+   is available; quiet otherwise. */
+.plugin-card {
+  margin: 1rem auto 0;
+  max-width: 32rem;
+  padding: 0.75rem 1rem;
+  border: 1px solid rgba(245, 197, 66, 0.5);
+  border-radius: 8px;
+  background: rgba(245, 197, 66, 0.08);
+  font-size: 0.9rem;
+}
+.plugin-card button {
+  margin-top: 0.5rem;
+}
+
 .launch-primary + .launch-status {
   margin-top: 0.75rem;
 }
