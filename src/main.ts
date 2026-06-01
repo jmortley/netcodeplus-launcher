@@ -1103,7 +1103,14 @@ function renderServerList() {
     }
   }
 
-  // A nested live-match row (mode · map · players · state) with connect actions.
+  // Per-row connect status lands in a slot keyed by the row's server address, so
+  // the "Launched — connecting…" / error message appears right under the row the
+  // user clicked instead of in one shared box at the bottom of the panel. The
+  // slot is empty (no reserved height) until a click fills it.
+  const statusId = (server: string): string => `srv-status-${server.replace(/[^a-zA-Z0-9]/g, "-")}`;
+
+  // A nested live-match row (mode · map · players · state) with connect actions
+  // and its own status slot directly beneath.
   const matchRow = (s: GameServerEntry): string => {
     const server = `${s.serverAddress}:${s.serverPort}`;
     const p = srvPlayers(s);
@@ -1114,17 +1121,21 @@ function renderServerList() {
     const sub =
       `${escape(mode || "match")}${map ? ` · ${escape(map)}` : ""} · ${p}/${max} players` +
       (st ? ` · ${st}` : "");
-    return `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 2px 7px 16px;border-bottom:1px solid rgba(255,255,255,0.06)">
-        <div class="src" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sub}</div>
-        <span style="flex:none;display:flex;gap:6px">
-          <button class="server-spectate" type="button" data-server="${escape(server)}">Spectate</button>
-          <button class="server-join" type="button" data-server="${escape(server)}">Join</button>
-        </span>
+    return `<div style="padding:0 2px 0 16px;border-bottom:1px solid rgba(255,255,255,0.06)">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0">
+          <div class="src" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sub}</div>
+          <span style="flex:none;display:flex;gap:6px">
+            <button class="server-spectate" type="button" data-server="${escape(server)}">Spectate</button>
+            <button class="server-join" type="button" data-server="${escape(server)}">Join</button>
+          </span>
+        </div>
+        <div id="${statusId(server)}" class="row-status"></div>
       </div>`;
   };
 
   // A hub block: header (name, trust, live-match count, lobby occupancy) plus its
-  // nested matches. The header's Join button enters the hub lobby itself.
+  // nested matches. The header's Join button enters the hub lobby itself, with a
+  // status slot right under the header.
   const hubBlock = (h: GameServerEntry): string => {
     const kids = (childrenOf.get(h) ?? [])
       .filter((s) => serversShowEmpty || srvPlayers(s) > 0)
@@ -1139,7 +1150,8 @@ function renderServerList() {
           <div class="src">${live} live match${live === 1 ? "" : "es"} · ${lobby} in lobby</div>
         </div>
         <span style="flex:none"><button class="server-join" type="button" data-server="${escape(server)}">Join hub</button></span>
-      </div>`;
+      </div>
+      <div id="${statusId(server)}" class="row-status"></div>`;
     const body = kids.length
       ? kids.map(matchRow).join("")
       : `<div class="src" style="padding:7px 2px 7px 16px">No live matches right now.</div>`;
@@ -1191,8 +1203,7 @@ function renderServerList() {
     </div>
     <div style="max-height:60vh;overflow:auto">${
       body || `<p>No ${serversShowEmpty ? "servers online" : "live matches or populated hubs"} right now.</p>`
-    }</div>
-    <div id="servers-status" class="launch-status"></div>`;
+    }</div>`;
 
   document.getElementById("servers-refresh")?.addEventListener("click", () => void renderServers());
   document.getElementById("servers-empty")?.addEventListener("change", (e) => {
@@ -1202,14 +1213,14 @@ function renderServerList() {
   serversPanel.querySelectorAll<HTMLButtonElement>(".server-join").forEach((btn) => {
     btn.addEventListener("click", () => {
       const server = btn.dataset.server;
-      if (server) void connectTo(server, "", document.getElementById("servers-status"));
+      if (server) void connectTo(server, "", document.getElementById(statusId(server)));
     });
   });
   serversPanel.querySelectorAll<HTMLButtonElement>(".server-spectate").forEach((btn) => {
     btn.addEventListener("click", () => {
       const server = btn.dataset.server;
       if (server)
-        void connectTo(`${server}?SpectatorOnly=1`, "", document.getElementById("servers-status"));
+        void connectTo(`${server}?SpectatorOnly=1`, "", document.getElementById(statusId(server)));
     });
   });
 }

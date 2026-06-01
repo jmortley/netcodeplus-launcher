@@ -256,6 +256,15 @@ footer {
   font-size: 0.9rem;
 }
 
+/* Per-row connect status under a server-browser row. No reserved height when
+   empty (unlike .launch-status) so rows stay compact until a click fills it. */
+.row-status {
+  font-size: 0.85rem;
+}
+.row-status:not(:empty) {
+  padding: 0 2px 7px 16px;
+}
+
 /* ---- ut4stats player panel ---- */
 
 .stat-head {
