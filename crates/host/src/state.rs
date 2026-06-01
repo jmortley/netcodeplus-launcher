@@ -102,6 +102,14 @@ pub struct LauncherState {
     #[serde(default)]
     pub ut4_display_name: Option<String>,
 
+    /// Canonical UT4 account id (the master server's `account.ID`), used as the
+    /// game's `-epicuserid` launch arg so it boots straight into this account
+    /// instead of the account picker. NOT a secret. `None` until the user logs
+    /// in with a launcher build that captures it (pre-capture sessions stay
+    /// `None`, and the launch path then omits the arg).
+    #[serde(default)]
+    pub ut4_account_id: Option<String>,
+
     /// Highest manifest `sequence` the launcher has ever accepted.
     /// Persisted so a later run rejects any manifest carrying a lower
     /// sequence — an active-attacker replay/downgrade of an older,
@@ -135,6 +143,7 @@ impl Default for LauncherState {
             launcher_token: None,
             ut4_username: None,
             ut4_display_name: None,
+            ut4_account_id: None,
             highest_manifest_sequence: 0,
         }
     }

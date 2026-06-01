@@ -52,6 +52,11 @@ struct TokenResponse {
     refresh_token: String,
     #[serde(default, rename = "displayName")]
     display_name: String,
+    /// Canonical account id (the master server's `account.ID`). Stable across
+    /// email-vs-username logins; used as the game's `-epicuserid` launch arg so
+    /// it boots straight into this account instead of the account picker.
+    #[serde(default)]
+    account_id: String,
 }
 
 /// The OAuth exchange response — carries the one-shot code in `code`.
@@ -79,6 +84,11 @@ pub struct Ut4LaunchAuth {
     pub username: String,
     /// One-shot `-AUTH_PASSWORD` value (used with `-AUTH_TYPE=exchangecode`).
     pub exchange_code: String,
+    /// Canonical account id for the game's `-epicuserid` arg, so it boots into
+    /// this account rather than showing the account picker. Empty when the
+    /// stored session predates account-id capture (the user must re-login once);
+    /// the frontend omits the arg when this is empty.
+    pub account_id: String,
 }
 
 fn keyring_entry() -> Result<keyring::Entry, String> {
@@ -191,6 +201,13 @@ pub async fn ut4_login(
         .unwrap_or_default();
     st.ut4_username = Some(username.clone());
     st.ut4_display_name = Some(display.clone());
+    // Capture the canonical account id for the `-epicuserid` launch arg. Empty
+    // if the server omitted it; the launch path simply skips the arg then.
+    st.ut4_account_id = if tok.account_id.is_empty() {
+        None
+    } else {
+        Some(tok.account_id.clone())
+    };
     ncp_host::state::write(&path, &st).map_err(|e| e.to_string())?;
 
     Ok(Ut4Auth {
@@ -270,5 +287,8 @@ pub async fn ut4_prepare_launch(app: tauri::AppHandle) -> Result<Ut4LaunchAuth, 
     Ok(Ut4LaunchAuth {
         username,
         exchange_code,
+        // Empty string when not captured (pre-account-id-capture session);
+        // the frontend then omits `-epicuserid` rather than send it empty.
+        account_id: st.ut4_account_id.unwrap_or_default(),
     })
 }

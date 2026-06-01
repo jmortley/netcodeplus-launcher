@@ -454,8 +454,24 @@ async function ut4Logout() {
 // "RELOGIN_REQUIRED" when the stored session has expired.
 async function ut4AuthArgs(): Promise<string[]> {
   if (!state.ut4?.logged_in) return [];
-  const a = await invoke<{ username: string; exchange_code: string }>("ut4_prepare_launch");
-  return [`-AUTH_LOGIN=${a.username}`, `-AUTH_PASSWORD=${a.exchange_code}`, `-AUTH_TYPE=exchangecode`];
+  const a = await invoke<{ username: string; exchange_code: string; account_id: string }>(
+    "ut4_prepare_launch",
+  );
+  const args = [
+    `-AUTH_LOGIN=${a.username}`,
+    `-AUTH_PASSWORD=${a.exchange_code}`,
+    `-AUTH_TYPE=exchangecode`,
+  ];
+  // -epicuserid names the active account so the game boots into it instead of
+  // showing the account picker. Only sent when captured (a session from before
+  // account-id capture leaves it empty — the user re-logs in once to populate
+  // it). account_id is a hex GUID, so no launch-arg quoting concern.
+  // (-epicusername is intentionally not sent: a display name can contain spaces,
+  // which our argv launch path would truncate, and it is cosmetic-only.)
+  if (a.account_id) {
+    args.push(`-epicuserid=${a.account_id}`, `-epiclocale=en`);
+  }
+  return args;
 }
 
 // On an expired session, flip to signed-out and re-render the login form. If a
