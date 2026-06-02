@@ -7,8 +7,9 @@
 //! rejected. Because the file is huge, the transfer **resumes** on interruption,
 //! reports **progress** (emitted as `game-download-progress` events), can be
 //! **cancelled**, and is **verified** in a final hash pass before the `.part` is
-//! renamed into place. The launcher hands the user the verified zip; it never
-//! runs it.
+//! renamed into place. One click then unpacks the verified zip and launches the
+//! installer, which self-elevates (UAC) to install the game — the launcher
+//! itself never elevates (see [`install_game`]).
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -117,14 +118,19 @@ pub async fn download_game_installer(app: AppHandle, dir: String) -> Result<Stri
     ));
     let part = PathBuf::from(format!("{}.part", final_path.to_string_lossy()));
 
-    // Free-space guard: need ~the file's size (the `.part` becomes the `.zip` via
-    // rename, so no extra copy). Only block when the figure is actually readable.
+    // Free-space guard: one click downloads AND unpacks, so the drive needs room
+    // for both the ~10 GB zip and its extracted copy (a stored archive — unpacked
+    // is ~the same size), i.e. roughly twice the download plus headroom. Only
+    // block when the figure is actually readable.
     if let Some(free) = ncp_host::disk::available_space(&dir) {
-        let needed = installer.size_bytes.saturating_add(512 * 1024 * 1024); // +0.5 GB
+        let needed = installer
+            .size_bytes
+            .saturating_mul(2)
+            .saturating_add(512 * 1024 * 1024); // download + unpack + 0.5 GB
         if free < needed {
             return Err(format!(
-                "not enough free space on that drive — need ~{:.1} GB, have {:.1} GB",
-                installer.size_bytes as f64 / 1e9,
+                "not enough free space on that drive — downloading and installing UT4 needs ~{:.1} GB, have {:.1} GB",
+                needed as f64 / 1e9,
                 free as f64 / 1e9,
             ));
         }

@@ -1876,13 +1876,14 @@ async function renderGameInstall(): Promise<void> {
     return;
   }
   const gb = (info.size_bytes / 1e9).toFixed(1);
+  const needGb = ((info.size_bytes * 2) / 1e9).toFixed(0);
   panel.innerHTML = `
     <div class="game-install">
-      <div><strong>Don't have UT4 yet?</strong> Download the community installer (v${escape(
+      <div><strong>Don't have UT4 yet?</strong> Download + install the community installer (v${escape(
         info.version,
-      )}, ${gb} GB). The launcher verifies it against the signed manifest before you run it.</div>
+      )}, ${gb} GB). The launcher verifies it against the signed manifest, then unpacks it and launches the installer (you'll get a Windows admin prompt). Pick a drive with ~${needGb} GB free.</div>
       <div class="game-install-actions">
-        <button id="game-download-btn" type="button">Download UT4</button>
+        <button id="game-download-btn" type="button">Download &amp; Install UT4</button>
       </div>
       <div id="game-install-status" class="launch-status"></div>
     </div>`;
@@ -1930,8 +1931,8 @@ async function attachGameProgress(): Promise<UnlistenFn> {
 
 async function startGameDownload(): Promise<void> {
   const status = document.getElementById("game-install-status");
-  // Let the user pick the drive/folder — it's a ~10 GB file, so disk choice matters.
-  const dir = await open({ directory: true, title: "Choose where to download UT4 (~10 GB)" });
+  // Let the user pick the drive/folder — download + unpack need ~2x the size, so disk choice matters.
+  const dir = await open({ directory: true, title: "Choose where to download + install UT4" });
   if (typeof dir !== "string") return; // folder picker cancelled
 
   // Render the progress UI once; the event listener only updates the bar + label.
@@ -1948,7 +1949,8 @@ async function startGameDownload(): Promise<void> {
 
   try {
     const path = await invoke<string>("download_game_installer", { dir });
-    showGameDownloaded(status, path);
+    // One-click: roll straight into unpack + launch.
+    await startGameInstall(path);
   } catch (err) {
     const msg = String(err);
     if (status) {
@@ -1964,25 +1966,10 @@ async function startGameDownload(): Promise<void> {
   }
 }
 
-// After a verified download: offer Install UT4 (unzip + launch the installer) or
-// Open folder. The zip path is threaded through so install/reveal act on it.
-function showGameDownloaded(status: HTMLElement | null, zipPath: string): void {
-  if (!status) return;
-  status.innerHTML = `<span class="ok">✓ Downloaded &amp; verified.</span>
-    <div class="game-install-actions">
-      <button id="game-install-btn" type="button">Install UT4</button>
-      <button id="game-reveal-btn" type="button" class="link-btn">Open folder</button>
-    </div>`;
-  document
-    .getElementById("game-install-btn")
-    ?.addEventListener("click", () => void startGameInstall(zipPath));
-  document
-    .getElementById("game-reveal-btn")
-    ?.addEventListener("click", () => void invoke("reveal_path", { path: zipPath }));
-}
-
 // Unpack the verified zip and launch its installer (which self-elevates via the
 // Windows admin prompt). Shows "Unpacking" progress, then the launch result.
+// Reached automatically right after a verified download (one-click), and from
+// its own "Try again" button on failure.
 async function startGameInstall(zipPath: string): Promise<void> {
   const status = document.getElementById("game-install-status");
   if (status) status.innerHTML = gameProgressSkeleton(false);
