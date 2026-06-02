@@ -315,6 +315,19 @@ pub fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
 /// reverse-proxy to the bot's FastAPI app; the proxied path is TLS-terminated).
 const BOT_PUG_URL: &str = "https://ut4stats.com/launcher/pug_action";
 
+/// Map a bot PUG-call error to a user-facing message, turning an HTTP 401 (a
+/// missing / unrecognized / revoked launcher token) into clear guidance rather
+/// than a raw status. The "/launchertoken" phrasing is also what the frontend
+/// keys on to drop the dead token and fall back to the link-token prompt.
+fn pug_error(e: ncp_net::NetError) -> String {
+    match e {
+        ncp_net::NetError::HttpStatus { status: 401, .. } => {
+            "Your launcher token wasn't recognized — run /launchertoken in the Discord and paste the new token.".to_string()
+        }
+        other => other.to_string(),
+    }
+}
+
 /// Send a PUG queue action (`joinpug` / `leavepug` / `listpug`) to the bot,
 /// authenticated by the player's per-user `token` (issued by the bot's
 /// `/launchertoken` command). The bot resolves the player from the token, so
@@ -337,7 +350,7 @@ pub async fn pug_action(action: String, token: String) -> Result<String, String>
         64 * 1024,
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(pug_error)
 }
 
 /// UT4IGBot launcher PUG status endpoint (HTTPS via the Apache reverse-proxy).
@@ -360,7 +373,7 @@ pub async fn pug_status(token: String) -> Result<String, String> {
         64 * 1024,
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(pug_error)
 }
 
 /// UT4IGBot launcher spectate endpoint (HTTPS via the Apache reverse-proxy).
@@ -384,7 +397,7 @@ pub async fn pug_spectate(token: String) -> Result<String, String> {
         64 * 1024,
     )
     .await
-    .map_err(|e| e.to_string())
+    .map_err(pug_error)
 }
 
 /// Launcher version (from `Cargo.toml`). Surfaced in the UI for bug reports.

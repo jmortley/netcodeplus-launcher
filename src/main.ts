@@ -1094,7 +1094,34 @@ document.getElementById("join-ictf")?.addEventListener("click", () => openExtern
 
 const pugControls = document.getElementById("pug-controls")!;
 
+// Set when a bot call reports the launcher token is missing / unrecognized /
+// revoked (HTTP 401) — drives a one-line warning above the re-link prompt so the
+// user knows why they're back there. Cleared when a token is saved.
+let pugTokenRejected = false;
+
+// Whether `err` from a bot PUG call is a token problem (vs. a transient network
+// error) — keyed on the 401 and the "/launchertoken" guidance that both the
+// bot-mapped 401 and the empty-token errors carry.
+function isPugTokenError(err: unknown): boolean {
+  const m = String(err).toLowerCase();
+  return m.includes("launchertoken") || m.includes("no launcher token") || /\b401\b/.test(m);
+}
+
+// A token problem from any bot call: drop the dead token (which stops polling
+// and re-renders the link-token prompt) and flag why, instead of leaving a token
+// that keeps erroring or surfacing a raw HTTP 401.
+function handlePugTokenError(): void {
+  pugTokenRejected = true;
+  void saveLauncherToken(null);
+}
+
 async function pug(action: "joinpug" | "leavepug" | "listpug") {
+  // Defensive: never POST an empty token. renderPug already gates the buttons on
+  // a token, but this stops a stale render from firing a guaranteed 401.
+  if (!state.launcherToken?.trim()) {
+    renderPug();
+    return;
+  }
   const status = document.getElementById("pug-status");
   if (status) status.textContent = action === "listpug" ? "Checking queue…" : "Working…";
   try {
@@ -1107,13 +1134,18 @@ async function pug(action: "joinpug" | "leavepug" | "listpug") {
     }
     if (status) status.textContent = msg;
   } catch (err) {
-    if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
     console.error("pug_action failed:", err);
+    if (isPugTokenError(err)) {
+      handlePugTokenError();
+    } else if (status) {
+      status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    }
   }
 }
 
 async function saveLauncherToken(token: string | null) {
   state.launcherToken = token;
+  if (token) pugTokenRejected = false;
   if (!token) state.pugStatus = null;
   try {
     await invoke("save_launcher_token", { token });
@@ -1132,6 +1164,11 @@ async function saveLauncherToken(token: string | null) {
 function renderPug() {
   if (!state.launcherToken) {
     pugControls.innerHTML = `
+      ${
+        pugTokenRejected
+          ? `<p class="warn">Your launcher token wasn't recognized — it may not be linked yet, or it was reset. Re-link it below.</p>`
+          : ""
+      }
       <p>To queue iCTF PUGs here, run <code>/launchertoken</code> in the Instagib Nation Discord and paste the token it DMs you:</p>
       <div class="controls">
         <label>Launcher token
@@ -1333,7 +1370,9 @@ async function spectate() {
   try {
     st = JSON.parse(await invoke<string>("pug_spectate", { token: state.launcherToken ?? "" }));
   } catch (err) {
-    if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("pug_spectate failed:", err);
+    if (isPugTokenError(err)) handlePugTokenError();
+    else if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
     return;
   }
   const pugs = st.pugs ?? [];
@@ -1697,6 +1736,9 @@ async function pollPugStatus() {
     }
   } catch (err) {
     console.error("pug_status failed:", err);
+    // A revoked/invalid token shows up here too (the 5 s poll) — drop it so the
+    // poll stops and the UI returns to the link prompt instead of erroring on.
+    if (isPugTokenError(err)) handlePugTokenError();
   }
 }
 
