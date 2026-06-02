@@ -1219,6 +1219,28 @@ async function connectToPug(server: string, password: string) {
   await connectTo(server, password, document.getElementById("pug-status"));
 }
 
+// For a password-protected server (UT_SERVERFLAGS_i bit 0x1), reveal a password
+// field in the row's status slot and connect with whatever the user types. UT4
+// webviews have no window.prompt, so this is an inline input rather than a dialog.
+function promptServerPassword(status: HTMLElement | null, connect: (password: string) => void) {
+  if (!status) {
+    connect("");
+    return;
+  }
+  status.innerHTML = `
+    <span class="row-pw">
+      <input type="password" class="row-pw-input" placeholder="server password" autocomplete="off" spellcheck="false" />
+      <button type="button" class="row-pw-go">Connect</button>
+    </span>`;
+  const input = status.querySelector<HTMLInputElement>(".row-pw-input");
+  const go = () => connect(input?.value ?? "");
+  status.querySelector<HTMLButtonElement>(".row-pw-go")?.addEventListener("click", go);
+  input?.addEventListener("keydown", (e) => {
+    if (e.key === "Enter") go();
+  });
+  input?.focus();
+}
+
 interface SpectatePug {
   pug_id: number;
   server: string;
@@ -1290,6 +1312,8 @@ interface ServerAttrs {
   UT_GAMEINSTANCE_i?: number;
   UT_MATCHSTATE_s?: string;
   UT_HUBGUID_s?: string;
+  // Bitmask; bit 0x1 set = password-protected (the in-game browser's lock icon).
+  UT_SERVERFLAGS_i?: number;
 }
 
 interface GameServerEntry {
@@ -1436,15 +1460,18 @@ function renderServerList() {
     const mode = prettyMode(String(s.attributes?.GAMEMODE_s ?? ""));
     const map = String(s.attributes?.MAPNAME_s ?? "");
     const st = matchState(s.attributes?.UT_MATCHSTATE_s);
+    const locked = ((s.attributes?.UT_SERVERFLAGS_i ?? 0) & 1) !== 0;
     const sub =
       `${escape(mode || "match")}${map ? ` · ${escape(map)}` : ""} · ${p}/${max} players` +
-      (st ? ` · ${st}` : "");
+      (st ? ` · ${st}` : "") +
+      (locked ? ` · <span title="Password protected">🔒</span>` : "");
+    const lockAttr = locked ? ` data-locked="1"` : "";
     return `<div style="padding:0 2px 0 16px;border-bottom:1px solid rgba(255,255,255,0.06)">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0">
           <div class="src" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sub}</div>
           <span style="flex:none;display:flex;gap:6px">
-            <button class="server-spectate" type="button" data-server="${escape(server)}">Spectate</button>
-            <button class="server-join" type="button" data-server="${escape(server)}">Join</button>
+            <button class="server-spectate" type="button" data-server="${escape(server)}"${lockAttr}>Spectate</button>
+            <button class="server-join" type="button" data-server="${escape(server)}"${lockAttr}>Join</button>
           </span>
         </div>
         <div id="${statusId(server)}" class="row-status"></div>
@@ -1531,14 +1558,25 @@ function renderServerList() {
   serversPanel.querySelectorAll<HTMLButtonElement>(".server-join").forEach((btn) => {
     btn.addEventListener("click", () => {
       const server = btn.dataset.server;
-      if (server) void connectTo(server, "", document.getElementById(statusId(server)));
+      if (!server) return;
+      const status = document.getElementById(statusId(server));
+      if (btn.dataset.locked) {
+        promptServerPassword(status, (pw) => void connectTo(server, pw, status));
+      } else {
+        void connectTo(server, "", status);
+      }
     });
   });
   serversPanel.querySelectorAll<HTMLButtonElement>(".server-spectate").forEach((btn) => {
     btn.addEventListener("click", () => {
       const server = btn.dataset.server;
-      if (server)
-        void connectTo(`${server}?SpectatorOnly=1`, "", document.getElementById(statusId(server)));
+      if (!server) return;
+      const status = document.getElementById(statusId(server));
+      if (btn.dataset.locked) {
+        promptServerPassword(status, (pw) => void connectTo(`${server}?SpectatorOnly=1`, pw, status));
+      } else {
+        void connectTo(`${server}?SpectatorOnly=1`, "", status);
+      }
     });
   });
 }

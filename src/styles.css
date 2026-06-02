@@ -196,6 +196,17 @@ button:active {
   padding: 0.2rem 0;
 }
 
+/* Inline password entry for a locked server's Join/Spectate row. */
+.row-pw {
+  display: inline-flex;
+  gap: 6px;
+  align-items: center;
+}
+.row-pw-input {
+  padding: 3px 6px;
+  max-width: 180px;
+}
+
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;
