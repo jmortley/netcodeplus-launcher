@@ -55,6 +55,7 @@ pub fn run() {
             commands::launcher_version,
             auth::ut4_login,
             auth::ut4_auth_status,
+            auth::resolve_player_names,
             auth::ut4_logout,
             auth::ut4_prepare_launch,
             updates::fetch_and_verify_manifest,

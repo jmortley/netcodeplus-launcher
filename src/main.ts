@@ -1241,6 +1241,61 @@ function promptServerPassword(status: HTMLElement | null, connect: (password: st
   input?.focus();
 }
 
+// Resolved account-id -> display name, cached for the session (names rarely
+// change, and a player seen in two matches resolves once).
+const playerNames = new Map<string, string>();
+
+// Account IDs of everyone in a match (public + private slots), from the cached
+// server list keyed by address:port.
+function matchPlayerIds(server: string): string[] {
+  const e = serverCache.find((s) => `${s.serverAddress}:${s.serverPort}` === server);
+  return [...(e?.publicPlayers ?? []), ...(e?.privatePlayers ?? [])];
+}
+
+// Caret handler: toggle a match's roster in its row-status slot. Names need the
+// signed-in user's session (the account endpoint is auth-gated), so signed-out
+// users get a prompt to sign in instead.
+async function toggleRoster(server: string, slot: HTMLElement | null) {
+  if (!slot) return;
+  if (slot.dataset.roster === "1") {
+    slot.dataset.roster = "";
+    slot.innerHTML = "";
+    return;
+  }
+  slot.dataset.roster = "1";
+  const ids = matchPlayerIds(server);
+  if (!ids.length) {
+    slot.innerHTML = `<span class="src">No players to list.</span>`;
+    return;
+  }
+  if (!state.ut4?.logged_in) {
+    slot.innerHTML = `<span class="src">Sign in on the Launch tab to see who's playing.</span>`;
+    return;
+  }
+  slot.innerHTML = `<span class="src">Loading players…</span>`;
+  const missing = ids.filter((id) => !playerNames.has(id));
+  if (missing.length) {
+    try {
+      const resolved = await invoke<{ id: string; name: string }[]>("resolve_player_names", {
+        ids: missing,
+      });
+      for (const r of resolved) playerNames.set(r.id, r.name);
+    } catch (err) {
+      const msg = String(err);
+      slot.innerHTML = msg.includes("RELOGIN_REQUIRED")
+        ? `<span class="src">Your session expired — sign in again on the Launch tab.</span>`
+        : `<span class="warn">Couldn't load players: ${escape(msg)}</span>`;
+      return;
+    }
+  }
+  // Toggled closed while the lookup was in flight — don't clobber.
+  if (slot.dataset.roster !== "1") return;
+  const names = ids.map((id) => playerNames.get(id) || id.slice(0, 8));
+  slot.innerHTML = `<div class="roster">${names
+    .map((n) => `<span class="roster-name">${escape(n)}</span>`)
+    .join("")}</div>`;
+}
+
 interface SpectatePug {
   pug_id: number;
   server: string;
@@ -1323,6 +1378,10 @@ interface GameServerEntry {
   totalPlayers?: number;
   maxPublicPlayers?: number;
   started?: boolean;
+  // Account-ID hashes of joined players (names aren't in the session — resolved
+  // on demand via resolve_player_names for the roster expander).
+  publicPlayers?: string[];
+  privatePlayers?: string[];
   attributes?: ServerAttrs;
 }
 
@@ -1466,10 +1525,15 @@ function renderServerList() {
       (st ? ` · ${st}` : "") +
       (locked ? ` · <span title="Password protected">🔒</span>` : "");
     const lockAttr = locked ? ` data-locked="1"` : "";
+    const rosterBtn =
+      p > 0
+        ? `<button class="server-roster" type="button" data-server="${escape(server)}" title="Show players">▾</button>`
+        : "";
     return `<div style="padding:0 2px 0 16px;border-bottom:1px solid rgba(255,255,255,0.06)">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0">
           <div class="src" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sub}</div>
-          <span style="flex:none;display:flex;gap:6px">
+          <span style="flex:none;display:flex;gap:6px;align-items:center">
+            ${rosterBtn}
             <button class="server-spectate" type="button" data-server="${escape(server)}"${lockAttr}>Spectate</button>
             <button class="server-join" type="button" data-server="${escape(server)}"${lockAttr}>Join</button>
           </span>
@@ -1577,6 +1641,12 @@ function renderServerList() {
       } else {
         void connectTo(`${server}?SpectatorOnly=1`, "", status);
       }
+    });
+  });
+  serversPanel.querySelectorAll<HTMLButtonElement>(".server-roster").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const server = btn.dataset.server;
+      if (server) void toggleRoster(server, document.getElementById(statusId(server)));
     });
   });
 }

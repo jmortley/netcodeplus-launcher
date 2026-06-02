@@ -325,3 +325,99 @@ pub async fn ut4_prepare_launch(app: tauri::AppHandle) -> Result<Ut4LaunchAuth, 
         account_id: st.ut4_account_id.unwrap_or_default(),
     })
 }
+
+/// Public account endpoint — resolves account IDs to display names. Auth-gated
+/// (needs a bearer), so it only works for a signed-in user.
+const ACCOUNT_URL: &str = "https://master-ut4.timiimit.com/account/api/public/account";
+/// Cap on the account-lookup response body (display names are tiny; even a full
+/// 32-player match is a few KB).
+const ACCOUNT_RESP_MAX: u64 = 256 * 1024;
+/// Most account IDs to resolve in one call (a match maxes out well under this).
+const MAX_ACCOUNT_IDS: usize = 64;
+
+/// One account from the lookup response (unknown fields ignored).
+#[derive(serde::Deserialize)]
+struct AccountInfo {
+    #[serde(default)]
+    id: String,
+    #[serde(default, rename = "displayName")]
+    display_name: String,
+}
+
+/// A resolved player (account id + display name) for the server-browser roster.
+#[derive(Serialize)]
+pub struct PlayerName {
+    pub id: String,
+    pub name: String,
+}
+
+/// Resolve UT4 account IDs to display names using the signed-in user's session.
+///
+/// The public account endpoint is auth-gated, so this needs a logged-in user: it
+/// refreshes the access token (rotating the stored refresh token) and batch-looks
+/// up the ids. IDs are sanitised to alphanumeric (account ids are hex) so a
+/// webview value can't inject extra query parameters.
+///
+/// # Errors
+/// `RELOGIN_REQUIRED` when there is no/expired session; otherwise a stringified
+/// network/parse error.
+#[tauri::command]
+pub async fn resolve_player_names(ids: Vec<String>) -> Result<Vec<PlayerName>, String> {
+    let safe_ids: Vec<&str> = ids
+        .iter()
+        .map(String::as_str)
+        .filter(|id| {
+            !id.is_empty() && id.len() <= 64 && id.chars().all(|c| c.is_ascii_alphanumeric())
+        })
+        .take(MAX_ACCOUNT_IDS)
+        .collect();
+    if safe_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+
+    let refresh = load_refresh()?.ok_or_else(|| RELOGIN.to_string())?;
+    let body = post_token(&[("grant_type", "refresh_token"), ("refresh_token", &refresh)])
+        .await
+        .map_err(|e| match e {
+            ncp_net::NetError::HttpStatus { status, .. } if (400..500).contains(&status) => {
+                RELOGIN.to_string()
+            }
+            other => other.to_string(),
+        })?;
+    let tok: TokenResponse =
+        serde_json::from_str(&body).map_err(|e| format!("bad token response: {e}"))?;
+    if tok.access_token.is_empty() {
+        return Err(RELOGIN.to_string());
+    }
+    if !tok.refresh_token.is_empty() {
+        let _ = store_refresh(&tok.refresh_token);
+    }
+
+    let mut url = String::from(ACCOUNT_URL);
+    for (i, id) in safe_ids.iter().enumerate() {
+        url.push(if i == 0 { '?' } else { '&' });
+        url.push_str("accountId=");
+        url.push_str(id);
+    }
+
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    let bearer = format!("Bearer {}", tok.access_token);
+    let resp = ncp_net::fetch_text_with_headers(
+        &client,
+        &url,
+        &[("authorization", &bearer)],
+        ACCOUNT_RESP_MAX,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+    let infos: Vec<AccountInfo> =
+        serde_json::from_str(&resp).map_err(|e| format!("bad account response: {e}"))?;
+    Ok(infos
+        .into_iter()
+        .filter(|a| !a.id.is_empty())
+        .map(|a| PlayerName {
+            id: a.id,
+            name: a.display_name,
+        })
+        .collect())
+}
