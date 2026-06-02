@@ -657,6 +657,50 @@ pub fn reveal_netcodeplus_folder(app: tauri::AppHandle, root: String) -> Result<
         .map_err(|e| e.to_string())
 }
 
+/// Open the UT4 `Plugins` folder for an install so the user can drop in a plugin
+/// like UltiCross. Validates the root is a real UT4 install (never an arbitrary
+/// webview path), creates the standard `Plugins` dir if a fresh install lacks one
+/// (best-effort), and opens a directory only — never a file.
+#[tauri::command]
+pub fn reveal_plugins_folder(app: tauri::AppHandle, root: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let root_path = Path::new(&root);
+    let dir = ncp_host::plugins_dir(root_path);
+    // Guard: only operate on a real UT4 layout (the `<root>/UnrealTournament`
+    // game dir must exist), so a bad root can't make us create folders in an
+    // arbitrary location.
+    let Some(game_dir) = dir.parent().filter(|p| p.is_dir()).map(|p| p.to_path_buf()) else {
+        return Err("that doesn't look like a UT4 install".to_string());
+    };
+    // A fresh install may lack a Plugins folder; create it so there is a
+    // destination. Best-effort — a Program Files install may need elevation, in
+    // which case we fall back to opening the game folder above it.
+    if !dir.is_dir() {
+        let _ = std::fs::create_dir_all(&dir);
+    }
+    let target = if dir.is_dir() { dir } else { game_dir };
+    app.opener()
+        .open_path(target.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
+/// Open the `Engine\Binaries\Win64` folder for an install — where UT4-OpenAL's
+/// shipping DLL goes (next to the engine binaries, not under `Plugins`). Opens a
+/// real directory under the install root only, never a file.
+#[tauri::command]
+pub fn reveal_openal_folder(app: tauri::AppHandle, root: String) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let dir = ncp_host::config::openal_dir(Path::new(&root));
+    if !dir.is_dir() {
+        return Err(
+            "the Engine\\Binaries\\Win64 folder isn't there — is this a UT4 install?".to_string(),
+        );
+    }
+    app.opener()
+        .open_path(dir.to_string_lossy().to_string(), None::<&str>)
+        .map_err(|e| e.to_string())
+}
+
 /// Verify and, if needed, repair the `[OnlineSubsystemMcp.*]` master-server
 /// sections that a UT4 bug sometimes wipes. Returns whether a repair ran.
 #[tauri::command]

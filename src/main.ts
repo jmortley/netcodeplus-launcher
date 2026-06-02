@@ -1597,13 +1597,14 @@ async function renderAddons(): Promise<void> {
   }
   const ulti = hasUlti
     ? `<div class="ok">✓ UltiCross detected — fully customizable crosshairs (type <code>ulticross</code> in the console).</div>`
-    : `<p class="src">UltiCross not detected — get <button id="get-ulticross" type="button" class="link-btn">UltiCross</button> for fully customizable crosshairs. Extract it into your UT4 folder, then relaunch.</p>`;
+    : `<p class="src">UltiCross not detected — get <button id="get-ulticross" type="button" class="link-btn">UltiCross</button> for fully customizable crosshairs, then unzip it into your <button id="open-plugins" type="button" class="link-btn">Plugins folder</button> and relaunch.</p>`;
   panel.innerHTML = `
     <p>Optional community plugins for this install — the launcher only checks whether you have them.</p>
     ${ulti}`;
   document
     .getElementById("get-ulticross")
     ?.addEventListener("click", () => openExternal("https://github.com/aldehir/UT4-UltiCross"));
+  document.getElementById("open-plugins")?.addEventListener("click", () => void revealPlugins(root));
 }
 
 // ---- performance config ---------------------------------------------------
@@ -1634,9 +1635,12 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
     }
   }
 
+  const openalDest = root
+    ? `<button id="open-openal" type="button" class="link-btn">Engine\\Binaries\\Win64</button>`
+    : `<code>Engine\\Binaries\\Win64</code>`;
   const audioLine = openal
     ? `<div class="ok">✓ UT4-OpenAL detected — its audio module will be enabled.</div>`
-    : `<p class="src">OpenAL not detected — get <button id="get-openal" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio. The audio override is skipped without it.</p>`;
+    : `<p class="src">OpenAL not detected — get <button id="get-openal" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio, then drop its DLL into ${openalDest} and relaunch. The audio override is skipped without it.</p>`;
 
   const t = cfg.tweaks;
   const readOnlyWarn = cfg.engine_ini_read_only
@@ -1666,6 +1670,9 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
   document.getElementById("get-openal")?.addEventListener("click", () =>
     openExternal("https://github.com/main-exe/UT4-OpenAL/"),
   );
+  if (root) {
+    document.getElementById("open-openal")?.addEventListener("click", () => void revealOpenal(root));
+  }
   document.getElementById("cfg-apply")?.addEventListener("click", () => void applyConfig(openal));
   document.getElementById("cfg-restore")?.addEventListener("click", () => void restoreConfig());
   document.getElementById("cfg-make-writable")?.addEventListener("click", () => void doClearReadonly());
@@ -1693,6 +1700,26 @@ async function revealNcp(root: string): Promise<void> {
     await invoke("reveal_netcodeplus_folder", { root });
   } catch (err) {
     console.error("reveal_netcodeplus_folder failed:", err);
+  }
+}
+
+// Open the UT4 Plugins folder (UltiCross's destination). Backend validates the
+// install root and opens a real directory only — never an arbitrary path.
+async function revealPlugins(root: string): Promise<void> {
+  try {
+    await invoke("reveal_plugins_folder", { root });
+  } catch (err) {
+    console.error("reveal_plugins_folder failed:", err);
+  }
+}
+
+// Open Engine\Binaries\Win64 (UT4-OpenAL's destination — next to the engine
+// binaries, not under Plugins). Same backend folder-only safety.
+async function revealOpenal(root: string): Promise<void> {
+  try {
+    await invoke("reveal_openal_folder", { root });
+  } catch (err) {
+    console.error("reveal_openal_folder failed:", err);
   }
 }
 

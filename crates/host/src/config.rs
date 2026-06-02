@@ -233,6 +233,14 @@ pub fn openal_installed(root: &Path) -> bool {
     root.join(OPENAL_DLL_REL).is_file()
 }
 
+/// The directory UT4-OpenAL's shipping DLL belongs in
+/// (`<root>/Engine/Binaries/Win64/`) — next to the engine binaries, NOT under
+/// `Plugins`. Where a player drops the extracted `UE4-ALAudio-…` DLL.
+#[must_use]
+pub fn openal_dir(root: &Path) -> PathBuf {
+    root.join("Engine").join("Binaries").join("Win64")
+}
+
 fn backup_path(ini: &Path) -> PathBuf {
     let mut s = ini.as_os_str().to_owned();
     s.push(BACKUP_SUFFIX);

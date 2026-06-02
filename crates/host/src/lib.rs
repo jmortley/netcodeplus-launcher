@@ -29,7 +29,7 @@ pub use crate::elevate::{dir_writable, run_elevated, ElevateError};
 pub use crate::error::{Result, StateError};
 pub use crate::install::{
     check_install, default_mod_paks_dir, detect, detect_installs, netcodeplus_dir,
-    netcodeplus_status, play_install_from_shortcut, ulticross_installed, DetectSource,
+    netcodeplus_status, play_install_from_shortcut, plugins_dir, ulticross_installed, DetectSource,
     DetectedInstall, LaunchProfile, NetcodePlusStatus, UtInstall,
 };
 pub use crate::launch::{

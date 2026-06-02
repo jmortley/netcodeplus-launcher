@@ -163,6 +163,14 @@ pub fn netcodeplus_dir(root: &Path) -> PathBuf {
     root.join(GAME_NAME).join("Plugins").join("NetcodePlus")
 }
 
+/// The UT4 game `Plugins` directory under an install root
+/// (`<root>/UnrealTournament/Plugins/`) — where drop-in plugin folders such as
+/// UltiCross go.
+#[must_use]
+pub fn plugins_dir(root: &Path) -> PathBuf {
+    root.join(GAME_NAME).join("Plugins")
+}
+
 /// Classify whether (and how) NetcodePlus is installed in `root`.
 #[must_use]
 pub fn netcodeplus_status(root: &Path) -> NetcodePlusStatus {
