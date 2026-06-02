@@ -2034,8 +2034,17 @@ async function startGameInstall(zipPath: string): Promise<void> {
       zipPath,
     });
     if (status) {
-      status.innerHTML = `<span class="ok">✓ Installer launched.</span> Approve the Windows admin prompt, then follow the UT4 installer. You can delete the downloaded files once it's done. <button id="game-reveal-btn" type="button" class="link-btn">Open folder</button>`;
+      status.innerHTML = `<span class="ok">✓ Installer launched — follow it in its own window.</span>
+        You'll get a Windows admin prompt, and you choose where UT4 installs there.
+        <strong>When it finishes, click "Find my install"</strong> so the launcher picks up your new game (or just reopen the launcher). You can delete the downloaded files afterwards.
+        <div class="game-install-actions">
+          <button id="game-find-install" type="button">Find my install</button>
+          <button id="game-reveal-btn" type="button" class="link-btn">Open folder</button>
+        </div>`;
     }
+    document
+      .getElementById("game-find-install")
+      ?.addEventListener("click", () => void findMyInstall());
     document
       .getElementById("game-reveal-btn")
       ?.addEventListener("click", () => void invoke("reveal_path", { path: res.exe_path }));
@@ -2059,6 +2068,25 @@ async function startGameInstall(zipPath: string): Promise<void> {
       gameDownloadUnlisten = null;
     }
   }
+}
+
+// Re-scan for installs after the user finishes the external UT4 installer. The
+// installer runs as its own (elevated) process, so the launcher can't know when
+// it's done — the user triggers this when it is. It's a soft "reopen":
+// `loadAll` re-detects everything and re-renders (pug polling is idempotent, so
+// re-running it is safe), so a freshly installed game appears without an actual
+// restart.
+async function findMyInstall(): Promise<void> {
+  const status = document.getElementById("game-install-status");
+  if (status) status.innerHTML = `<span class="src">Scanning for your UT4 install…</span>`;
+  await loadAll();
+  // loadAll rebuilt the panel; report into the fresh status element.
+  const s = document.getElementById("game-install-status");
+  if (!s) return;
+  s.innerHTML =
+    state.installs.length > 0
+      ? `<span class="ok">✓ Found your UT4 install — it's ready to play on the Launch tab.</span>`
+      : `<span class="warn">No UT4 install detected yet. If the installer just finished, give it a moment and click again — or use <strong>Advanced → Pick install folder</strong> to point at where you installed UT4.</span>`;
 }
 
 async function applyConfig(setOpenalAudio: boolean) {
