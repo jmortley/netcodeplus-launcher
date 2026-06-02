@@ -174,6 +174,103 @@ pub async fn download_game_installer(app: AppHandle, dir: String) -> Result<Stri
     Ok(final_path.to_string_lossy().into_owned())
 }
 
+/// Where [`install_game`] unpacked the installer and which exe it launched, so
+/// the UI can offer "open folder".
+#[derive(Debug, Serialize)]
+pub struct InstallGameResult {
+    /// The folder the archive was unpacked into.
+    pub installer_dir: String,
+    /// The installer executable that was launched.
+    pub exe_path: String,
+}
+
+/// Unpack a previously downloaded + verified installer `.zip` beside itself and
+/// launch its installer, which self-elevates (UAC) to install the game.
+///
+/// The launcher itself never elevates: it only writes the extracted files into
+/// the same user-owned folder the zip is in (guaranteed writable — the download
+/// step rejected unwritable folders), then asks the OS to start
+/// `UT4_Installer.exe`. That exe is marked `requireAdministrator`, so Windows
+/// raises the elevation prompt for *it* — a plain spawn would fail os-740.
+///
+/// Emits `game-download-progress` events with phase `"extract"`. Returns the
+/// unpack folder + launched exe path. The verified `.zip` is kept (the user can
+/// delete it, and the unpack folder, once UT4 is installed).
+#[tauri::command]
+pub async fn install_game(app: AppHandle, zip_path: String) -> Result<InstallGameResult, String> {
+    let zip = PathBuf::from(&zip_path);
+    if !zip.is_file() {
+        return Err("the downloaded installer is missing — download it again".into());
+    }
+    let parent = zip
+        .parent()
+        .ok_or("the installer has no containing folder")?
+        .to_path_buf();
+    // Unpack into a sibling folder named after the zip (e.g. `UT4-Installer-1.1.0`).
+    let stem = zip
+        .file_stem()
+        .unwrap_or_else(|| std::ffi::OsStr::new("UT4-Installer"));
+    let dest = parent.join(stem);
+
+    // Total uncompressed size — for the free-space check and the progress total.
+    let total = ncp_host::total_uncompressed_size(&zip).map_err(|e| e.to_string())?;
+
+    // Free-space guard on the extract drive (same volume as the zip): unpacking
+    // the ~10 GB archive needs roughly its uncompressed size again, on top of
+    // the zip already on disk.
+    if let Some(free) = ncp_host::disk::available_space(&parent) {
+        let needed = total.saturating_add(512 * 1024 * 1024); // +0.5 GB headroom
+        if free < needed {
+            return Err(format!(
+                "not enough free space to unpack the installer — need ~{:.1} GB more on that drive, have {:.1} GB. Free up space (you can delete the downloaded .zip once UT4 is installed) and try again.",
+                total as f64 / 1e9,
+                free as f64 / 1e9,
+            ));
+        }
+    }
+
+    // Extraction (~10 GB, synchronous) and the modal UAC wait inside
+    // `shell_launch` must not run on the async executor — do them on a blocking
+    // thread. Progress events still flow (emit is thread-agnostic).
+    let app_bg = app.clone();
+    let handle = tauri::async_runtime::spawn_blocking(
+        move || -> Result<InstallGameResult, String> {
+            // Start clean: clear any partial unpack from a previous attempt.
+            if dest.exists() {
+                std::fs::remove_dir_all(&dest)
+                    .map_err(|e| format!("couldn't clear the previous unpack folder: {e}"))?;
+            }
+
+            ncp_host::extract_zip(&zip, &dest, total, |done, total| {
+                emit(&app_bg, "extract", done, total);
+            })
+            .map_err(|e| e.to_string())?;
+
+            let exe = ncp_host::find_installer_exe(&dest).ok_or_else(|| {
+            "couldn't find the installer program inside the archive — open the folder and run it manually".to_string()
+        })?;
+            let work = exe.parent().unwrap_or(&dest).to_path_buf();
+
+            ncp_host::shell_launch(&exe, &work).map_err(|e| match e {
+            ncp_host::ElevateError::Cancelled => {
+                "you declined the Windows admin prompt — the installer didn't start. Click Install UT4 again when you're ready.".to_string()
+            }
+            other => other.to_string(),
+        })?;
+
+            Ok(InstallGameResult {
+                installer_dir: dest.to_string_lossy().into_owned(),
+                exe_path: exe.to_string_lossy().into_owned(),
+            })
+        },
+    );
+
+    match handle.await {
+        Ok(res) => res,
+        Err(e) => Err(format!("the install step failed to run: {e}")),
+    }
+}
+
 /// Reveal a downloaded file by opening its containing folder (the user runs the
 /// installer themselves). Opens a real directory only — never a file, no exec
 /// surface.

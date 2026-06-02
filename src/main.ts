@@ -1891,28 +1891,27 @@ async function renderGameInstall(): Promise<void> {
     ?.addEventListener("click", () => void startGameDownload());
 }
 
-async function startGameDownload(): Promise<void> {
-  const status = document.getElementById("game-install-status");
-  // Let the user pick the drive/folder — it's a ~10 GB file, so disk choice matters.
-  const dir = await open({ directory: true, title: "Choose where to download UT4 (~10 GB)" });
-  if (typeof dir !== "string") return; // folder picker cancelled
+// Phase → verb for the shared progress bar (download → verify → extract).
+function gamePhaseLabel(phase: string): string {
+  if (phase === "verify") return "Verifying";
+  if (phase === "extract") return "Unpacking";
+  return "Downloading";
+}
 
-  // Render the progress UI once; the event listener only updates the bar + label.
-  if (status) {
-    status.innerHTML = `
-      <div class="game-progress"><div id="game-progress-bar" class="game-progress-bar"></div></div>
-      <div class="src"><span id="game-progress-label">Starting…</span>
-        <button id="game-cancel-btn" type="button" class="link-btn">Cancel</button></div>`;
-  }
-  document
-    .getElementById("game-cancel-btn")
-    ?.addEventListener("click", () => void invoke("cancel_game_download"));
+// Progress-bar markup, optionally with a Cancel button (download only — the
+// unpack step isn't cancellable).
+function gameProgressSkeleton(withCancel: boolean): string {
+  return `
+    <div class="game-progress"><div id="game-progress-bar" class="game-progress-bar"></div></div>
+    <div class="src"><span id="game-progress-label">Starting…</span>${
+      withCancel ? ` <button id="game-cancel-btn" type="button" class="link-btn">Cancel</button>` : ""
+    }</div>`;
+}
 
-  if (gameDownloadUnlisten) {
-    gameDownloadUnlisten();
-    gameDownloadUnlisten = null;
-  }
-  gameDownloadUnlisten = await listen<{ phase: string; done: number; total: number }>(
+// Attach the shared `game-download-progress` listener; both download and unpack
+// emit it (distinguished by `phase`). Returns the unlisten handle.
+async function attachGameProgress(): Promise<UnlistenFn> {
+  return await listen<{ phase: string; done: number; total: number }>(
     "game-download-progress",
     (e) => {
       const { phase, done, total } = e.payload;
@@ -1921,27 +1920,102 @@ async function startGameDownload(): Promise<void> {
       if (bar) bar.style.width = `${pct}%`;
       const label = document.getElementById("game-progress-label");
       if (label) {
-        label.textContent = `${phase === "verify" ? "Verifying" : "Downloading"} ${pct}% — ${(
-          done / 1e9
-        ).toFixed(2)} / ${(total / 1e9).toFixed(2)} GB`;
+        label.textContent = `${gamePhaseLabel(phase)} ${pct}% — ${(done / 1e9).toFixed(2)} / ${(
+          total / 1e9
+        ).toFixed(2)} GB`;
       }
     },
   );
+}
+
+async function startGameDownload(): Promise<void> {
+  const status = document.getElementById("game-install-status");
+  // Let the user pick the drive/folder — it's a ~10 GB file, so disk choice matters.
+  const dir = await open({ directory: true, title: "Choose where to download UT4 (~10 GB)" });
+  if (typeof dir !== "string") return; // folder picker cancelled
+
+  // Render the progress UI once; the event listener only updates the bar + label.
+  if (status) status.innerHTML = gameProgressSkeleton(true);
+  document
+    .getElementById("game-cancel-btn")
+    ?.addEventListener("click", () => void invoke("cancel_game_download"));
+
+  if (gameDownloadUnlisten) {
+    gameDownloadUnlisten();
+    gameDownloadUnlisten = null;
+  }
+  gameDownloadUnlisten = await attachGameProgress();
 
   try {
     const path = await invoke<string>("download_game_installer", { dir });
-    if (status) {
-      status.innerHTML = `<span class="ok">✓ Downloaded &amp; verified.</span> <button id="game-reveal-btn" type="button" class="link-btn">Open folder</button>`;
-    }
-    document
-      .getElementById("game-reveal-btn")
-      ?.addEventListener("click", () => void invoke("reveal_path", { path }));
+    showGameDownloaded(status, path);
   } catch (err) {
     const msg = String(err);
     if (status) {
       status.innerHTML = msg.includes("cancelled")
         ? `<span class="warn">Download cancelled — it'll resume where it stopped if you start again.</span>`
         : `<span class="warn">${escape(msg)}</span>`;
+    }
+  } finally {
+    if (gameDownloadUnlisten) {
+      gameDownloadUnlisten();
+      gameDownloadUnlisten = null;
+    }
+  }
+}
+
+// After a verified download: offer Install UT4 (unzip + launch the installer) or
+// Open folder. The zip path is threaded through so install/reveal act on it.
+function showGameDownloaded(status: HTMLElement | null, zipPath: string): void {
+  if (!status) return;
+  status.innerHTML = `<span class="ok">✓ Downloaded &amp; verified.</span>
+    <div class="game-install-actions">
+      <button id="game-install-btn" type="button">Install UT4</button>
+      <button id="game-reveal-btn" type="button" class="link-btn">Open folder</button>
+    </div>`;
+  document
+    .getElementById("game-install-btn")
+    ?.addEventListener("click", () => void startGameInstall(zipPath));
+  document
+    .getElementById("game-reveal-btn")
+    ?.addEventListener("click", () => void invoke("reveal_path", { path: zipPath }));
+}
+
+// Unpack the verified zip and launch its installer (which self-elevates via the
+// Windows admin prompt). Shows "Unpacking" progress, then the launch result.
+async function startGameInstall(zipPath: string): Promise<void> {
+  const status = document.getElementById("game-install-status");
+  if (status) status.innerHTML = gameProgressSkeleton(false);
+
+  if (gameDownloadUnlisten) {
+    gameDownloadUnlisten();
+    gameDownloadUnlisten = null;
+  }
+  gameDownloadUnlisten = await attachGameProgress();
+
+  try {
+    const res = await invoke<{ installer_dir: string; exe_path: string }>("install_game", {
+      zipPath,
+    });
+    if (status) {
+      status.innerHTML = `<span class="ok">✓ Installer launched.</span> Approve the Windows admin prompt, then follow the UT4 installer. You can delete the downloaded files once it's done. <button id="game-reveal-btn" type="button" class="link-btn">Open folder</button>`;
+    }
+    document
+      .getElementById("game-reveal-btn")
+      ?.addEventListener("click", () => void invoke("reveal_path", { path: res.exe_path }));
+  } catch (err) {
+    if (status) {
+      status.innerHTML = `<span class="warn">${escape(String(err))}</span>
+        <div class="game-install-actions">
+          <button id="game-install-btn" type="button">Try again</button>
+          <button id="game-reveal-btn" type="button" class="link-btn">Open folder</button>
+        </div>`;
+      document
+        .getElementById("game-install-btn")
+        ?.addEventListener("click", () => void startGameInstall(zipPath));
+      document
+        .getElementById("game-reveal-btn")
+        ?.addEventListener("click", () => void invoke("reveal_path", { path: zipPath }));
     }
   } finally {
     if (gameDownloadUnlisten) {

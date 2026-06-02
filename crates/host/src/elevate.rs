@@ -197,6 +197,61 @@ pub fn run_elevated(exe: &Path, args: &[String]) -> Result<u32, ElevateError> {
     Ok(code)
 }
 
+/// Launch `exe` through the shell with working directory `work_dir`,
+/// fire-and-forget. Used to start the downloaded UT4 game installer: unlike a
+/// plain `CreateProcess` spawn, `ShellExecuteExW` honours the target's embedded
+/// manifest, so a `requireAdministrator` program (which the installer is) raises
+/// the normal UAC prompt and runs elevated **on its own** — the launcher itself
+/// never elevates. A plain spawn would instead fail with
+/// `ERROR_ELEVATION_REQUIRED` (740). Returns once the program has been started
+/// (or the prompt declined); it does NOT wait for it to exit.
+///
+/// # Errors
+/// [`ElevateError::Cancelled`] if the user declines the UAC prompt;
+/// [`ElevateError::Launch`] on a Win32 failure.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub fn shell_launch(exe: &Path, work_dir: &Path) -> Result<(), ElevateError> {
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::UI::Shell::{ShellExecuteExW, SHELLEXECUTEINFOW};
+
+    // SW_SHOWNORMAL so the installer's window appears. A NULL lpVerb (the
+    // default verb) makes ShellExecuteExW honour the exe's manifest, so a
+    // requireAdministrator installer self-elevates via UAC. ERROR_CANCELLED is
+    // what GetLastError returns when the user clicks "No" on that prompt.
+    const SW_SHOWNORMAL: i32 = 1;
+    const ERROR_CANCELLED: u32 = 1223;
+
+    let file = wide(&exe.to_string_lossy());
+    let dir = wide(&work_dir.to_string_lossy());
+
+    // Zero-initialise the struct, then set only the fields we use. lpVerb /
+    // lpParameters stay NULL (default verb, no args); we don't ask for
+    // SEE_MASK_NOCLOSEPROCESS because we don't wait on or inspect the child.
+    let mut info: SHELLEXECUTEINFOW = unsafe { std::mem::zeroed() };
+    info.cbSize = std::mem::size_of::<SHELLEXECUTEINFOW>() as u32;
+    info.lpFile = file.as_ptr();
+    info.lpDirectory = dir.as_ptr();
+    info.nShow = SW_SHOWNORMAL;
+
+    // SAFETY: `info` is fully zero-initialised then populated; cbSize is the
+    // real struct size; lpFile/lpDirectory point to NUL-terminated UTF-16
+    // buffers (`file`/`dir`) that outlive this call; lpVerb/lpParameters are
+    // NULL, which ShellExecuteExW accepts. We pass a valid `&mut info`. Without
+    // SEE_MASK_NOCLOSEPROCESS it writes no process handle back.
+    let ok = unsafe { ShellExecuteExW(&mut info) };
+    if ok == 0 {
+        // SAFETY: GetLastError takes no args and only reads thread-local state.
+        let err = unsafe { GetLastError() };
+        return Err(if err == ERROR_CANCELLED {
+            ElevateError::Cancelled
+        } else {
+            ElevateError::Launch(err)
+        });
+    }
+    Ok(())
+}
+
 /// Non-Windows stub: elevation is Windows-only (Linux/Proton support is post-v1
 /// and uses a native install path anyway).
 ///
@@ -204,6 +259,15 @@ pub fn run_elevated(exe: &Path, args: &[String]) -> Result<u32, ElevateError> {
 /// Always [`ElevateError::Unsupported`].
 #[cfg(not(windows))]
 pub fn run_elevated(_exe: &Path, _args: &[String]) -> Result<u32, ElevateError> {
+    Err(ElevateError::Unsupported)
+}
+
+/// Non-Windows stub: shell-launch is Windows-only.
+///
+/// # Errors
+/// Always [`ElevateError::Unsupported`].
+#[cfg(not(windows))]
+pub fn shell_launch(_exe: &Path, _work_dir: &Path) -> Result<(), ElevateError> {
     Err(ElevateError::Unsupported)
 }
 

@@ -19,15 +19,18 @@ pub mod config;
 pub mod disk;
 pub mod elevate;
 mod error;
+pub mod extract;
 pub mod install;
 pub mod launch;
 pub mod plugin_install;
 pub mod shortcut;
 pub mod state;
 pub mod stray;
+mod zip_safety;
 
-pub use crate::elevate::{dir_writable, run_elevated, ElevateError};
+pub use crate::elevate::{dir_writable, run_elevated, shell_launch, ElevateError};
 pub use crate::error::{Result, StateError};
+pub use crate::extract::{extract_zip, find_installer_exe, total_uncompressed_size, ExtractError};
 pub use crate::install::{
     check_install, default_mod_paks_dir, detect, detect_installs, netcodeplus_dir,
     netcodeplus_status, play_install_from_shortcut, plugins_dir, ulticross_installed, DetectSource,

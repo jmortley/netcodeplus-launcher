@@ -56,6 +56,7 @@ pub fn run() {
             commands::launcher_version,
             installer::game_installer_info,
             installer::download_game_installer,
+            installer::install_game,
             installer::cancel_game_download,
             installer::reveal_path,
             auth::ut4_login,
