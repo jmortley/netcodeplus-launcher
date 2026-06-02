@@ -104,4 +104,9 @@ pub enum NetError {
     /// Filesystem error during the streaming write or atomic rename.
     #[error("download I/O error: {0}")]
     Io(#[from] io::Error),
+
+    /// The caller cancelled the download. The partial file is left in place so a
+    /// later call can resume from it.
+    #[error("download cancelled")]
+    Cancelled,
 }

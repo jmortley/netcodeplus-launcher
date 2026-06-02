@@ -16,6 +16,7 @@
 
 pub mod compat;
 pub mod config;
+pub mod disk;
 pub mod elevate;
 mod error;
 pub mod install;

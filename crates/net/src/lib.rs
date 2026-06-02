@@ -19,7 +19,7 @@ mod error;
 mod fetch;
 
 pub use crate::client::{Client, ClientConfig};
-pub use crate::download::{download, DownloadOutcome};
+pub use crate::download::{download, download_resumable, hash_file, DownloadOutcome};
 pub use crate::error::{NetError, Result};
 pub use crate::fetch::{
     fetch_bytes, fetch_text, fetch_text_with_headers, post_form, post_json,

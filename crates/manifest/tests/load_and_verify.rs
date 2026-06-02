@@ -74,6 +74,7 @@ fn sample_manifest(now: DateTime<Utc>) -> Manifest {
         min_launcher_version: Version::parse("0.1.0").unwrap(),
         channels,
         launcher: None,
+        game_installer: None,
     }
 }
 

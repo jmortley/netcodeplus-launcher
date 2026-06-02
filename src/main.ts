@@ -1,4 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
+import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 
 interface UtInstall {
@@ -1016,6 +1017,7 @@ async function loadAll() {
     void renderLauncherUpdate();
     void renderLauncherCleanup();
     void renderNews();
+    void renderGameInstall();
     if (state.launcherToken) {
       void pollPugStatus();
       startPugPolling();
@@ -1828,6 +1830,107 @@ async function revealOpenal(root: string): Promise<void> {
     await invoke("reveal_openal_folder", { root });
   } catch (err) {
     console.error("reveal_openal_folder failed:", err);
+  }
+}
+
+// ---- game installer (verified download for users without UT4) --------------
+
+interface GameInstallerInfo {
+  available: boolean;
+  version: string;
+  size_bytes: number;
+}
+
+let gameDownloadUnlisten: UnlistenFn | null = null;
+
+async function renderGameInstall(): Promise<void> {
+  const panel = document.getElementById("game-install-panel");
+  if (!panel) return;
+  let info: GameInstallerInfo;
+  try {
+    info = await invoke<GameInstallerInfo>("game_installer_info");
+  } catch (err) {
+    console.error("game_installer_info failed:", err);
+    panel.innerHTML = "";
+    return;
+  }
+  if (!info.available) {
+    panel.innerHTML = "";
+    return;
+  }
+  const gb = (info.size_bytes / 1e9).toFixed(1);
+  panel.innerHTML = `
+    <div class="game-install">
+      <div><strong>Don't have UT4 yet?</strong> Download the community installer (v${escape(
+        info.version,
+      )}, ${gb} GB). The launcher verifies it against the signed manifest before you run it.</div>
+      <div class="game-install-actions">
+        <button id="game-download-btn" type="button">Download UT4</button>
+      </div>
+      <div id="game-install-status" class="launch-status"></div>
+    </div>`;
+  document
+    .getElementById("game-download-btn")
+    ?.addEventListener("click", () => void startGameDownload());
+}
+
+async function startGameDownload(): Promise<void> {
+  const status = document.getElementById("game-install-status");
+  // Let the user pick the drive/folder — it's a ~10 GB file, so disk choice matters.
+  const dir = await open({ directory: true, title: "Choose where to download UT4 (~10 GB)" });
+  if (typeof dir !== "string") return; // folder picker cancelled
+
+  // Render the progress UI once; the event listener only updates the bar + label.
+  if (status) {
+    status.innerHTML = `
+      <div class="game-progress"><div id="game-progress-bar" class="game-progress-bar"></div></div>
+      <div class="src"><span id="game-progress-label">Starting…</span>
+        <button id="game-cancel-btn" type="button" class="link-btn">Cancel</button></div>`;
+  }
+  document
+    .getElementById("game-cancel-btn")
+    ?.addEventListener("click", () => void invoke("cancel_game_download"));
+
+  if (gameDownloadUnlisten) {
+    gameDownloadUnlisten();
+    gameDownloadUnlisten = null;
+  }
+  gameDownloadUnlisten = await listen<{ phase: string; done: number; total: number }>(
+    "game-download-progress",
+    (e) => {
+      const { phase, done, total } = e.payload;
+      const pct = total > 0 ? Math.floor((done / total) * 100) : 0;
+      const bar = document.getElementById("game-progress-bar");
+      if (bar) bar.style.width = `${pct}%`;
+      const label = document.getElementById("game-progress-label");
+      if (label) {
+        label.textContent = `${phase === "verify" ? "Verifying" : "Downloading"} ${pct}% — ${(
+          done / 1e9
+        ).toFixed(2)} / ${(total / 1e9).toFixed(2)} GB`;
+      }
+    },
+  );
+
+  try {
+    const path = await invoke<string>("download_game_installer", { dir });
+    if (status) {
+      status.innerHTML = `<span class="ok">✓ Downloaded &amp; verified.</span> <button id="game-reveal-btn" type="button" class="link-btn">Open folder</button>`;
+    }
+    document
+      .getElementById("game-reveal-btn")
+      ?.addEventListener("click", () => void invoke("reveal_path", { path }));
+  } catch (err) {
+    const msg = String(err);
+    if (status) {
+      status.innerHTML = msg.includes("cancelled")
+        ? `<span class="warn">Download cancelled — it'll resume where it stopped if you start again.</span>`
+        : `<span class="warn">${escape(msg)}</span>`;
+    }
+  } finally {
+    if (gameDownloadUnlisten) {
+      gameDownloadUnlisten();
+      gameDownloadUnlisten = null;
+    }
   }
 }
 

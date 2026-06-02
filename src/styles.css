@@ -224,6 +224,30 @@ button:active {
   color: #cfcfcf;
 }
 
+/* Game-installer download panel + progress bar. */
+.game-install {
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  border-radius: 6px;
+  padding: 10px 12px;
+  margin-bottom: 10px;
+}
+.game-install-actions {
+  margin-top: 8px;
+}
+.game-progress {
+  height: 8px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 4px;
+  overflow: hidden;
+  margin: 6px 0;
+}
+.game-progress-bar {
+  height: 100%;
+  width: 0;
+  background: #4ade80;
+  transition: width 0.2s ease;
+}
+
 dl {
   display: grid;
   grid-template-columns: max-content 1fr;

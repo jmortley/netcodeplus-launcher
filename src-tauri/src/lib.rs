@@ -8,6 +8,7 @@
 mod auth;
 mod commands;
 mod elevated;
+mod installer;
 mod trust_root;
 mod updates;
 
@@ -53,6 +54,10 @@ pub fn run() {
             commands::reveal_plugins_folder,
             commands::reveal_openal_folder,
             commands::launcher_version,
+            installer::game_installer_info,
+            installer::download_game_installer,
+            installer::cancel_game_download,
+            installer::reveal_path,
             auth::ut4_login,
             auth::ut4_auth_status,
             auth::resolve_player_names,

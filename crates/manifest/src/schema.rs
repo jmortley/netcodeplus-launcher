@@ -73,6 +73,13 @@ pub struct Manifest {
     /// signing to avoid AV/SmartScreen quarantine).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launcher: Option<LauncherEntry>,
+
+    /// A full UT4 game installer for users who don't have the game yet.
+    /// Top-level (one for everyone), `#[serde(default)]` → `None` for back-compat.
+    /// Like a pak, the host is untrusted: integrity comes from
+    /// [`GameInstaller::sha256`] in the signed manifest, verified after download.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub game_installer: Option<GameInstaller>,
 }
 
 /// The latest launcher build advertised by a [`Manifest`].
@@ -95,6 +102,30 @@ pub struct LauncherEntry {
     /// (e.g. a GitHub release page). Opened in the user's browser via the
     /// opener plugin; never auto-executed.
     pub url: String,
+}
+
+/// A full UT4 game installer advertised by a [`Manifest`], for users who don't
+/// have the game yet. Top-level (one for everyone), not per-channel.
+///
+/// Distributed by a third party (UT4Ever) on a host the launcher does not
+/// control, so — exactly like a pak — integrity comes from [`Self::sha256`] in
+/// the signed manifest, never from TLS or the host's reputation. It is a large
+/// (multi-GB) download: the launcher streams it with resume + progress, verifies
+/// the full digest, and hands the verified file to the user (it never runs the
+/// installer itself).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct GameInstaller {
+    /// Display version (e.g. `"1.1.0"`). A free-form label — the third party's
+    /// own versioning, not compared as semver.
+    pub version: String,
+    /// HTTPS URL to download from. **Untrusted** — integrity comes from
+    /// [`Self::sha256`].
+    pub url: String,
+    /// SHA-256 digest of the installer file bytes; a download that does not
+    /// produce this digest is rejected.
+    pub sha256: Sha256Digest,
+    /// Declared size in bytes; a download whose length differs is aborted.
+    pub size_bytes: u64,
 }
 
 /// One update channel inside a [`Manifest`].

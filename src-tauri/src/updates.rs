@@ -61,7 +61,7 @@ const MANIFEST_SIG_URL: &str =
 ///
 /// Keeping this private means the verified manifest never leaves Rust; the
 /// public commands return summaries built from it.
-async fn fetch_verify(
+pub(crate) async fn fetch_verify(
     app: &AppHandle,
 ) -> Result<
     (
