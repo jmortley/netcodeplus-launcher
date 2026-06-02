@@ -1008,6 +1008,23 @@ async function loadAll() {
     state.selInstall = 0;
     state.ut4 = ut4;
     applyPrefs(prefs);
+    // A manually-picked install that auto-detection doesn't find would otherwise
+    // be lost on restart (detect_installs overwrote state.installs, so the saved
+    // path isn't in it and applyPrefs couldn't re-select it). Re-validate the
+    // saved path and add it back if it's still a UT4 install that wasn't detected.
+    if (prefs.install_path && !state.installs.some((d) => d.install.root === prefs.install_path)) {
+      try {
+        const re = await invoke<DetectedInstall | null>("check_install", {
+          path: prefs.install_path,
+        });
+        if (re) {
+          state.installs.push(re);
+          state.selInstall = state.installs.length - 1;
+        }
+      } catch (err) {
+        console.error("re-validating the saved install failed:", err);
+      }
+    }
     void autoFixMasterServer();
     render();
     renderStats();
