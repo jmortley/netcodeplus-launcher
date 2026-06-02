@@ -55,6 +55,7 @@ pub fn run() {
             commands::reveal_openal_folder,
             commands::launcher_version,
             installer::game_installer_info,
+            installer::default_download_dir,
             installer::download_game_installer,
             installer::install_game,
             installer::cancel_game_download,

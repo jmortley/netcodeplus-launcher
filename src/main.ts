@@ -1879,9 +1879,9 @@ async function renderGameInstall(): Promise<void> {
   const needGb = ((info.size_bytes * 2) / 1e9).toFixed(0);
   panel.innerHTML = `
     <div class="game-install">
-      <div><strong>Don't have UT4 yet?</strong> Download + install the community installer (v${escape(
+      <div><strong>Don't have UT4 yet?</strong> The launcher downloads the community installer (v${escape(
         info.version,
-      )}, ${gb} GB). The launcher verifies it against the signed manifest, then unpacks it and launches the installer (you'll get a Windows admin prompt). Pick a drive with ~${needGb} GB free.</div>
+      )}, ${gb} GB) to a folder you choose, verifies it, unpacks it, and runs it. <strong>You pick where UT4 actually installs in the installer's own window</strong> (with a Windows admin prompt) — so for the download just use a normal folder like your <strong>Downloads</strong> (needs ~${needGb} GB free), not Program Files.</div>
       <div class="game-install-actions">
         <button id="game-download-btn" type="button">Download &amp; Install UT4</button>
       </div>
@@ -1931,8 +1931,15 @@ async function attachGameProgress(): Promise<UnlistenFn> {
 
 async function startGameDownload(): Promise<void> {
   const status = document.getElementById("game-install-status");
-  // Let the user pick the drive/folder — download + unpack need ~2x the size, so disk choice matters.
-  const dir = await open({ directory: true, title: "Choose where to download + install UT4" });
+  // The picked folder is only a temporary download/unpack spot — the real
+  // install location is chosen later, in the installer itself. Default to the
+  // Downloads folder and steer away from protected folders like Program Files.
+  const defaultDir = await invoke<string | null>("default_download_dir").catch(() => null);
+  const dir = await open({
+    directory: true,
+    defaultPath: defaultDir ?? undefined,
+    title: "Pick a folder to download UT4 into (e.g. Downloads, not Program Files)",
+  });
   if (typeof dir !== "string") return; // folder picker cancelled
 
   // Render the progress UI once; the event listener only updates the bar + label.

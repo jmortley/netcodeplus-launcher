@@ -91,21 +91,30 @@ pub fn detect() -> Option<UtInstall> {
 /// validation" framing of this function.
 #[must_use]
 pub fn check_install(picked: &Path, mod_paks_dir: PathBuf) -> Option<UtInstall> {
-    let root = picked.ancestors().find(|p| has_ue4_shipping_exe(p))?;
-    let executable = ue4_shipping_exe(root);
-    let content_paks_dir = root.join(GAME_NAME).join("Content").join("Paks");
-    if !content_paks_dir.is_dir() {
-        // We found UE4-Win64-Shipping.exe but no UT-specific content
-        // paks dir — so this is a UE4 install, but not UT4. Reject.
-        return None;
-    }
+    // Walk up to the nearest ancestor that is a COMPLETE UT4 install — one with
+    // both the shipping exe AND the UT4 content-paks dir. Requiring both (rather
+    // than stopping at the first ancestor that merely has the exe) means a
+    // half-build in the way — e.g. a bare `WindowsServer\` that carries the exe
+    // but no `UnrealTournament/Content/Paks` — doesn't shadow a real install
+    // rooted higher up. A generic UE4 tree with no UT4 paks anywhere in the
+    // ancestry still resolves to nothing, so "UE4 but not UT4" is still rejected.
+    let root = picked.ancestors().find(|p| is_ut4_install_root(p))?;
     Some(UtInstall {
         root: root.to_path_buf(),
-        executable,
+        executable: ue4_shipping_exe(root),
         launch_args: default_launch_args(),
-        content_paks_dir,
+        content_paks_dir: ut4_content_paks_dir(root),
         mod_paks_dir,
     })
+}
+
+/// The user's Downloads folder — the default location offered by the
+/// game-installer download picker. A known user-writable spot, so users aren't
+/// nudged toward a protected folder (where the un-elevated download is refused).
+/// `None` if it can't be resolved.
+#[must_use]
+pub fn default_download_dir() -> Option<PathBuf> {
+    dirs::download_dir()
 }
 
 /// `~/Documents/UnrealTournament/Saved/Paks/DownloadedPaks/`,
@@ -475,6 +484,19 @@ fn has_ue4_shipping_exe(root: &Path) -> bool {
     ue4_shipping_exe(root).is_file()
 }
 
+/// `<root>/UnrealTournament/Content/Paks/` — the shipped game content.
+fn ut4_content_paks_dir(root: &Path) -> PathBuf {
+    root.join(GAME_NAME).join("Content").join("Paks")
+}
+
+/// A complete UT4 *play* install root: the shipping exe under `Engine/Binaries/`
+/// AND the UT4 content-paks dir. The paks check is what separates UT4 from a
+/// bare UE4 build (or a half-extracted / server tree that has the exe but none
+/// of the shipped content).
+fn is_ut4_install_root(root: &Path) -> bool {
+    has_ue4_shipping_exe(root) && ut4_content_paks_dir(root).is_dir()
+}
+
 #[cfg(target_os = "windows")]
 fn candidate_roots() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
@@ -580,6 +602,37 @@ mod detect_tests {
             play_install_from_shortcut(&editor, "UnrealTournament -log", fake_mod_paks()).is_none(),
             "editor target must not resolve to a play install"
         );
+    }
+
+    #[test]
+    fn check_install_climbs_past_a_half_build_to_the_real_root() {
+        // A complete UT4 install with a half-build nested inside it: a bare
+        // `WindowsServer\` that has the shipping exe but NO Content/Paks. Picking
+        // the half-build (or anything under it) must resolve UP to the complete
+        // root, not stop at the half-build and reject.
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        build_play_install(root);
+
+        let nested = root.join("WindowsServer");
+        let win64 = nested.join("Engine").join("Binaries").join("Win64");
+        fs::create_dir_all(&win64).unwrap();
+        fs::write(win64.join(SHIPPING_EXE), b"fake exe").unwrap();
+
+        let install =
+            check_install(&nested, fake_mod_paks()).expect("should climb to the complete root");
+        assert_eq!(install.root, root);
+    }
+
+    #[test]
+    fn check_install_rejects_a_lone_half_build() {
+        // Exe present but no UT4 content-paks anywhere in the ancestry → this is
+        // a UE4 build, not UT4. Still rejected (the climb finds no complete root).
+        let tmp = TempDir::new().unwrap();
+        let win64 = tmp.path().join("Engine").join("Binaries").join("Win64");
+        fs::create_dir_all(&win64).unwrap();
+        fs::write(win64.join(SHIPPING_EXE), b"fake exe").unwrap();
+        assert!(check_install(tmp.path(), fake_mod_paks()).is_none());
     }
 
     #[test]

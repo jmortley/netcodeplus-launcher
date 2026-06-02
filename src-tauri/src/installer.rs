@@ -108,7 +108,7 @@ pub async fn download_game_installer(app: AppHandle, dir: String) -> Result<Stri
     }
     if !ncp_host::dir_writable(&dir) {
         return Err(
-            "can't write to that folder — pick one you own (e.g. your Downloads), not a drive root or a protected system folder"
+            "can't download there — that's a protected folder. This is only a temporary download spot; you choose where UT4 actually installs later, in the installer's own window. Pick a normal folder you own like your Downloads — not Program Files or a drive root."
                 .into(),
         );
     }
@@ -275,6 +275,15 @@ pub async fn install_game(app: AppHandle, zip_path: String) -> Result<InstallGam
         Ok(res) => res,
         Err(e) => Err(format!("the install step failed to run: {e}")),
     }
+}
+
+/// The user's Downloads folder, used as the default location for the
+/// download-folder picker — a known user-writable spot that steers users away
+/// from protected folders (where an un-elevated download would be refused).
+/// `None` if it can't be resolved.
+#[tauri::command]
+pub fn default_download_dir() -> Option<String> {
+    ncp_host::default_download_dir().map(|p| p.to_string_lossy().into_owned())
 }
 
 /// Reveal a downloaded file by opening its containing folder (the user runs the
