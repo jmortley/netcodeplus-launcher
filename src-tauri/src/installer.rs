@@ -105,6 +105,12 @@ pub async fn download_game_installer(app: AppHandle, dir: String) -> Result<Stri
     if !dir.is_dir() {
         return Err("pick an existing folder to download into".into());
     }
+    if !ncp_host::dir_writable(&dir) {
+        return Err(
+            "can't write to that folder — pick one you own (e.g. your Downloads), not a drive root or a protected system folder"
+                .into(),
+        );
+    }
     let final_path = dir.join(format!(
         "UT4-Installer-{}.zip",
         safe_version(&installer.version)
@@ -140,6 +146,11 @@ pub async fn download_game_installer(app: AppHandle, dir: String) -> Result<Stri
     .await
     .map_err(|e| match e {
         ncp_net::NetError::Cancelled => "cancelled".to_string(),
+        ncp_net::NetError::Io(io)
+            if io.raw_os_error() == Some(5) || io.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            "couldn't write the download to that folder — it may be write-protected or blocked by antivirus. Try a different folder.".to_string()
+        }
         other => other.to_string(),
     })?;
 
