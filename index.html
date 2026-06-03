@@ -8,143 +8,160 @@
     <script type="module" src="/src/main.ts" defer></script>
   </head>
   <body>
-    <div class="bg-stack" aria-hidden="true">
-      <div
-        class="bg-layer"
-        style="background-image: url('/backgrounds/skaarj.jpg')"
-      ></div>
-      <div
-        class="bg-layer"
-        style="background-image: url('/backgrounds/blitz.jpg')"
-      ></div>
-      <div
-        class="bg-layer"
-        style="background-image: url('/backgrounds/secret-level.jpg')"
-      ></div>
+    <div class="app">
+      <!-- Custom titlebar / top bar -->
+      <div class="topbar" data-tauri-drag-region>
+        <div class="brand" data-tauri-drag-region>
+          <span class="brand-ut4">UT4</span>
+          <span class="brand-stack">
+            <span class="brand-badge">COMMUNITY</span>
+            <span class="brand-name">LAUNCHER</span>
+          </span>
+          <span id="version" class="version">…</span>
+        </div>
+
+        <button id="topbar-play" class="topbar-play" type="button">
+          <svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>
+          PLAY
+        </button>
+
+        <div class="topbar-fill" data-tauri-drag-region></div>
+
+        <button id="topbar-signin" class="topbar-signin" type="button">
+          <svg viewBox="0 0 24 24" class="ico" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 4-6 8-6s8 2 8 6" /></svg>
+          <span id="topbar-signin-label">Sign In</span>
+        </button>
+
+        <div class="winctrls">
+          <button id="win-min" class="winbtn" type="button" aria-label="Minimize" title="Minimize">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+          </button>
+          <button id="win-close" class="winbtn winbtn-close" type="button" aria-label="Close" title="Close">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="2" stroke-linecap="round" /></svg>
+          </button>
+        </div>
+      </div>
+
+      <div class="main">
+        <!-- Sidebar nav -->
+        <nav class="sidebar">
+          <div class="nav-group">
+            <button class="nav active" data-nav="home" type="button">
+              <svg viewBox="0 0 24 24" class="nav-ico" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 11l9-8 9 8" /><path d="M5 10v10h5v-6h4v6h5V10" /></svg>
+              HOME
+            </button>
+            <button class="nav" data-nav="servers" type="button">
+              <svg viewBox="0 0 24 24" class="nav-ico" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="4" width="18" height="7" rx="1.5" /><rect x="3" y="13" width="18" height="7" rx="1.5" /><path d="M7 7.5h.01M7 16.5h.01" /></svg>
+              SERVERS
+            </button>
+            <button class="nav" data-nav="community" type="button">
+              <svg viewBox="0 0 24 24" class="nav-ico" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="9" cy="8" r="3.2" /><path d="M3.5 20a5.5 5.5 0 0 1 11 0" /><circle cx="17" cy="9.5" r="2.4" /><path d="M16.5 14.6a4.5 4.5 0 0 1 4.5 4.4" /></svg>
+              COMMUNITY
+            </button>
+            <button class="nav" data-nav="stats" type="button">
+              <svg viewBox="0 0 24 24" class="nav-ico" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 20V9" /><path d="M12 20V4" /><path d="M19 20v-7" /></svg>
+              STATS
+            </button>
+          </div>
+          <div class="nav-group nav-bottom">
+            <button class="nav" data-nav="addons" type="button">
+              <svg viewBox="0 0 24 24" class="nav-ico" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><rect x="3.5" y="3.5" width="7" height="7" rx="1" /><rect x="13.5" y="3.5" width="7" height="7" rx="1" /><rect x="3.5" y="13.5" width="7" height="7" rx="1" /><rect x="13.5" y="13.5" width="7" height="7" rx="1" /></svg>
+              ADDONS
+            </button>
+            <button class="nav" data-nav="settings" type="button">
+              <svg viewBox="0 0 24 24" class="nav-ico" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3.2" /><path d="M12 2.5v3M12 18.5v3M21.5 12h-3M5.5 12h-3M18.7 5.3l-2.1 2.1M7.4 16.6l-2.1 2.1M18.7 18.7l-2.1-2.1M7.4 7.4 5.3 5.3" /></svg>
+              SETTINGS
+            </button>
+          </div>
+        </nav>
+
+        <!-- Content -->
+        <div class="content">
+          <section id="view-home" class="view active">
+            <div id="launcher-update-panel"></div>
+            <div id="launcher-cleanup-panel"></div>
+            <div id="news-panel"></div>
+            <div id="launch-panel" class="status">Detecting…</div>
+            <div id="game-install-panel"></div>
+          </section>
+
+          <section id="view-servers" class="view">
+            <div id="servers-panel" class="status">Open this tab to load the server list…</div>
+          </section>
+
+          <section id="view-community" class="view">
+            <div class="status">
+              <div id="pug-controls"></div>
+              <p>Or chat with the community on Discord.</p>
+              <div class="discord-btns">
+                <button id="join-utpugs" type="button">Join a PUG — UTPugs Discord</button>
+                <button id="join-ictf" type="button">Instagib Nation Discord</button>
+              </div>
+            </div>
+          </section>
+
+          <section id="view-stats" class="view">
+            <div id="stats-panel" class="status">…</div>
+          </section>
+
+          <section id="view-addons" class="view">
+            <h2>Recommended add-ons</h2>
+            <div id="addons-panel" class="status">…</div>
+          </section>
+
+          <section id="view-settings" class="view">
+            <h2>Launch options</h2>
+            <div id="advanced-launch" class="status">…</div>
+            <button id="pick-dir" type="button">Pick install folder</button>
+            <h2>Performance config</h2>
+            <div id="config-panel" class="status">…</div>
+            <h2>About</h2>
+            <div class="status about">
+              <h3>UT4 Community Launcher <span id="about-version" class="version"></span></h3>
+              <p>
+                A small, source-available launcher for Unreal Tournament 4 community play — sign in,
+                find a game and launch in one click, keep NetcodePlus up to date, and check your
+                stats. The update path is <strong>cryptographically verified end to end</strong>, so
+                getting set up never means trusting a random download.
+              </p>
+              <p class="src">
+                Built by <strong>phantaci</strong> for the UTPugs / UT4 community. Open source under
+                Apache 2.0. Not affiliated with Epic Games or the Unreal Tournament brand.
+              </p>
+
+              <h3>What NetcodePlus adds</h3>
+              <ul class="about-features">
+                <li><strong>Improved netcode &amp; hit registration</strong> — tighter, more accurate online play.</li>
+                <li><strong>Wipeout</strong> — UT's version of the mode from Diabotical.</li>
+                <li><strong>Improved CTF</strong> — a refined Capture the Flag.</li>
+                <li><strong>ElimPlus</strong> — an enhanced Elimination mode.</li>
+                <li><strong>ncHUD</strong> — a customizable NetcodePlus HUD.</li>
+                <li><strong>Higher FPS</strong> — supports frame rates up to 720 fps.</li>
+              </ul>
+
+              <h3>Source &amp; links</h3>
+              <div class="about-links">
+                <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher">Launcher source (GitHub)</button>
+                <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/NetcodePlusUT4">NetcodePlus plugin (GitHub)</button>
+                <button class="link-btn" type="button" data-extlink="https://ut4stats.com">ut4stats.com — community stats</button>
+                <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher/blob/main/PRIVACY.md">Privacy</button>
+                <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher/blob/main/SECURITY.md">Security policy</button>
+                <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher/blob/main/LICENSE">License (Apache 2.0)</button>
+              </div>
+
+              <h3>Community</h3>
+              <div class="about-links">
+                <button class="link-btn" type="button" data-extlink="https://discord.gg/utpugs">UTPugs Discord</button>
+                <button class="link-btn" type="button" data-extlink="https://discord.gg/EcUMZjFY3q">Instagib Nation Discord</button>
+              </div>
+            </div>
+          </section>
+        </div>
+      </div>
+
+      <div class="footer">
+        Powered by UTPUGS — not affiliated with Epic Games or the Unreal Tournament brand in any way.
+      </div>
     </div>
-    <div class="bg-overlay" aria-hidden="true"></div>
-
-    <main>
-      <header>
-        <h1>UT4 Community Launcher</h1>
-        <span id="version" class="version" aria-label="Launcher version">…</span>
-      </header>
-
-      <nav class="tabs">
-        <button class="tab active" type="button" data-tab="launch">Launch</button>
-        <button class="tab" type="button" data-tab="servers">Servers</button>
-        <button class="tab" type="button" data-tab="stats">Stats</button>
-        <button class="tab" type="button" data-tab="community">Community</button>
-        <button class="tab" type="button" data-tab="advanced">Advanced</button>
-        <button class="tab" type="button" data-tab="about">About</button>
-      </nav>
-
-      <section id="tab-launch" class="tab-panel active">
-        <div id="launcher-update-panel"></div>
-        <div id="launcher-cleanup-panel"></div>
-        <div id="news-panel"></div>
-        <div id="launch-panel" class="status">Detecting…</div>
-        <div id="game-install-panel"></div>
-      </section>
-
-      <section id="tab-servers" class="tab-panel">
-        <div id="servers-panel" class="status">Open this tab to load the server list…</div>
-      </section>
-
-      <section id="tab-stats" class="tab-panel">
-        <div id="stats-panel" class="status">…</div>
-      </section>
-
-      <section id="tab-community" class="tab-panel">
-        <div class="status">
-          <div id="pug-controls"></div>
-          <p>Or chat with the community on Discord.</p>
-          <div class="discord-btns">
-            <button id="join-utpugs" type="button">Join a PUG — UTPugs Discord</button>
-            <button id="join-ictf" type="button">Instagib Nation Discord</button>
-          </div>
-        </div>
-      </section>
-
-      <section id="tab-advanced" class="tab-panel">
-        <h2>Launch options</h2>
-        <div id="advanced-launch" class="status">…</div>
-        <button id="pick-dir" type="button">Pick install folder</button>
-        <h2>Recommended add-ons</h2>
-        <div id="addons-panel" class="status">…</div>
-        <h2>Performance config</h2>
-        <div id="config-panel" class="status">…</div>
-      </section>
-
-      <section id="tab-about" class="tab-panel">
-        <div class="status about">
-          <h2>UT4 Community Launcher <span id="about-version" class="version"></span></h2>
-          <p>
-            A small, source-available launcher for Unreal Tournament 4 community
-            play — sign in, find a game and launch in one click, keep NetcodePlus
-            up to date, and check your stats. The update path is
-            <strong>cryptographically verified end to end</strong> (a signed
-            manifest plus a key baked into the app), so getting set up never
-            means trusting a random download.
-          </p>
-          <p class="src">
-            Built by <strong>phantaci</strong> for the UTPugs / UT4 community.
-            Open source under Apache 2.0. Not affiliated with Epic Games or the
-            Unreal Tournament brand.
-          </p>
-
-          <h3>What NetcodePlus adds</h3>
-          <p class="src">
-            NetcodePlus is the community gameplay plugin this launcher keeps
-            updated — it brings extra modes and features to UT4:
-          </p>
-          <ul class="about-features">
-            <li><strong>Improved netcode &amp; hit registration</strong> — tighter, more accurate online play.</li>
-            <li><strong>Wipeout</strong> — UT's version of the mode from Diabotical.</li>
-            <li><strong>Improved CTF</strong> — a refined Capture the Flag.</li>
-            <li><strong>ElimPlus</strong> — an enhanced Elimination mode.</li>
-            <li><strong>ncHUD</strong> — a customizable NetcodePlus HUD.</li>
-            <li><strong>Higher FPS</strong> — supports frame rates up to 720 fps.</li>
-            <li>…and more.</li>
-          </ul>
-
-          <h3>Source &amp; links</h3>
-          <div class="about-links">
-            <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher">Launcher source (GitHub)</button>
-            <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/NetcodePlusUT4">NetcodePlus plugin (GitHub)</button>
-            <button class="link-btn" type="button" data-extlink="https://ut4stats.com">ut4stats.com — community stats</button>
-            <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher/blob/main/PRIVACY.md">Privacy</button>
-            <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher/blob/main/SECURITY.md">Security policy</button>
-            <button class="link-btn" type="button" data-extlink="https://github.com/jmortley/netcodeplus-launcher/blob/main/LICENSE">License (Apache 2.0)</button>
-          </div>
-
-          <h3>Community</h3>
-          <div class="about-links">
-            <button class="link-btn" type="button" data-extlink="https://discord.gg/utpugs">UTPugs Discord</button>
-            <button class="link-btn" type="button" data-extlink="https://discord.gg/EcUMZjFY3q">Instagib Nation Discord</button>
-          </div>
-
-          <h3>Credits</h3>
-          <p class="src">
-            NetcodePlus originally by phantaci. Community master server by
-            <button class="link-btn" type="button" data-extlink="https://ut4.timiimit.com/">timiimit</button>.
-            Optional add-ons:
-            <button class="link-btn" type="button" data-extlink="https://github.com/aldehir/UT4-UltiCross">UltiCross</button>
-            (aldehir) and
-            <button class="link-btn" type="button" data-extlink="https://github.com/main-exe/UT4-OpenAL">UT4-OpenAL</button>
-            (Main.exe).
-          </p>
-        </div>
-      </section>
-
-      <footer>
-        <p>
-          Powered by UTPUGS — a community launcher, not affiliated with Epic
-          Games or the Unreal Tournament brand in any way.
-        </p>
-      </footer>
-
-      <div id="launch-bar" class="launch-bar"></div>
-    </main>
   </body>
 </html>

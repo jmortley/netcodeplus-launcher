@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 
 interface UtInstall {
@@ -412,11 +413,9 @@ function renderLaunch() {
         <p class="src">Don't have the game yet? Get it from the UT4Ever installer, then reopen the launcher.</p>
         <button id="get-ut4" type="button" class="link-btn">Get UT4</button>
       </div>`;
-    document.getElementById("pick-install")?.addEventListener("click", () => {
-      // Jump to the Advanced tab (where the folder picker lives) by reusing the
-      // tab button's own click handler, so tab state stays consistent.
-      document.querySelector<HTMLButtonElement>('.tab[data-tab="advanced"]')?.click();
-    });
+    document
+      .getElementById("pick-install")
+      ?.addEventListener("click", () => switchView("settings"));
     document.getElementById("get-ut4")?.addEventListener("click", () =>
       openExternal("https://ut4ever.org/installer"),
     );
@@ -755,6 +754,7 @@ async function ut4Login() {
   try {
     state.ut4 = await invoke<Ut4Auth>("ut4_login", { username, password });
     renderLaunch();
+    renderTopbarAuth();
     // Guard against an accidental login to the wrong account (e.g. the wrong
     // saved entry from a password manager): if this replaced a different account
     // that was signed in, confirm the switch before it can reach a game launch.
@@ -780,6 +780,7 @@ async function ut4Logout() {
   }
   state.ut4 = { logged_in: false, username: null, display_name: null };
   renderLaunch();
+  renderTopbarAuth();
 }
 
 // Returns the -AUTH_* args that log the game in via the launcher's session, or
@@ -1053,6 +1054,7 @@ async function loadAll() {
     }
     void autoFixMasterServer();
     render();
+    renderTopbarAuth();
     renderStats();
     renderPug();
     void renderConfig();
@@ -2332,22 +2334,52 @@ async function renderNews() {
 
 // ---- tabs ------------------------------------------------------------------
 
-document.querySelectorAll<HTMLButtonElement>(".tab").forEach((btn) => {
-  btn.addEventListener("click", () => {
-    const name = btn.dataset.tab;
-    document
-      .querySelectorAll<HTMLElement>(".tab")
-      .forEach((b) => b.classList.toggle("active", b === btn));
-    document
-      .querySelectorAll<HTMLElement>(".tab-panel")
-      .forEach((p) => p.classList.toggle("active", p.id === `tab-${name}`));
-  });
+function switchView(name: string): void {
+  document
+    .querySelectorAll<HTMLElement>(".nav")
+    .forEach((b) => b.classList.toggle("active", b.dataset.nav === name));
+  document
+    .querySelectorAll<HTMLElement>(".view")
+    .forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
+  // Load the live server list whenever Servers is opened (cheap + fresh).
+  if (name === "servers") void renderServers();
+}
+document.querySelectorAll<HTMLButtonElement>(".nav").forEach((btn) => {
+  btn.addEventListener("click", () => switchView(btn.dataset.nav ?? "home"));
 });
 
-// Load the live server list whenever the Servers tab is opened (cheap + fresh).
-document
-  .querySelector<HTMLButtonElement>('.tab[data-tab="servers"]')
-  ?.addEventListener("click", () => void renderServers());
+// Reflect UT4 auth state in the top-bar Sign In button.
+function renderTopbarAuth(): void {
+  const btn = document.getElementById("topbar-signin");
+  const label = document.getElementById("topbar-signin-label");
+  if (!btn || !label) return;
+  const a = state.ut4;
+  if (a?.logged_in) {
+    label.textContent = a.display_name ?? a.username ?? "Account";
+    btn.classList.add("signed-in");
+  } else {
+    label.textContent = "Sign In";
+    btn.classList.remove("signed-in");
+  }
+}
+
+// Top-bar PLAY: jump to Home (where launch status + admin warnings render) and
+// launch with the current settings. With no install yet, Home shows onboarding.
+document.getElementById("topbar-play")?.addEventListener("click", () => {
+  switchView("home");
+  if (state.installs.length > 0) void launch();
+});
+// Top-bar Sign In: open Home and focus the account form (where sign-in lives).
+document.getElementById("topbar-signin")?.addEventListener("click", () => {
+  switchView("home");
+  const userEl = document.getElementById("ut4-user") as HTMLInputElement | null;
+  userEl?.scrollIntoView({ block: "center" });
+  userEl?.focus();
+});
+
+// Custom window controls (the window is frameless — decorations: false).
+document.getElementById("win-min")?.addEventListener("click", () => void getCurrentWindow().minimize());
+document.getElementById("win-close")?.addEventListener("click", () => void getCurrentWindow().close());
 
 pickButton.addEventListener("click", () => void pickDir());
 // Delegated click handlers (survive re-renders):
