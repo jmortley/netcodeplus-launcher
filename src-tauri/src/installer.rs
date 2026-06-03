@@ -32,6 +32,10 @@ pub struct GameInstallerInfo {
     pub version: String,
     /// Declared size in bytes (0 when none).
     pub size_bytes: u64,
+    /// Whether the .NET Desktop Runtime the installer needs is present (it's a
+    /// .NET WinForms app and won't start without it). The UI shows a non-blocking
+    /// "get the .NET runtime" note when this is false — common on Windows 10.
+    pub dotnet_ok: bool,
 }
 
 /// `game-download-progress` event payload. `phase` is `"download"` then
@@ -66,16 +70,20 @@ fn safe_version(v: &str) -> String {
 #[tauri::command]
 pub async fn game_installer_info(app: AppHandle) -> Result<GameInstallerInfo, String> {
     let (manifest, ..) = fetch_verify(&app).await?;
+    // The UT4 installer (`UT4_Installer.exe`) is a .NET 6 WinForms app.
+    let dotnet_ok = ncp_host::windowsdesktop_runtime_present(6);
     Ok(match manifest.game_installer {
         Some(gi) => GameInstallerInfo {
             available: true,
             version: gi.version,
             size_bytes: gi.size_bytes,
+            dotnet_ok,
         },
         None => GameInstallerInfo {
             available: false,
             version: String::new(),
             size_bytes: 0,
+            dotnet_ok,
         },
     })
 }

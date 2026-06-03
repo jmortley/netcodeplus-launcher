@@ -367,6 +367,32 @@ function eqHex(a: string, b: string): boolean {
 function render() {
   renderLaunch();
   renderAdvanced();
+  renderLaunchBar();
+}
+
+// Always-visible Launch bar docked to the window bottom on every tab, so you can
+// play without navigating to the Launch tab and scrolling to the button. Shown
+// only when a UT4 install is available. The button switches to the Launch tab
+// and launches with the current settings, so any "Launching…"/error/admin
+// feedback renders where it's visible. The launch action reads live state, so
+// the generic label never needs per-selection re-rendering.
+function renderLaunchBar(): void {
+  const bar = document.getElementById("launch-bar");
+  if (!bar) return;
+  const di = state.installs[state.selInstall] ?? state.installs[0];
+  if (!di) {
+    bar.innerHTML = "";
+    return;
+  }
+  bar.innerHTML = `
+    <div class="launch-bar-inner">
+      <span class="launch-bar-label">Unreal Tournament</span>
+      <button id="launch-bar-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;Launch</button>
+    </div>`;
+  document.getElementById("launch-bar-btn")?.addEventListener("click", () => {
+    document.querySelector<HTMLButtonElement>('.tab[data-tab="launch"]')?.click();
+    void launch();
+  });
 }
 
 // Launch tab: clean and end-user — just the game and a big Launch button.
@@ -1898,6 +1924,7 @@ interface GameInstallerInfo {
   available: boolean;
   version: string;
   size_bytes: number;
+  dotnet_ok: boolean;
 }
 
 let gameDownloadUnlisten: UnlistenFn | null = null;
@@ -1924,6 +1951,11 @@ async function renderGameInstall(): Promise<void> {
       <div><strong>Don't have UT4 yet?</strong> The launcher downloads the community installer (v${escape(
         info.version,
       )}, ${gb} GB) to a folder you choose, verifies it, unpacks it, and runs it. <strong>You pick where UT4 actually installs in the installer's own window</strong> (with a Windows admin prompt) — so for the download just use a normal folder like your <strong>Downloads</strong> (needs ~${needGb} GB free), not Program Files.</div>
+      ${
+        info.dotnet_ok
+          ? ""
+          : `<div class="dotnet-note">⚠ This installer also needs the <strong>.NET Desktop Runtime 6</strong> (a free Microsoft component) — without it, it won't start. <button class="link-btn" type="button" data-extlink="https://dotnet.microsoft.com/download/dotnet/6.0">Get the .NET Runtime</button> — grab <strong>.NET Desktop Runtime 6.0 &rsaquo; Windows x64</strong>; you can install it while UT4 downloads.</div>`
+      }
       <div class="game-install-actions">
         <button id="game-download-btn" type="button">Download &amp; Install UT4</button>
       </div>

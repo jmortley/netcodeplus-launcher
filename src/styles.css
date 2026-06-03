@@ -545,6 +545,70 @@ footer {
   transform: translateY(1px);
 }
 
+/* Reserve space at the bottom of the card so its last content clears the fixed
+   Launch bar. */
+main {
+  padding-bottom: 5rem;
+}
+
+/* Always-visible Launch bar (every tab), docked to the window bottom and
+   centered to the card's width. The transparent gutter passes clicks through to
+   the content behind; only the inner bar is interactive. */
+.launch-bar {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 30;
+  display: flex;
+  justify-content: center;
+  padding: 0 2rem;
+  pointer-events: none;
+}
+.launch-bar-inner {
+  pointer-events: auto;
+  box-sizing: border-box;
+  width: 100%;
+  max-width: 720px;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.55rem 1rem;
+  background: rgba(20, 23, 30, 0.97);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-bottom: none;
+  border-radius: 8px 8px 0 0;
+  box-shadow: 0 -8px 28px rgba(0, 0, 0, 0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+}
+.launch-bar-label {
+  flex: 1;
+  color: #b9c0cc;
+  font-weight: 600;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.launch-bar .launch-primary {
+  margin: 0;
+  min-width: auto;
+  font-size: 1rem;
+  padding: 0.55rem 1.6rem;
+  box-shadow: 0 2px 10px rgba(37, 99, 235, 0.5);
+}
+
+/* Non-blocking ".NET runtime needed" note on the game-installer panel. */
+.dotnet-note {
+  margin-top: 0.75rem;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid rgba(251, 191, 36, 0.4);
+  border-radius: 6px;
+  background: rgba(251, 191, 36, 0.08);
+  color: #e6d8a8;
+  font-size: 0.9rem;
+}
+
 /* NetcodePlus plugin-update card on the Launch tab. Shown only when an update
    is available; quiet otherwise. */
 .plugin-card {
