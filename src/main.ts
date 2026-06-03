@@ -2381,6 +2381,17 @@ document.getElementById("topbar-signin")?.addEventListener("click", () => {
 document.getElementById("win-min")?.addEventListener("click", () => void getCurrentWindow().minimize());
 document.getElementById("win-close")?.addEventListener("click", () => void getCurrentWindow().close());
 
+// Light/dark theme toggle (persisted in localStorage for this prototype).
+function applyTheme(theme: string): void {
+  document.documentElement.setAttribute("data-theme", theme === "light" ? "light" : "dark");
+}
+applyTheme(localStorage.getItem("ncp-theme") ?? "dark");
+document.getElementById("theme-toggle")?.addEventListener("click", () => {
+  const next = document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light";
+  applyTheme(next);
+  localStorage.setItem("ncp-theme", next);
+});
+
 pickButton.addEventListener("click", () => void pickDir());
 // Delegated click handlers (survive re-renders):
 // - the "✓ NetcodePlus installed" badge opens that install's plugin folder;

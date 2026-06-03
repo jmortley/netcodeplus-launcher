@@ -1033,3 +1033,71 @@ body {
 .content::-webkit-scrollbar-track {
   background: transparent;
 }
+
+/* ---- Light theme (top-bar toggle; data-theme="light" on <html>) -----------
+   Flips the shell variables and the hardcoded colors the reused content
+   components rely on. Accents (blue PLAY, orange Sign In) stay the same. */
+:root[data-theme="light"] {
+  --bg: #eef1f6;
+  --panel-2: #ffffff;
+  --line: #d7dce5;
+  --line-blue: #c3d2e8;
+  --txt: #1a1f2b;
+  --txt-dim: #5a6473;
+}
+:root[data-theme="light"] body {
+  color: var(--txt);
+}
+:root[data-theme="light"] .brand-badge {
+  background: #1a1f2b;
+  color: #fff;
+}
+:root[data-theme="light"] .nav:hover {
+  background: rgba(0, 0, 0, 0.05);
+  color: var(--txt);
+}
+:root[data-theme="light"] .nav.active {
+  background: #e2e8f2;
+  color: #14306b;
+}
+:root[data-theme="light"] .winbtn:hover {
+  background: rgba(0, 0, 0, 0.07);
+  color: var(--txt);
+}
+:root[data-theme="light"] .content::-webkit-scrollbar-thumb {
+  background: #c4ccd8;
+}
+:root[data-theme="light"] .footer {
+  color: #8a93a0;
+}
+/* reused content components from the old card design */
+:root[data-theme="light"] .controls select,
+:root[data-theme="light"] .controls input {
+  background: #ffffff;
+  color: #1a1f2b;
+  border: 1px solid #cdd4df;
+}
+:root[data-theme="light"] .controls label {
+  color: #5a6473;
+}
+:root[data-theme="light"] .src,
+:root[data-theme="light"] .install-card .src {
+  color: #5a6473;
+}
+:root[data-theme="light"] .ok {
+  color: #15803d;
+}
+:root[data-theme="light"] .warn {
+  color: #b45309;
+}
+
+/* theme-toggle icon swap (moon shown in dark, sun shown in light) */
+.ico-sun {
+  display: none;
+}
+:root[data-theme="light"] .ico-moon {
+  display: none;
+}
+:root[data-theme="light"] .ico-sun {
+  display: inline;
+}
