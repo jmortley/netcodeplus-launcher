@@ -83,11 +83,23 @@
         <!-- Content -->
         <div class="content">
           <section id="view-home" class="view active">
+            <div class="dash-head">
+              <h1 id="dash-greeting">UT4 Community Launcher</h1>
+              <span class="sub">Everything at a glance</span>
+            </div>
             <div id="launcher-update-panel"></div>
             <div id="launcher-cleanup-panel"></div>
+            <div id="stray-panel"></div>
             <div id="news-panel"></div>
-            <div id="launch-panel" class="status">Detecting…</div>
+            <div id="home-hero" class="status">Detecting…</div>
             <div id="game-install-panel"></div>
+            <div class="dash-grid">
+              <div id="dash-stats" class="dash-card"></div>
+              <div id="dash-servers" class="dash-card"></div>
+              <div id="dash-status" class="dash-card"></div>
+              <div id="dash-community" class="dash-card"></div>
+            </div>
+            <div id="dash-account"></div>
           </section>
 
           <section id="view-servers" class="view">
@@ -97,11 +109,8 @@
           <section id="view-community" class="view">
             <div class="status">
               <div id="pug-controls"></div>
-              <p>Or chat with the community on Discord.</p>
-              <div class="discord-btns">
-                <button id="join-utpugs" type="button">Join a PUG — UTPugs Discord</button>
-                <button id="join-ictf" type="button">Instagib Nation Discord</button>
-              </div>
+              <p>Chat, find scrims, and queue PUGs with the community on Discord.</p>
+              <div id="community-links" class="discord-btns"></div>
             </div>
           </section>
 

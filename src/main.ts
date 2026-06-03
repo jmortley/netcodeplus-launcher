@@ -153,7 +153,7 @@ interface Ut4Auth {
   switched_from?: string | null;
 }
 
-const launchPanel = document.getElementById("launch-panel")!;
+const homeHero = document.getElementById("home-hero")!;
 const advancedPanel = document.getElementById("advanced-launch")!;
 const pickButton = document.getElementById("pick-dir") as HTMLButtonElement;
 const versionLabel = document.getElementById("version")!;
@@ -212,39 +212,6 @@ function netcodeplusBadge(status: NetcodePlusStatus, root?: string): string {
   }
 }
 
-// Render the NetcodePlus plugin update card into #plugin-panel. Calls the
-// signed-manifest-backed `plugin_status` (which re-verifies in Rust) and offers
-// a one-click update that installs into EVERY detected install. Silent when the
-// channel offers no plugin or everything is already up to date — beta-quiet.
-async function renderPluginStatus(): Promise<void> {
-  const panel = document.getElementById("plugin-panel");
-  if (!panel) return;
-  let st: PluginStatusResult;
-  try {
-    st = await invoke<PluginStatusResult>("plugin_status");
-  } catch (err) {
-    // A manifest/verify/network hiccup must not break the Launch tab — the
-    // plugin card just stays empty (the game still launches fine).
-    console.error("plugin_status failed:", err);
-    panel.innerHTML = "";
-    return;
-  }
-  if (!st.plugin_offered || !st.any_update_needed) {
-    // Nothing to nag about: no plugin in this channel, or all installs current.
-    panel.innerHTML = "";
-    return;
-  }
-  const n = st.installs.filter((i) => i.action === "install" || i.action === "update").length;
-  const ver = st.available_version != null ? ` (build ${st.available_version})` : "";
-  panel.innerHTML = `
-    <div class="plugin-card">
-      <div>NetcodePlus update available${escape(ver)} — ${n} install${n === 1 ? "" : "s"} need${n === 1 ? "s" : ""} it.</div>
-      <button id="plugin-update-btn" type="button">Update NetcodePlus</button>
-      <div id="plugin-status" class="launch-status"></div>
-    </div>`;
-  document.getElementById("plugin-update-btn")?.addEventListener("click", () => void doInstallPlugin());
-}
-
 async function doInstallPlugin(): Promise<void> {
   const btn = document.getElementById("plugin-update-btn") as HTMLButtonElement | null;
   const status = document.getElementById("plugin-status");
@@ -269,11 +236,14 @@ async function doInstallPlugin(): Promise<void> {
     if (status) {
       status.innerHTML = `<span class="ok">✓ NetcodePlus updated in ${installed} install${installed === 1 ? "" : "s"}.</span>`;
     }
-    // Success — re-detect so the install badges + plugin card reflect the new
-    // state (the card should now disappear).
+    // Success — re-detect so the install badges reflect the new state, then
+    // refresh the status card: loadStatusData re-fetches plugin_status and
+    // re-renders #dash-status, so its "update available" line flips to
+    // "up to date" once the install lands.
     state.installs = await invoke<DetectedInstall[]>("detect_installs");
-    renderLaunch();
+    renderHomeHero();
     renderAdvanced();
+    void loadStatusData();
   } catch (err) {
     if (status) status.innerHTML = `<span class="warn">Update failed: ${escape(String(err))}</span>`;
     if (btn) btn.disabled = false;
@@ -340,11 +310,12 @@ async function fixStray(root: string, stray: StrayReport, btn: HTMLButtonElement
   try {
     await invoke("remove_stray_plugin", { root, kind: stray.kind, path: stray.path });
     if (statusEl) statusEl.innerHTML = `<span class="ok">✓ removed</span>`;
-    // Re-detect + re-render so the badge, plugin card, and stray list all
+    // Re-detect + re-render so the badge, status card, and stray list all
     // reflect the fixed state.
     state.installs = await invoke<DetectedInstall[]>("detect_installs");
-    renderLaunch();
+    renderHome();
     renderAdvanced();
+    void loadStatusData();
   } catch (err) {
     if (statusEl) statusEl.innerHTML = `<span class="warn">Couldn't remove: ${escape(String(err))}</span>`;
     btn.disabled = false;
@@ -366,89 +337,306 @@ function eqHex(a: string, b: string): boolean {
 }
 
 function render() {
-  renderLaunch();
+  renderHome();
   renderAdvanced();
-  renderLaunchBar();
 }
 
-// Always-visible Launch bar docked to the window bottom on every tab, so you can
-// play without navigating to the Launch tab and scrolling to the button. Shown
-// only when a UT4 install is available. The button switches to the Launch tab
-// and launches with the current settings, so any "Launching…"/error/admin
-// feedback renders where it's visible. The launch action reads live state, so
-// the generic label never needs per-selection re-rendering.
-function renderLaunchBar(): void {
-  const bar = document.getElementById("launch-bar");
-  if (!bar) return;
-  const di = state.installs[state.selInstall] ?? state.installs[0];
-  if (!di) {
-    bar.innerHTML = "";
-    return;
+// Cached ut4stats summary for the dashboard "Your stats" card — fetched once by
+// fetchSummary so a Home re-render doesn't re-hit the network.
+let lastSummary: PlayerSummary | null = null;
+
+// Cached manifest-derived statuses for the dashboard "NetcodePlus & updates"
+// card. plugin_status / launcher_update_status / game_installer_info each
+// re-verify the signed manifest in Rust (a network fetch), so they're loaded
+// once by loadStatusData() rather than on every render().
+const statusCache: {
+  plugin: PluginStatusResult | null;
+  launcher: LauncherUpdateResult | null;
+  dotnetAvailable: boolean;
+  dotnetOk: boolean;
+} = { plugin: null, launcher: null, dotnetAvailable: false, dotnetOk: true };
+
+// Fetch the manifest-backed statuses once, cache them, then refresh the status
+// card. Called at startup and after a plugin update. Each source is independent:
+// one failing doesn't block the others (the card just omits that line).
+async function loadStatusData(): Promise<void> {
+  try {
+    statusCache.plugin = await invoke<PluginStatusResult>("plugin_status");
+  } catch (err) {
+    console.error("plugin_status failed:", err);
   }
-  bar.innerHTML = `
-    <div class="launch-bar-inner">
-      <span class="launch-bar-label">Unreal Tournament</span>
-      <button id="launch-bar-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;Launch</button>
-    </div>`;
-  document.getElementById("launch-bar-btn")?.addEventListener("click", () => {
-    document.querySelector<HTMLButtonElement>('.tab[data-tab="launch"]')?.click();
-    void launch();
-  });
+  try {
+    statusCache.launcher = await invoke<LauncherUpdateResult>("launcher_update_status");
+  } catch (err) {
+    console.error("launcher_update_status failed:", err);
+  }
+  try {
+    const gi = await invoke<GameInstallerInfo>("game_installer_info");
+    statusCache.dotnetAvailable = gi.available;
+    statusCache.dotnetOk = gi.dotnet_ok;
+  } catch (err) {
+    console.error("game_installer_info failed:", err);
+  }
+  void renderDashStatus();
 }
 
-// Launch tab: clean and end-user — just the game and a big Launch button.
-// Everything technical lives in the Advanced tab.
-function renderLaunch() {
+// The HOME dashboard: greeting, the play hero, and the at-a-glance cards. Every
+// card's render swallows its own errors (→ empty/placeholder), so one failing
+// data source never breaks Home.
+function renderHome() {
+  const greet = document.getElementById("dash-greeting");
+  if (greet) {
+    const name = state.ut4?.display_name ?? state.ut4?.username;
+    greet.textContent = name ? `Welcome back, ${name}` : "UT4 Community Launcher";
+  }
+  renderHomeHero();
+  void renderStrays();
+  renderDashStats();
+  void renderDashServers();
+  void renderDashStatus();
+  renderDashCommunity();
+  renderDashAccount();
+}
+
+// The hero: game art + NetcodePlus badge + the big PLAY, or onboarding when no
+// install is detected. The launch-status line and admin-warning slot live
+// directly beneath it.
+function renderHomeHero() {
   if (state.installs.length === 0) {
-    launchPanel.innerHTML = `
-      <div class="play-card">
-        <div class="play-hero">
-          <div class="play-hero-overlay">
-            <div class="play-title">Unreal Tournament</div>
+    homeHero.className = "";
+    homeHero.innerHTML = `
+      <div class="play-hero">
+        <div class="play-hero-overlay">
+          <div class="play-title">Unreal Tournament</div>
+          <div class="play-sub warn">No UT4 install detected yet</div>
+          <div class="hero-cta">
+            <button id="pick-install" type="button" class="launch-primary">Locate my UT4 install →</button>
           </div>
         </div>
-        <p class="warn">No install auto-detected.</p>
-        <p><strong>Already have UT4?</strong> We look for a desktop shortcut — if you don't have one, go to the <strong>Advanced</strong> tab and pick your <code>UnrealTournament</code> folder.</p>
-        <button id="pick-install" type="button" class="launch-primary">Locate my UT4 install →</button>
-        <p class="src">Don't have the game yet? Get it from the UT4Ever installer, then reopen the launcher.</p>
-        <button id="get-ut4" type="button" class="link-btn">Get UT4</button>
-      </div>`;
-    document
-      .getElementById("pick-install")
-      ?.addEventListener("click", () => switchView("settings"));
-    document.getElementById("get-ut4")?.addEventListener("click", () =>
-      openExternal("https://ut4ever.org/installer"),
-    );
+      </div>
+      <p class="src" style="margin-top:0.6rem">Already have UT4? We look for a desktop shortcut — if there isn't one, open <strong>Settings</strong> and pick your <code>UnrealTournament</code> folder. Don't have the game yet? Use <strong>Download &amp; Install UT4</strong> below.</p>`;
+    document.getElementById("pick-install")?.addEventListener("click", () => switchView("settings"));
     return;
   }
   if (state.selInstall >= state.installs.length) state.selInstall = 0;
   const di = state.installs[state.selInstall];
-  launchPanel.innerHTML = `
-    <div class="play-card">
-      <div id="stray-panel"></div>
-      <div class="play-hero">
-        <div class="play-hero-overlay">
-          <div class="play-title">Unreal Tournament</div>
-          <div class="play-sub">${netcodeplusBadge(di.netcodeplus, di.install.root)}</div>
+  homeHero.className = "";
+  homeHero.innerHTML = `
+    <div class="play-hero">
+      <div class="play-hero-overlay">
+        <div class="play-title">Unreal Tournament</div>
+        <div class="play-sub">${netcodeplusBadge(di.netcodeplus, di.install.root)}</div>
+        <div class="hero-cta">
+          <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;PLAY</button>
+          <span class="hero-meta">${escape(di.install.root)}</span>
         </div>
       </div>
-      <div id="admin-warn-panel"></div>
-      <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;Launch</button>
-      <div id="launch-status" class="launch-status"></div>
-      <div id="plugin-panel"></div>
-      ${ut4AccountHtml()}
-    </div>`;
+    </div>
+    <div id="admin-warn-panel"></div>
+    <div id="launch-status" class="launch-status"></div>`;
   (document.getElementById("launch-btn") as HTMLButtonElement | null)?.addEventListener(
     "click",
     () => void launch(),
   );
-  void renderPluginStatus();
-  void renderStrays();
   void renderAdminWarning();
+}
+
+// "Your stats" card — top ratings + last couple of matches from the linked
+// ut4stats profile (cached in lastSummary). Prompts to link when none is set.
+function renderDashStats(): void {
+  const el = document.getElementById("dash-stats");
+  if (!el) return;
+  if (!state.linkedId) {
+    el.innerHTML = `
+      <h3>Your stats</h3>
+      <p class="src">Link your ut4stats.com profile to see your ratings and recent matches at a glance.</p>
+      <button class="card-link" data-nav-to="stats" type="button">Link a profile →</button>`;
+    return;
+  }
+  const s = lastSummary;
+  if (!s) {
+    el.innerHTML = `
+      <h3><span class="grow">Your stats</span><button class="card-link" data-nav-to="stats" type="button">View full stats →</button></h3>
+      <p class="src">Loading ${escape(state.linkedName ?? "your stats")}…</p>`;
+    return;
+  }
+  const chips = s.ratings.length
+    ? s.ratings
+        .slice(0, 4)
+        .map((r) => `<span class="chip"><span class="lbl">${escape(r.mode)}</span><b>${r.rating}</b></span>`)
+        .join("")
+    : `<span class="src">No rated matches yet.</span>`;
+  const recent = s.recent
+    .slice(0, 2)
+    .map((m) => {
+      const cls = m.result === "win" ? "ok" : "muted";
+      return `<div class="drow"><span class="grow">${escape(m.mode)}${
+        m.map ? ` · ${escape(m.map)}` : ""
+      }</span><span class="${cls}">${escape(m.result)}</span><span class="pop">${escape(m.played_at)}</span></div>`;
+    })
+    .join("");
+  el.innerHTML = `
+    <h3><span class="grow">Your stats</span><button class="card-link" data-nav-to="stats" type="button">View full stats →</button></h3>
+    <div class="me-name">${escape(s.playername)}</div>
+    <div class="chips">${chips}</div>
+    ${recent}`;
+}
+
+// "Live now" card — live-match and player counts + the top populated matches,
+// from the shared server cache (fetched once; the Servers tab refreshes it).
+async function renderDashServers(): Promise<void> {
+  const el = document.getElementById("dash-servers");
+  if (!el) return;
+  if (!serverCache.length && !serversFetching) {
+    serversFetching = true;
+    try {
+      serverCache = JSON.parse(await invoke<string>("list_servers")) as GameServerEntry[];
+    } catch (err) {
+      console.error("list_servers (dash) failed:", err);
+    } finally {
+      serversFetching = false;
+    }
+  }
+  const withAddr = serverCache.filter(srvHasAddr);
+  const matches = withAddr.filter((s) => !isLobby(s));
+  const populated = matches
+    .filter((s) => srvPlayers(s) > 0)
+    .sort((a, b) => srvPlayers(b) - srvPlayers(a));
+  const players = matches.reduce((n, s) => n + srvPlayers(s), 0);
+  const top = populated
+    .slice(0, 3)
+    .map((s) => {
+      const mode = prettyMode(String(s.attributes?.GAMEMODE_s ?? ""));
+      const map = String(s.attributes?.MAPNAME_s ?? "");
+      const p = srvPlayers(s);
+      const max = Number(s.attributes?.UT_MAXPLAYERS_i ?? s.maxPublicPlayers ?? 0);
+      return `<div class="drow"><span class="grow">${escape(mode)}${
+        map ? `<span class="map"> · ${escape(map)}</span>` : ""
+      }</span><span class="pop">${p}/${max}</span></div>`;
+    })
+    .join("");
+  el.innerHTML = `
+    <h3><span class="grow">Live now</span><button class="card-link" data-nav-to="servers" type="button">Browse all →</button></h3>
+    <div class="statline"><span class="big-num">${populated.length}</span><span class="muted">live match${
+      populated.length === 1 ? "" : "es"
+    } ·</span><span class="big-num">${players}</span><span class="muted">player${players === 1 ? "" : "s"}</span></div>
+    ${top || `<p class="src">No live matches right now.</p>`}`;
+}
+
+// "NetcodePlus & updates" card — plugin / launcher / .NET / UltiCross rollup.
+// Reads the cached manifest statuses (no network on re-render); UltiCross is a
+// cheap local check done live. Offers the one-click plugin update inline.
+async function renderDashStatus(): Promise<void> {
+  const el = document.getElementById("dash-status");
+  if (!el) return;
+  if (statusCache.plugin === null && statusCache.launcher === null) {
+    el.innerHTML = `<h3>NetcodePlus &amp; updates</h3><p class="src">Checking for updates…</p>`;
+    return;
+  }
+  const lines: string[] = [];
+  let pluginUpdate = false;
+  const p = statusCache.plugin;
+  if (p && p.plugin_offered) {
+    const ver = p.available_version != null ? ` (build ${p.available_version})` : "";
+    if (p.any_update_needed) {
+      pluginUpdate = true;
+      const n = p.installs.filter((i) => i.action === "install" || i.action === "update").length;
+      lines.push(
+        `<div class="statline"><span class="warn">↑</span><span>NetcodePlus update available${escape(
+          ver,
+        )} — ${n} install${n === 1 ? "" : "s"}.</span></div>
+        <button id="plugin-update-btn" type="button" class="btn btn-sm">Update NetcodePlus</button>
+        <div id="plugin-status" class="launch-status"></div>`,
+      );
+    } else {
+      lines.push(
+        `<div class="statline"><span class="ok">✓</span><span>NetcodePlus up to date${escape(ver)}.</span></div>`,
+      );
+    }
+  }
+  const lu = statusCache.launcher;
+  if (lu) {
+    lines.push(
+      lu.update_available && lu.url
+        ? `<div class="statline"><span class="warn">↑</span><span>Launcher ${escape(
+            lu.available_version ?? "",
+          )} available (you have v${escape(lu.current_version)}) — see the banner above.</span></div>`
+        : `<div class="statline"><span class="ok">✓</span><span>Launcher v${escape(
+            lu.current_version,
+          )} — latest.</span></div>`,
+    );
+  }
+  if (statusCache.dotnetAvailable) {
+    lines.push(
+      statusCache.dotnetOk
+        ? `<div class="statline"><span class="ok">✓</span><span>.NET Desktop Runtime detected.</span></div>`
+        : `<div class="statline"><span class="warn">⚠</span><span>.NET Desktop Runtime 6 not detected — <button class="card-link" data-extlink="https://dotnet.microsoft.com/download/dotnet/6.0" type="button">get it</button> (the UT4 installer needs it).</span></div>`,
+    );
+  }
+  const root = state.installs[state.selInstall]?.install.root;
+  if (root) {
+    try {
+      const hasUlti = await invoke<boolean>("ulticross_status", { root });
+      lines.push(
+        hasUlti
+          ? `<div class="statline"><span class="ok">✓</span><span>UltiCross add-on installed.</span></div>`
+          : `<div class="statline"><span class="muted">○</span><span>UltiCross not installed — <button class="card-link" data-nav-to="addons" type="button">add-ons</button>.</span></div>`,
+      );
+    } catch (err) {
+      console.error("ulticross_status (dash) failed:", err);
+    }
+  }
+  el.innerHTML = `<h3>NetcodePlus &amp; updates</h3>${lines.join("")}`;
+  if (pluginUpdate) {
+    document.getElementById("plugin-update-btn")?.addEventListener("click", () => void doInstallPlugin());
+  }
+}
+
+// "Community & PUGs" card — current iCTF PUG state (Connect when live) plus the
+// community Discord links (COMMUNITIES). Links use data-extlink → the
+// https-gated opener via the delegated click handler.
+function renderDashCommunity(): void {
+  const el = document.getElementById("dash-community");
+  if (!el) return;
+  const st = state.pugStatus;
+  let pugLine = "";
+  if (state.launcherToken && st) {
+    if (st.state === "live" && st.server) {
+      pugLine = `<div class="drow"><span class="grow"><b>iCTF PUG</b><span class="map"> · live now</span></span><button id="dash-pug-connect" type="button" class="btn btn-sm pug-connect">▶ Connect</button></div>`;
+    } else if (st.state === "starting") {
+      pugLine = `<div class="drow"><span class="grow"><b>iCTF PUG</b><span class="map"> · starting…</span></span></div>`;
+    } else if (st.state === "queued") {
+      pugLine = `<div class="drow"><span class="grow"><b>iCTF PUG</b><span class="map"> · in queue</span></span><span class="pop">${
+        st.players ?? 0
+      }/${st.max_players ?? 10}</span></div>`;
+    }
+  }
+  const links = COMMUNITIES.map(
+    (c) => `<button class="btn btn-discord" data-extlink="${escape(c.url)}" type="button">${escape(c.name)}</button>`,
+  ).join("");
+  el.innerHTML = `
+    <h3><span class="grow">Community &amp; PUGs</span><button class="card-link" data-nav-to="community" type="button">Open →</button></h3>
+    ${pugLine}
+    <div class="btn-row">${links}</div>`;
+  if (st?.state === "live" && st.server) {
+    const server = st.server;
+    const password = st.password ?? "";
+    document
+      .getElementById("dash-pug-connect")
+      ?.addEventListener("click", () => void connectToPug(server, password));
+  }
+}
+
+// Account area on Home: the sign-in form when signed out, or the signed-in
+// identity + log-out. The top-bar Sign In scrolls/focuses here.
+function renderDashAccount(): void {
+  const el = document.getElementById("dash-account");
+  if (!el) return;
+  el.innerHTML = `<div class="dash-card">${ut4AccountHtml()}</div>`;
   wireUt4Account();
 }
 
-// Advanced tab: power-user knobs — install selection, launch profile,
+// Settings tab (sidebar): power-user knobs — install selection, launch profile,
 // process priority, CPU affinity. (Performance config renders below it.)
 function renderAdvanced() {
   if (state.installs.length === 0) {
@@ -753,7 +941,7 @@ async function ut4Login() {
   if (status) status.textContent = "Signing in…";
   try {
     state.ut4 = await invoke<Ut4Auth>("ut4_login", { username, password });
-    renderLaunch();
+    renderHome();
     renderTopbarAuth();
     // Guard against an accidental login to the wrong account (e.g. the wrong
     // saved entry from a password manager): if this replaced a different account
@@ -779,7 +967,7 @@ async function ut4Logout() {
     console.error("ut4_logout failed:", err);
   }
   state.ut4 = { logged_in: false, username: null, display_name: null };
-  renderLaunch();
+  renderHome();
   renderTopbarAuth();
 }
 
@@ -816,8 +1004,8 @@ async function ut4AuthArgs(): Promise<string[]> {
 function handleReloginError(err: unknown, statusEl: HTMLElement | null): boolean {
   if (!String(err).includes("RELOGIN_REQUIRED")) return false;
   state.ut4 = { logged_in: false, username: null, display_name: null };
-  renderLaunch();
-  const msg = "Your UT4 session expired — sign in again on the Launch tab, then try again.";
+  renderHome();
+  const msg = "Your UT4 session expired — sign in again on the Home tab, then try again.";
   if (statusEl) {
     statusEl.innerHTML = `<span class="warn">${escape(msg)}</span>`;
   } else {
@@ -907,10 +1095,13 @@ async function fetchSummary(id: string) {
   statsPanel.innerHTML = `<div class="src">Loading ${escape(state.linkedName ?? "stats")}…</div>`;
   try {
     const raw = await invoke<string>("ut4stats_summary", { playerid: id });
-    renderSummary(JSON.parse(raw) as PlayerSummary);
+    lastSummary = JSON.parse(raw) as PlayerSummary;
+    renderSummary(lastSummary);
   } catch (err) {
+    lastSummary = null;
     renderSummary(null, String(err));
   }
+  renderDashStats();
 }
 
 function renderStats() {
@@ -1063,12 +1254,14 @@ async function loadAll() {
     void renderLauncherCleanup();
     void renderNews();
     void renderGameInstall();
+    void loadStatusData();
+    renderCommunityLinks();
     if (state.launcherToken) {
       void pollPugStatus();
       startPugPolling();
     }
   } catch (err) {
-    launchPanel.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
+    homeHero.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
     console.error("startup load failed:", err);
   }
 }
@@ -1111,12 +1304,31 @@ async function pickDir() {
 const UTPUGS_DISCORD = "https://discord.gg/utpugs";
 const ICTF_DISCORD = "https://discord.gg/EcUMZjFY3q";
 
+// Community Discords surfaced on the Home dashboard card and the Community tab.
+// Add an entry { name, url } to list a new community in both places.
+interface Community {
+  name: string;
+  url: string;
+}
+const COMMUNITIES: Community[] = [
+  { name: "UTPugs Discord", url: UTPUGS_DISCORD },
+  { name: "Instagib Nation", url: ICTF_DISCORD },
+];
+
+// Fill the Community tab's Discord buttons from COMMUNITIES (the Home card does
+// the same inline). Buttons carry data-extlink → the https-gated opener via the
+// delegated click handler, so no per-button wiring is needed.
+function renderCommunityLinks(): void {
+  const el = document.getElementById("community-links");
+  if (!el) return;
+  el.innerHTML = COMMUNITIES.map(
+    (c) => `<button class="btn btn-discord" data-extlink="${escape(c.url)}" type="button">${escape(c.name)}</button>`,
+  ).join("");
+}
+
 function openExternal(url: string) {
   void invoke("open_external", { url }).catch((err) => console.error("open_external failed:", err));
 }
-
-document.getElementById("join-utpugs")?.addEventListener("click", () => openExternal(UTPUGS_DISCORD));
-document.getElementById("join-ictf")?.addEventListener("click", () => openExternal(ICTF_DISCORD));
 
 // ---- in-launcher PUG join (UT4IGBot) --------------------------------------
 
@@ -1268,7 +1480,7 @@ async function connectTo(server: string, password: string, status: HTMLElement |
   const di = state.installs[state.selInstall];
   if (!di) {
     if (status)
-      status.innerHTML = `<span class="warn">No UT4 install detected — pick your folder in the Advanced tab first.</span>`;
+      status.innerHTML = `<span class="warn">No UT4 install detected — pick your folder in the Settings tab first.</span>`;
     return;
   }
   const profile =
@@ -1353,7 +1565,7 @@ async function toggleRoster(server: string, slot: HTMLElement | null) {
     return;
   }
   if (!state.ut4?.logged_in) {
-    slot.innerHTML = `<span class="src">Sign in on the Launch tab to see who's playing.</span>`;
+    slot.innerHTML = `<span class="src">Sign in on the Home tab to see who's playing.</span>`;
     return;
   }
   slot.innerHTML = `<span class="src">Loading players…</span>`;
@@ -1367,7 +1579,7 @@ async function toggleRoster(server: string, slot: HTMLElement | null) {
     } catch (err) {
       const msg = String(err);
       slot.innerHTML = msg.includes("RELOGIN_REQUIRED")
-        ? `<span class="src">Your session expired — sign in again on the Launch tab.</span>`
+        ? `<span class="src">Your session expired — sign in again on the Home tab.</span>`
         : `<span class="warn">Couldn't load players: ${escape(msg)}</span>`;
       return;
     }
@@ -1678,7 +1890,7 @@ function renderServerList() {
   const sections: string[] = visibleHubs.map(hubBlock);
   if (visibleStandalone.length) {
     sections.push(
-      `<div style="margin-bottom:6px"><div class="src" style="padding:9px 2px;border-bottom:1px solid rgba(255,255,255,0.12);font-weight:600">Other matches</div>${visibleStandalone
+      `<div style="margin-bottom:6px"><div class="src" style="padding:9px 2px;border-bottom:1px solid var(--hub-sep);font-weight:600">Other matches</div>${visibleStandalone
         .map(matchRow)
         .join("")}</div>`,
     );
@@ -1687,7 +1899,7 @@ function renderServerList() {
 
   const hint = state.ut4?.logged_in
     ? ""
-    : ` · <span class="warn">sign in on the Launch tab to join</span>`;
+    : ` · <span class="warn">sign in on the Home tab to join</span>`;
   serversPanel.innerHTML = `
     <div class="controls" style="justify-content:space-between;align-items:center">
       <span>${visibleHubs.length} hub${visibleHubs.length === 1 ? "" : "s"} · ${liveMatchCount} live match${liveMatchCount === 1 ? "" : "es"}${hint}</span>
@@ -2119,8 +2331,8 @@ async function findMyInstall(): Promise<void> {
   if (!s) return;
   s.innerHTML =
     state.installs.length > 0
-      ? `<span class="ok">✓ Found your UT4 install — it's ready to play on the Launch tab.</span>`
-      : `<span class="warn">No UT4 install detected yet. If the installer just finished, give it a moment and click again — or use <strong>Advanced → Pick install folder</strong> to point at where you installed UT4.</span>`;
+      ? `<span class="ok">✓ Found your UT4 install — it's ready to play on the Home tab.</span>`
+      : `<span class="warn">No UT4 install detected yet. If the installer just finished, give it a moment and click again — or use <strong>Settings → Pick install folder</strong> to point at where you installed UT4.</span>`;
 }
 
 async function applyConfig(setOpenalAudio: boolean) {
@@ -2301,7 +2513,7 @@ async function doDismissCleanup(): Promise<void> {
   void renderLauncherCleanup();
 }
 
-// ---- news (pinned to the Launch tab) ---------------------------------------
+// ---- news (shown on the Home dashboard) ------------------------------------
 
 async function renderNews() {
   let items: NewsItem[];
@@ -2402,6 +2614,11 @@ document.addEventListener("click", (e) => {
   const ncp = t?.closest<HTMLElement>(".ncp-reveal");
   if (ncp?.dataset.root) {
     void revealNcp(ncp.dataset.root);
+    return;
+  }
+  const nav = t?.closest<HTMLElement>("[data-nav-to]");
+  if (nav?.dataset.navTo) {
+    switchView(nav.dataset.navTo);
     return;
   }
   const ext = t?.closest<HTMLElement>("[data-extlink]");

@@ -764,12 +764,6 @@ main {
   color: #cfd3da;
   white-space: pre-wrap;
 }
-#join-utpugs {
-  background: #5865f2;
-}
-#join-utpugs:hover {
-  background: #4752c4;
-}
 
 /* =========================================================================
    APP-SHELL REDESIGN (ui-redesign branch) — flat dark, sidebar + custom top
@@ -1115,4 +1109,263 @@ body {
 }
 :root[data-theme="light"] .ico-sun {
   display: inline;
+}
+
+/* =========================================================================
+   HOME dashboard (v1.0.0) — greeting, play hero, at-a-glance cards. Cards are
+   token-based, so they flip with the light/dark theme automatically.
+   ========================================================================= */
+.dash-head {
+  display: flex;
+  align-items: baseline;
+  gap: 12px;
+  flex-wrap: wrap;
+  margin: 2px 0 16px;
+}
+.dash-head h1 {
+  font-size: 1.35rem;
+  font-weight: 700;
+  margin: 0;
+}
+.dash-head .sub {
+  color: var(--txt-dim);
+  font-size: 0.9rem;
+}
+
+/* hero call-to-action row, inside the play-hero overlay */
+.hero-cta {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 14px;
+}
+.hero-cta .launch-primary {
+  margin: 0;
+  min-width: 12rem;
+}
+.hero-meta {
+  /* On the dark hero image in both themes, so a fixed light tone + shadow. */
+  color: #cdd3dd;
+  font-size: 0.85rem;
+  max-width: 26rem;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  text-shadow: 0 1px 6px rgba(0, 0, 0, 0.85);
+}
+
+/* card grid */
+.dash-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+  margin-top: 16px;
+}
+@media (max-width: 780px) {
+  .dash-grid {
+    grid-template-columns: 1fr;
+  }
+}
+.dash-card {
+  background: var(--panel-2);
+  border: 1px solid var(--line-blue);
+  border-radius: 12px;
+  padding: 15px 17px;
+  min-width: 0;
+}
+.dash-card h3 {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.09em;
+  color: var(--txt-dim);
+  font-weight: 700;
+  margin: 0 0 11px;
+}
+.dash-card h3 .grow {
+  flex: 1;
+}
+.card-link {
+  background: none;
+  color: var(--accent-hi);
+  padding: 0;
+  margin: 0;
+  font-size: 0.8rem;
+  font-weight: 600;
+}
+.card-link:hover {
+  background: none;
+  text-decoration: underline;
+}
+:root[data-theme="light"] .card-link {
+  color: #1d4ed8;
+}
+
+.me-name {
+  font-size: 1.05rem;
+  font-weight: 700;
+  margin-bottom: 9px;
+}
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 7px;
+  margin-bottom: 6px;
+}
+.chip {
+  display: inline-flex;
+  gap: 6px;
+  align-items: baseline;
+  background: rgba(47, 111, 237, 0.14);
+  border: 1px solid var(--line-blue);
+  border-radius: 6px;
+  padding: 3px 9px;
+  font-size: 0.82rem;
+}
+.chip b {
+  font-variant-numeric: tabular-nums;
+}
+.chip .lbl {
+  color: var(--txt-dim);
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+/* compact "row" used in stats / servers / community cards */
+.drow {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 0.42rem 0;
+  border-top: 1px solid var(--row-sep);
+  font-size: 0.9rem;
+}
+.drow:first-of-type {
+  border-top: 0;
+}
+.drow .grow {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.map {
+  color: var(--txt-dim);
+  font-size: 0.85rem;
+}
+.pop {
+  font-variant-numeric: tabular-nums;
+  color: var(--txt-dim);
+  font-size: 0.85rem;
+  flex: none;
+}
+.muted {
+  color: var(--txt-dim);
+}
+
+.statline {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0.3rem 0;
+  font-size: 0.92rem;
+}
+.statline .ok,
+.statline .warn {
+  flex: none;
+  font-weight: 700;
+  margin: 0;
+}
+.big-num {
+  font-size: 1.4rem;
+  font-weight: 800;
+  line-height: 1;
+}
+
+/* compact buttons used inside cards (the global `button` rule is too large) */
+.btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--accent);
+  color: #fff;
+  padding: 0.5rem 1.05rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  margin: 0;
+}
+.btn:hover {
+  background: var(--accent-hi);
+}
+.btn-sm {
+  padding: 0.4rem 0.9rem;
+  font-size: 0.85rem;
+  margin-top: 0.5rem;
+}
+.btn.pug-connect {
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+.btn.pug-connect:hover {
+  background: linear-gradient(135deg, #34d36a, #1eaa4e);
+}
+.btn-discord {
+  background: #5865f2;
+}
+.btn-discord:hover {
+  background: #4752c4;
+}
+.btn-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 11px;
+}
+
+/* =========================================================================
+   Light-theme contrast pass — reused dark-card components that didn't fully
+   flip to the light scheme (Stats search picks, roster, .NET note, the
+   game-installer panel, alerts, inline code).
+   ========================================================================= */
+:root[data-theme="light"] .ut4-pick {
+  background: #ffffff;
+  color: #1a1f2b;
+  border: 1px solid #cdd4df;
+}
+:root[data-theme="light"] .ut4-pick:hover {
+  background: #1d4ed8;
+  color: #fff;
+}
+:root[data-theme="light"] .roster-name {
+  color: #44505f;
+}
+:root[data-theme="light"] .dotnet-note {
+  background: rgba(180, 83, 9, 0.08);
+  border-color: rgba(180, 83, 9, 0.4);
+  color: #7c4a07;
+}
+:root[data-theme="light"] .game-install {
+  border-color: rgba(0, 0, 0, 0.14);
+}
+:root[data-theme="light"] .game-progress {
+  background: rgba(0, 0, 0, 0.1);
+}
+:root[data-theme="light"] .alert {
+  color: #991b1b;
+  background: rgba(220, 38, 38, 0.08);
+  border-color: rgba(220, 38, 38, 0.4);
+}
+:root[data-theme="light"] code {
+  background: rgba(0, 0, 0, 0.06);
+}
+:root[data-theme="light"] .link-btn {
+  color: #1d4ed8;
+}
+:root[data-theme="light"] .link-btn:hover {
+  color: #1e40af;
 }
