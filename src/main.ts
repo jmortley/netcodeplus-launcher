@@ -1615,7 +1615,7 @@ function renderServerList() {
       p > 0
         ? `<button class="server-roster" type="button" data-server="${escape(server)}" title="Show players">▾</button>`
         : "";
-    return `<div style="padding:0 2px 0 16px;border-bottom:1px solid rgba(255,255,255,0.06)">
+    return `<div style="padding:0 2px 0 16px;border-bottom:1px solid var(--row-sep)">
         <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0">
           <div class="src" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sub}</div>
           <span style="flex:none;display:flex;gap:6px;align-items:center">
@@ -1639,7 +1639,7 @@ function renderServerList() {
     const server = `${h.serverAddress}:${h.serverPort}`;
     const lobby = srvPlayers(h);
     const live = kids.length;
-    const header = `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid rgba(255,255,255,0.12)">
+    const header = `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid var(--hub-sep)">
         <div style="min-width:0">
           <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="ok" style="font-size:0.78em;border:1px solid currentColor;border-radius:3px;padding:0 4px;margin-right:6px">HUB</span>${escape(name)} &nbsp;${trustLabel(h.attributes?.UT_SERVERTRUSTLEVEL_i)}</div>
           <div class="src">${live} live match${live === 1 ? "" : "es"} · ${lobby} in lobby</div>
