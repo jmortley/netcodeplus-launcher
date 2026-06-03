@@ -2596,6 +2596,28 @@ document.getElementById("topbar-signin")?.addEventListener("click", () => {
 document.getElementById("win-min")?.addEventListener("click", () => void getCurrentWindow().minimize());
 document.getElementById("win-close")?.addEventListener("click", () => void getCurrentWindow().close());
 
+// Maximize / restore toggle. The icon + tooltip reflect the live state, kept in
+// sync on every resize so OS-driven maximize (double-click drag region, Win+Up,
+// edge snap) flips the glyph too — not just our button.
+const winMaxBtn = document.getElementById("win-max");
+async function syncMaxIcon(): Promise<void> {
+  try {
+    const max = await getCurrentWindow().isMaximized();
+    winMaxBtn?.classList.toggle("maximized", max);
+    if (winMaxBtn) winMaxBtn.title = max ? "Restore" : "Maximize";
+  } catch (err) {
+    console.error("isMaximized failed:", err);
+  }
+}
+winMaxBtn?.addEventListener("click", () => {
+  void getCurrentWindow()
+    .toggleMaximize()
+    .then(syncMaxIcon)
+    .catch((err) => console.error("toggleMaximize failed:", err));
+});
+void getCurrentWindow().onResized(() => void syncMaxIcon());
+void syncMaxIcon();
+
 // Light/dark theme toggle (persisted in localStorage for this prototype).
 function applyTheme(theme: string): void {
   document.documentElement.setAttribute("data-theme", theme === "light" ? "light" : "dark");

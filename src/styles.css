@@ -491,11 +491,14 @@ footer {
 
 .play-hero {
   position: relative;
-  height: 260px;
+  /* Scales with the window so a maximized launcher gets a bigger, more
+     cinematic banner (less of the cover-zoom that made the character feel
+     oversized at full width); stays compact when the window is restored. */
+  height: clamp(240px, 32vh, 420px);
   margin-bottom: 1.25rem;
   border-radius: 8px;
   overflow: hidden;
-  background: url("/backgrounds/skaarj.jpg") center 22% / cover no-repeat;
+  background: #0c0e13 url("/backgrounds/skaarj.jpg") 50% 26% / cover no-repeat;
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
@@ -931,6 +934,16 @@ body {
 .winbtn-close:hover {
   background: #e03b3b;
   color: #fff;
+}
+/* maximize/restore glyph swap — restore (double square) only while maximized */
+#win-max .ico-restore {
+  display: none;
+}
+#win-max.maximized .ico-max {
+  display: none;
+}
+#win-max.maximized .ico-restore {
+  display: inline;
 }
 
 /* ---- main = sidebar + content ---- */

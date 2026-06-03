@@ -14,11 +14,12 @@
     "windows": [
       {
         "title": "UT4 Community Launcher",
-        "width": 1000,
-        "height": 720,
-        "minWidth": 860,
-        "minHeight": 600,
+        "width": 1280,
+        "height": 860,
+        "minWidth": 900,
+        "minHeight": 620,
         "resizable": true,
+        "maximized": true,
         "decorations": false,
         "center": true
       }
