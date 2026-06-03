@@ -1313,6 +1313,9 @@ interface Community {
 const COMMUNITIES: Community[] = [
   { name: "UTPugs Discord", url: UTPUGS_DISCORD },
   { name: "Instagib Nation", url: ICTF_DISCORD },
+  { name: "Unreal Pugs (EU)", url: "https://discord.gg/unrealpugs" },
+  { name: "Phoenix Germany", url: "https://discord.gg/qCSm4YjCeU" },
+  { name: "Unreal Carnage", url: "https://discord.gg/UpGhtAa" },
 ];
 
 // Fill the Community tab's Discord buttons from COMMUNITIES (the Home card does
