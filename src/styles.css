@@ -1382,3 +1382,86 @@ body {
 :root[data-theme="light"] .link-btn:hover {
   color: #1e40af;
 }
+
+/* =========================================================================
+   Stats "Trends" section (per-mode sniper/LG accuracy sparklines, form +
+   streak, rating curve). Token-based so it flips with the theme.
+   ========================================================================= */
+.trends {
+  margin-top: 1rem;
+  padding-top: 0.85rem;
+  border-top: 1px solid var(--row-sep);
+}
+.trends-head {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  margin-bottom: 0.7rem;
+}
+.trend-mode {
+  font-family: inherit;
+  font-size: 0.85rem;
+  padding: 0.3rem 0.45rem;
+  background: var(--panel-2);
+  color: var(--txt);
+  border: 1px solid var(--line-blue);
+  border-radius: 4px;
+}
+.form-line {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  flex-wrap: wrap;
+  font-size: 0.9rem;
+  margin-bottom: 0.6rem;
+}
+.pips {
+  display: inline-flex;
+  gap: 2px;
+}
+.pip {
+  width: 14px;
+  height: 14px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: 3px;
+  font-size: 0.58rem;
+  font-weight: 700;
+  color: #fff;
+}
+.pip-w {
+  background: #16a34a;
+}
+.pip-l {
+  background: #b91c1c;
+}
+.pip-n {
+  background: #555;
+}
+.trend-row {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.28rem 0;
+  font-size: 0.85rem;
+}
+.trend-label {
+  width: 5.5rem;
+  flex: none;
+  color: var(--txt-dim);
+}
+.spark {
+  width: 130px;
+  height: 26px;
+  flex: none;
+}
+.spark-empty {
+  width: 130px;
+  flex: none;
+  color: var(--txt-dim);
+}
+.trend-val {
+  font-variant-numeric: tabular-nums;
+  font-weight: 600;
+}

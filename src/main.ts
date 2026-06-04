@@ -113,6 +113,35 @@ interface PlayerSummary {
   }[];
 }
 
+// Per-mode trends from the `ut4stats_trends` command (player_trends_api).
+interface PlayerTrends {
+  mode: string;
+  has_elo: boolean;
+  accuracy: { date: string | null; sniper: number | null; lg: number | null }[];
+  form: { games: number; wins: number; losses: number; streak: number; results: string[] };
+  rating: { date: string | null; rating: number }[];
+}
+
+// The Stats "Trends" mode selector — the six modes from the ut4stats game-mode
+// dropdown. Keys match the player_trends endpoint's mode keys.
+const TREND_MODES: { key: string; label: string }[] = [
+  { key: "elimplus", label: "Team Arena (ElimPlus)" },
+  { key: "ctf", label: "CTF" },
+  { key: "blitz", label: "Blitz" },
+  { key: "wipeout", label: "Wipeout" },
+  { key: "duel", label: "Duel" },
+  { key: "elimination", label: "Elimination" },
+];
+// NCRating mode string -> trend mode key, for defaulting the selector to the
+// player's most-played rated mode (iCTF folds into the CTF tab).
+const NC_MODE_TO_KEY: Record<string, string> = {
+  ElimPlus: "elimplus",
+  CTF: "ctf",
+  iCTF: "ctf",
+  Wipeout: "wipeout",
+  Duel: "duel",
+};
+
 interface EngineTweaks {
   frame_rate_cap: number;
   smooth_frame_rate: boolean;
@@ -175,6 +204,7 @@ const state = {
   launcherToken: null as string | null,
   pugStatus: null as PugStatus | null,
   ut4: null as Ut4Auth | null,
+  trendMode: "" as string,
 };
 
 function escape(value: string): string {
@@ -1153,6 +1183,16 @@ function renderSummary(s: PlayerSummary | null, error?: string) {
         .join("")}</ul>`
     : "";
 
+  // Default the Trends selector to the player's most-played rated mode (falls
+  // back to CTF); once the user picks a mode it sticks for the session.
+  if (!state.trendMode) {
+    const top = [...s.ratings].sort((a, b) => b.games - a.games)[0];
+    state.trendMode = (top && NC_MODE_TO_KEY[top.mode]) || "ctf";
+  }
+  const modeOpts = TREND_MODES.map(
+    (m) => `<option value="${m.key}"${m.key === state.trendMode ? " selected" : ""}>${escape(m.label)}</option>`,
+  ).join("");
+
   statsPanel.innerHTML = `
     <div class="stat-head">
       <strong>${escape(s.playername)}</strong>
@@ -1166,6 +1206,12 @@ function renderSummary(s: PlayerSummary | null, error?: string) {
       ${acc ? `<dt>Accuracy</dt><dd>${acc}</dd>` : ""}
     </dl>
     ${recent ? `<div class="src">Recent rated matches</div>${recent}` : ""}
+    <div class="trends">
+      <div class="trends-head"><strong>Trends</strong>
+        <select id="trend-mode" class="trend-mode">${modeOpts}</select>
+      </div>
+      <div id="trend-body"></div>
+    </div>
   `;
   document.getElementById("ut4-change")?.addEventListener("click", () => void unlink());
   // Re-pull the summary on demand: it's otherwise only fetched at startup, so
@@ -1179,6 +1225,100 @@ function renderSummary(s: PlayerSummary | null, error?: string) {
       if (url) void openExternal(url);
     });
   });
+  const trendSel = document.getElementById("trend-mode") as HTMLSelectElement | null;
+  trendSel?.addEventListener("change", () => {
+    state.trendMode = trendSel.value;
+    void renderTrends(state.trendMode);
+  });
+  void renderTrends(state.trendMode);
+}
+
+// Render the per-mode Trends block (sniper/LG accuracy sparklines, form +
+// streak, and the rating curve on ELO modes) into #trend-body. Pulls from the
+// signed-manifest-free public `ut4stats_trends` endpoint; a failure just shows
+// a quiet note (never blocks the Stats panel).
+async function renderTrends(mode: string): Promise<void> {
+  const body = document.getElementById("trend-body");
+  if (!body) return;
+  if (!state.linkedId) {
+    body.innerHTML = "";
+    return;
+  }
+  body.innerHTML = `<div class="src">Loading trends…</div>`;
+  let t: PlayerTrends;
+  try {
+    t = JSON.parse(await invoke<string>("ut4stats_trends", { playerid: state.linkedId, mode }));
+  } catch (err) {
+    body.innerHTML = `<div class="src">Couldn't load trends: ${escape(String(err))}</div>`;
+    console.error("ut4stats_trends failed:", err);
+    return;
+  }
+  const acc = t.accuracy ?? [];
+  const sniperVals = acc.map((a) => a.sniper);
+  const lgVals = acc.map((a) => a.lg);
+  const lastVal = (vals: (number | null)[]): number | null =>
+    vals.reduce<number | null>((prev, v) => (v != null ? v : prev), null);
+  const sLast = lastVal(sniperVals);
+  const lLast = lastVal(lgVals);
+
+  const f = t.form;
+  const pips = (f?.results ?? [])
+    .map((r) => `<span class="pip pip-${r === "W" ? "w" : r === "L" ? "l" : "n"}">${escape(r)}</span>`)
+    .join("");
+  const streakTxt = f && f.streak
+    ? ` · ${f.streak > 0 ? `${f.streak}-win streak` : `${-f.streak}-loss streak`}`
+    : "";
+  const formLine =
+    f && f.games
+      ? `<div class="form-line"><b class="ok">${f.wins}W</b>–<b class="warn">${f.losses}L</b>${escape(
+          streakTxt,
+        )} <span class="pips">${pips}</span></div>`
+      : `<div class="src">No recent matches in this mode.</div>`;
+
+  const accBlock = acc.length
+    ? `<div class="trend-row"><span class="trend-label">Sniper</span>${sparkline(
+        sniperVals,
+        "#f5a623",
+      )}<span class="trend-val">${sLast != null ? `${sLast}%` : "—"}</span></div>
+       <div class="trend-row"><span class="trend-label">Lightning</span>${sparkline(
+         lgVals,
+         "#4f8bff",
+       )}<span class="trend-val">${lLast != null ? `${lLast}%` : "—"}</span></div>`
+    : `<div class="src">No sniper/lightning shots recorded in this mode.</div>`;
+
+  const r = t.rating ?? [];
+  const ratingBlock = t.has_elo
+    ? r.length > 1
+      ? `<div class="trend-row"><span class="trend-label">Rating</span>${sparkline(
+          r.map((x) => x.rating),
+          "#4ade80",
+        )}<span class="trend-val">${r[r.length - 1].rating}</span></div>`
+      : `<div class="trend-row"><span class="trend-label">Rating</span><span class="src">not enough rated games</span></div>`
+    : "";
+
+  body.innerHTML = `${formLine}${accBlock}${ratingBlock}`;
+}
+
+// Minimal inline SVG sparkline over the non-null values (evenly spaced),
+// auto-scaled to its own min/max. Fewer than two points renders a dash.
+function sparkline(vals: (number | null)[], color: string): string {
+  const pts = vals.filter((v): v is number => v != null);
+  if (pts.length < 2) return `<span class="spark-empty">—</span>`;
+  const w = 130;
+  const h = 26;
+  const pad = 3;
+  const min = Math.min(...pts);
+  const max = Math.max(...pts);
+  const range = max - min || 1;
+  const step = (w - pad * 2) / (pts.length - 1);
+  const d = pts
+    .map((v, i) => {
+      const x = pad + i * step;
+      const y = pad + (h - pad * 2) * (1 - (v - min) / range);
+      return `${i === 0 ? "M" : "L"}${x.toFixed(1)},${y.toFixed(1)}`;
+    })
+    .join(" ");
+  return `<svg class="spark" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none" aria-hidden="true"><path d="${d}" fill="none" stroke="${color}" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
 }
 
 // ---- startup --------------------------------------------------------------

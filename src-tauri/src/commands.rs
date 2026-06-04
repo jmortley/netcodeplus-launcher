@@ -266,6 +266,23 @@ pub async fn ut4stats_summary(playerid: String) -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// Fetch a player's per-mode trends from ut4stats.com's public
+/// `/api/player_trends/<id>/?mode=<m>` endpoint (sniper/lightning accuracy
+/// series, form/streak, and the rating curve on ELO modes). Returns the raw
+/// JSON. `mode` is one of the launcher mode keys (elimplus/ctf/blitz/wipeout/
+/// duel/elimination); it is URL-encoded defensively even though it is ours.
+#[tauri::command]
+pub async fn ut4stats_trends(playerid: String, mode: String) -> Result<String, String> {
+    let url = format!(
+        "{UT4STATS_BASE}/api/player_trends/{playerid}/?mode={}",
+        encode_q(mode.trim())
+    );
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::fetch_text(&client, &url, UT4STATS_MAX)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 /// Fetch the launcher news feed from ut4stats.com's public
 /// `/api/launcher_news/` endpoint (admin-managed announcements). Raw JSON.
 #[tauri::command]
