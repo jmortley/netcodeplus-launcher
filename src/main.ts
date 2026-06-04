@@ -127,7 +127,7 @@ interface PlayerTrends {
 const TREND_MODES: { key: string; label: string }[] = [
   { key: "elimplus", label: "Team Arena (ElimPlus)" },
   { key: "ctf", label: "CTF" },
-  { key: "ictf", label: "iCTF" },
+  { key: "ictf", label: "iCTF (5v5)" },
   { key: "blitz", label: "Blitz" },
   { key: "wipeout", label: "Wipeout" },
   { key: "duel", label: "Duel" },
