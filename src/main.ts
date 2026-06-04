@@ -2302,24 +2302,59 @@ async function renderGameInstall(): Promise<void> {
   }
   const gb = (info.size_bytes / 1e9).toFixed(1);
   const needGb = ((info.size_bytes * 2) / 1e9).toFixed(0);
+  // Gate the ~10 GB download behind the .NET Desktop Runtime check: the UT4
+  // installer is a .NET 6 WinForms app, so without the runtime it dies on a
+  // cryptic error AFTER the user has already downloaded everything. Require
+  // .NET first (with a re-check) so newcomers never hit that wall.
+  const actions = info.dotnet_ok
+    ? `<div class="game-install-actions">
+        <button id="game-download-btn" type="button">Download &amp; Install UT4</button>
+      </div>`
+    : `<div class="dotnet-note">
+        <div><strong>One quick prerequisite first.</strong> The UT4 installer needs the free <strong>.NET Desktop Runtime 6.0 (x64)</strong> from Microsoft — install that, then re-check here. (No point downloading ${gb} GB until it's ready — the installer just errors out without it.)</div>
+        <div class="game-install-actions">
+          <button id="dotnet-get-btn" type="button" data-extlink="https://dotnet.microsoft.com/download/dotnet/6.0">Get .NET Desktop Runtime 6</button>
+          <button id="dotnet-recheck-btn" type="button" class="link-btn">I've installed it — re-check</button>
+        </div>
+      </div>`;
   panel.innerHTML = `
     <div class="game-install">
       <div><strong>Don't have UT4 yet?</strong> The launcher downloads the community installer (v${escape(
         info.version,
       )}, ${gb} GB) to a folder you choose, verifies it, unpacks it, and runs it. <strong>You pick where UT4 actually installs in the installer's own window</strong> (with a Windows admin prompt) — so for the download just use a normal folder like your <strong>Downloads</strong> (needs ~${needGb} GB free), not Program Files.</div>
-      ${
-        info.dotnet_ok
-          ? ""
-          : `<div class="dotnet-note">⚠ This installer also needs the <strong>.NET Desktop Runtime 6</strong> (a free Microsoft component) — without it, it won't start. <button class="link-btn" type="button" data-extlink="https://dotnet.microsoft.com/download/dotnet/6.0">Get the .NET Runtime</button> — grab <strong>.NET Desktop Runtime 6.0 &rsaquo; Windows x64</strong>; you can install it while UT4 downloads.</div>`
-      }
-      <div class="game-install-actions">
-        <button id="game-download-btn" type="button">Download &amp; Install UT4</button>
-      </div>
+      ${actions}
       <div id="game-install-status" class="launch-status"></div>
     </div>`;
-  document
-    .getElementById("game-download-btn")
-    ?.addEventListener("click", () => void startGameDownload());
+  if (info.dotnet_ok) {
+    document
+      .getElementById("game-download-btn")
+      ?.addEventListener("click", () => void startGameDownload());
+  } else {
+    document
+      .getElementById("dotnet-recheck-btn")
+      ?.addEventListener("click", () => void recheckDotnet());
+  }
+}
+
+// Re-check for the .NET Desktop Runtime after the user says they installed it:
+// re-render to swap in the Download button when present, or show a targeted hint
+// (the usual miss is installing the SDK / ASP.NET runtime, or x86) when not.
+async function recheckDotnet(): Promise<void> {
+  const status = document.getElementById("game-install-status");
+  if (status) status.innerHTML = `<span class="src">Re-checking for .NET…</span>`;
+  let ok = false;
+  try {
+    ok = (await invoke<GameInstallerInfo>("game_installer_info")).dotnet_ok;
+  } catch (err) {
+    console.error("game_installer_info (re-check) failed:", err);
+  }
+  if (ok) {
+    void renderGameInstall();
+  } else {
+    const s = document.getElementById("game-install-status");
+    if (s)
+      s.innerHTML = `<span class="warn">Still not detected. Make sure you installed the <strong>.NET Desktop Runtime 6.0 — x64</strong> (not the SDK or the ASP.NET runtime), then re-check.</span>`;
+  }
 }
 
 // Phase → verb for the shared progress bar (download → verify → extract).
