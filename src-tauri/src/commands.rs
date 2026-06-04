@@ -396,10 +396,11 @@ pub async fn pug_status(token: String) -> Result<String, String> {
 /// UT4IGBot launcher spectate endpoint (HTTPS via the Apache reverse-proxy).
 const BOT_SPECTATE_URL: &str = "https://ut4stats.com/launcher/spectate";
 
-/// Ask the bot for the current live PUG's server so the launcher can spectate
-/// it, authenticated by the per-user launcher `token`. Returns the bot's JSON
-/// (`{state:"live", server, password}` or `{state:"none"}`); the UI then
-/// connects with `?SpectatorOnly=1`.
+/// Ask the bot for the live PUGs the launcher can spectate, authenticated by the
+/// per-user launcher `token`. Returns the bot's JSON
+/// (`{state:"live", pugs:[{pug_id, server, password, mode, map}, …]}` or
+/// `{state:"none"}`); the UI connects with `?SpectatorOnly=1` (a picker when
+/// there's more than one).
 #[tauri::command]
 pub async fn pug_spectate(token: String) -> Result<String, String> {
     if token.trim().is_empty() {
@@ -415,6 +416,22 @@ pub async fn pug_spectate(token: String) -> Result<String, String> {
     )
     .await
     .map_err(pug_error)
+}
+
+/// UT4IGBot tokenless live-PUG endpoint (HTTPS via the Apache reverse-proxy).
+const BOT_LIVE_URL: &str = "https://ut4stats.com/launcher/live";
+
+/// Ask the bot for every live PUG that can be spectated, WITHOUT a launcher
+/// token. Powers the HOME "live PUG — watch it" banner so a brand-new user can
+/// spectate-to-learn before linking a token. Read-only on the bot side; same
+/// JSON as [`pug_spectate`] (`{state:"live", pugs:[…]}` / `{state:"none"}`). The
+/// UI connects with `?SpectatorOnly=1`.
+#[tauri::command]
+pub async fn pug_live() -> Result<String, String> {
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(&client, BOT_LIVE_URL, &[], "{}".to_string(), 64 * 1024)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Launcher version (from `Cargo.toml`). Surfaced in the UI for bug reports.

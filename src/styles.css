@@ -1340,6 +1340,85 @@ body {
   margin-top: 11px;
 }
 
+/* ---- HOME "live PUG — watch it" banner (tokenless spectate-to-learn) ------- */
+
+.live-pug-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  margin: 0.9rem 0 0;
+  padding: 0.8rem 1.1rem;
+  border: 1px solid rgba(34, 197, 94, 0.5);
+  border-left: 4px solid #22c55e;
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(34, 197, 94, 0.16), rgba(34, 197, 94, 0.04));
+}
+
+.live-dot {
+  flex: none;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #22c55e;
+  animation: live-pulse 1.6s infinite;
+}
+
+@keyframes live-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0.6);
+  }
+  70% {
+    box-shadow: 0 0 0 9px rgba(34, 197, 94, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(34, 197, 94, 0);
+  }
+}
+
+.live-pug-text {
+  display: flex;
+  flex-direction: column;
+  flex: 1 1 12rem;
+  min-width: 0;
+}
+
+.live-pug-text b {
+  font-size: 1.02rem;
+}
+
+.live-pug-map {
+  color: var(--accent-hi);
+  font-weight: 600;
+}
+
+.live-pug-sub {
+  font-size: 0.85rem;
+  opacity: 0.75;
+}
+
+.live-pug-more {
+  color: var(--accent-hi);
+  font-weight: 600;
+}
+
+.live-pug-watch {
+  flex: none;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+
+.live-pug-watch:hover {
+  background: linear-gradient(135deg, #34d36a, #1eaa4e);
+}
+
+.live-pug-status {
+  flex-basis: 100%;
+}
+
+.live-pug-status:empty {
+  display: none;
+}
+
 /* =========================================================================
    Light-theme contrast pass — reused dark-card components that didn't fully
    flip to the light scheme (Stats search picks, roster, .NET note, the

@@ -39,6 +39,7 @@ pub fn run() {
             commands::pug_action,
             commands::pug_status,
             commands::pug_spectate,
+            commands::pug_live,
             commands::save_launcher_token,
             commands::engine_config_state,
             commands::openal_status,

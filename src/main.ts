@@ -204,6 +204,9 @@ const state = {
   linkedName: null as string | null,
   launcherToken: null as string | null,
   pugStatus: null as PugStatus | null,
+  // Live PUGs anyone can spectate (from the tokenless bot /live endpoint) —
+  // drives the HOME "watch to learn" banner. Empty when nothing is live.
+  livePugs: [] as SpectatePug[],
   ut4: null as Ut4Auth | null,
   trendMode: "" as string,
 };
@@ -421,6 +424,7 @@ function renderHome() {
     greet.textContent = name ? `Welcome back, ${name}` : "UT4 Community Launcher";
   }
   renderHomeHero();
+  renderHomeLivePug();
   void renderStrays();
   renderDashStats();
   void renderDashServers();
@@ -470,6 +474,76 @@ function renderHomeHero() {
     () => void launch(),
   );
   void renderAdminWarning();
+}
+
+// A bot mode name -> display label (e.g. "ictf" -> "iCTF").
+function pugModeLabel(mode?: string): string {
+  if (!mode) return "PUG";
+  return mode.toLowerCase() === "ictf" ? "iCTF" : mode;
+}
+
+// HOME "live PUG — watch it" banner. Tokenless spectate-to-learn: shows any
+// live PUG (from the bot's /live endpoint, polled into state.livePugs) so a
+// brand-new user can watch a game in one click BEFORE linking a token. Renders
+// nothing — and self-clears — when no PUG is live (or the endpoint isn't there
+// yet), so it never gets in the way.
+function renderHomeLivePug(): void {
+  const el = document.getElementById("home-live-pug");
+  if (!el) return;
+  const pugs = state.livePugs;
+  if (!pugs.length) {
+    el.className = "";
+    el.innerHTML = "";
+    return;
+  }
+  const p = pugs[0];
+  const map = p.map ? `<span class="live-pug-map"> · ${escape(p.map)}</span>` : "";
+  const more =
+    pugs.length > 1 ? ` <span class="live-pug-more">+${pugs.length - 1} more live</span>` : "";
+  el.className = "live-pug-banner";
+  el.innerHTML = `
+    <span class="live-dot" aria-hidden="true"></span>
+    <div class="live-pug-text">
+      <b>${escape(pugModeLabel(p.mode))} Pick Up Game (PUG) live now</b>${map}
+      <span class="live-pug-sub">Watch it to learn the mode — no sign-up needed.${more}</span>
+    </div>
+    <button id="home-spectate" type="button" class="btn live-pug-watch">▶&nbsp;&nbsp;Watch live</button>
+    <div id="home-spectate-status" class="launch-status live-pug-status"></div>`;
+  document.getElementById("home-spectate")?.addEventListener("click", () => void watchLivePug());
+}
+
+// "Watch live" on the HOME banner. Spectates immediately when there's one live
+// PUG; shows a picker when there are several. Uses the already-polled
+// state.livePugs (no token needed); spectatePug connects with ?SpectatorOnly=1.
+async function watchLivePug(): Promise<void> {
+  const status = document.getElementById("home-spectate-status");
+  const pugs = state.livePugs;
+  if (!pugs.length) {
+    if (status) status.textContent = "No live PUG right now.";
+    return;
+  }
+  if (pugs.length === 1) {
+    await spectatePug(pugs[0], status);
+    return;
+  }
+  if (status) {
+    status.innerHTML =
+      `<div>${pugs.length} live games — pick one to watch:</div>` +
+      `<div class="discord-btns">${pugs
+        .map(
+          (p, i) =>
+            `<button class="spec-pick" type="button" data-i="${i}">${escape(pugModeLabel(p.mode))}${
+              p.map ? ` · ${escape(p.map)}` : ""
+            } · #${p.pug_id}</button>`,
+        )
+        .join("")}</div>`;
+    status.querySelectorAll<HTMLButtonElement>(".spec-pick").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const p = pugs[Number(btn.dataset.i)];
+        if (p) void spectatePug(p, status);
+      });
+    });
+  }
 }
 
 // "Your stats" card — top ratings + last couple of matches from the linked
@@ -1395,6 +1469,9 @@ async function loadAll() {
     void renderGameInstall();
     void loadStatusData();
     renderCommunityLinks();
+    // Tokenless live-PUG banner: always polled (no token needed to watch).
+    void pollLivePugs();
+    startLivePolling();
     if (state.launcherToken) {
       void pollPugStatus();
       startPugPolling();
@@ -2121,6 +2198,42 @@ async function pollPugStatus() {
     // A revoked/invalid token shows up here too (the 5 s poll) — drop it so the
     // poll stops and the UI returns to the link prompt instead of erroring on.
     if (isPugTokenError(err)) handlePugTokenError();
+  }
+}
+
+// ---- tokenless live-PUG banner poll ---------------------------------------
+
+let livePollTimer: number | undefined;
+// Key of the live set currently on screen, so the poll only re-renders the
+// banner when the set actually changes (and never clobbers an open picker).
+let lastLiveKey = "";
+
+// Always-on (token-independent) poll of the bot's tokenless /live endpoint.
+function startLivePolling() {
+  if (livePollTimer !== undefined) return;
+  livePollTimer = window.setInterval(() => void pollLivePugs(), 8000);
+}
+
+// Refresh the live-PUG set for the HOME banner. Tokenless, read-only. A failure
+// (the /live endpoint not deployed yet, or a transient network blip) is
+// swallowed and leaves the banner as-is — it must never break Home.
+async function pollLivePugs(): Promise<void> {
+  let pugs: SpectatePug[];
+  try {
+    const st = JSON.parse(await invoke<string>("pug_live")) as {
+      state: string;
+      pugs?: SpectatePug[];
+    };
+    pugs = st.state === "live" ? (st.pugs ?? []) : [];
+  } catch (err) {
+    console.error("pug_live failed:", err);
+    return;
+  }
+  const key = pugs.map((p) => `${p.pug_id}:${p.server}`).join(",");
+  state.livePugs = pugs;
+  if (key !== lastLiveKey) {
+    lastLiveKey = key;
+    renderHomeLivePug();
   }
 }
 
