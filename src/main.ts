@@ -117,7 +117,7 @@ interface PlayerSummary {
 interface PlayerTrends {
   mode: string;
   has_elo: boolean;
-  accuracy: { date: string | null; sniper: number | null; lg: number | null }[];
+  accuracy: { date: string | null; sniper: number | null; lg: number | null; ig: number | null }[];
   form: { games: number; wins: number; losses: number; streak: number; results: string[] };
   rating: { date: string | null; rating: number }[];
 }
@@ -127,6 +127,7 @@ interface PlayerTrends {
 const TREND_MODES: { key: string; label: string }[] = [
   { key: "elimplus", label: "Team Arena (ElimPlus)" },
   { key: "ctf", label: "CTF" },
+  { key: "ictf", label: "iCTF" },
   { key: "blitz", label: "Blitz" },
   { key: "wipeout", label: "Wipeout" },
   { key: "duel", label: "Duel" },
@@ -137,7 +138,7 @@ const TREND_MODES: { key: string; label: string }[] = [
 const NC_MODE_TO_KEY: Record<string, string> = {
   ElimPlus: "elimplus",
   CTF: "ctf",
-  iCTF: "ctf",
+  iCTF: "ictf",
   Wipeout: "wipeout",
   Duel: "duel",
 };
@@ -1254,12 +1255,15 @@ async function renderTrends(mode: string): Promise<void> {
     return;
   }
   const acc = t.accuracy ?? [];
-  const sniperVals = acc.map((a) => a.sniper);
-  const lgVals = acc.map((a) => a.lg);
   const lastVal = (vals: (number | null)[]): number | null =>
     vals.reduce<number | null>((prev, v) => (v != null ? v : prev), null);
-  const sLast = lastVal(sniperVals);
-  const lLast = lastVal(lgVals);
+  // One accuracy row per weapon that actually has data in this mode (sniper/LG
+  // in regular modes, IG in instagib/iCTF); empty weapons are hidden.
+  const accRow = (label: string, vals: (number | null)[], color: string): string => {
+    const lv = lastVal(vals);
+    if (lv == null) return "";
+    return `<div class="trend-row"><span class="trend-label">${label}</span>${sparkline(vals, color)}<span class="trend-val">${lv}%</span></div>`;
+  };
 
   const f = t.form;
   const pips = (f?.results ?? [])
@@ -1275,16 +1279,11 @@ async function renderTrends(mode: string): Promise<void> {
         )} <span class="pips">${pips}</span></div>`
       : `<div class="src">No recent matches in this mode.</div>`;
 
-  const accBlock = acc.length
-    ? `<div class="trend-row"><span class="trend-label">Sniper</span>${sparkline(
-        sniperVals,
-        "#f5a623",
-      )}<span class="trend-val">${sLast != null ? `${sLast}%` : "—"}</span></div>
-       <div class="trend-row"><span class="trend-label">Lightning</span>${sparkline(
-         lgVals,
-         "#4f8bff",
-       )}<span class="trend-val">${lLast != null ? `${lLast}%` : "—"}</span></div>`
-    : `<div class="src">No sniper/lightning shots recorded in this mode.</div>`;
+  const accBlock =
+    accRow("Sniper", acc.map((a) => a.sniper), "#f5a623") +
+      accRow("Lightning", acc.map((a) => a.lg), "#4f8bff") +
+      accRow("IG", acc.map((a) => a.ig), "#c084fc") ||
+    `<div class="src">No sniper / lightning / instagib shots recorded in this mode.</div>`;
 
   const r = t.rating ?? [];
   const ratingBlock = t.has_elo
