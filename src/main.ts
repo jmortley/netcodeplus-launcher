@@ -246,13 +246,37 @@ function netcodeplusBadge(status: NetcodePlusStatus, root?: string): string {
   }
 }
 
+// Re-detect installs after a state change (a plugin install or a stray fix)
+// WITHOUT dropping a manually-picked install that auto-detection can't find.
+// detect_installs() only returns shortcut/probe hits, so a bare assignment would
+// clobber a manual pick at a non-standard path (e.g. D:\NoLibrary\…). Re-validate
+// any prior root that detection missed and keep it.
+async function refetchInstallsPreservingManual(): Promise<void> {
+  const prevRoots = state.installs.map((d) => d.install.root);
+  const detected = await invoke<DetectedInstall[]>("detect_installs");
+  const known = detected.slice();
+  for (const root of prevRoots) {
+    if (known.some((d) => d.install.root === root)) continue;
+    try {
+      const re = await invoke<DetectedInstall | null>("check_install", { path: root });
+      if (re) known.push(re);
+    } catch (err) {
+      console.error("re-validating an install failed:", err);
+    }
+  }
+  state.installs = known;
+  if (state.selInstall >= state.installs.length) state.selInstall = 0;
+}
+
 async function doInstallPlugin(): Promise<void> {
   const btn = document.getElementById("plugin-update-btn") as HTMLButtonElement | null;
   const status = document.getElementById("plugin-status");
   if (btn) btn.disabled = true;
   if (status) status.textContent = "Downloading and installing… this can take a moment.";
   try {
-    const outcomes = await invoke<PluginInstallOutcome[]>("install_plugin");
+    const outcomes = await invoke<PluginInstallOutcome[]>("install_plugin", {
+      roots: state.installs.map((d) => d.install.root),
+    });
     const installed = outcomes.filter((o) => o.result === "installed").length;
     const failed = outcomes.filter((o) => o.result === "failed");
     if (failed.length) {
@@ -267,14 +291,26 @@ async function doInstallPlugin(): Promise<void> {
       if (btn) btn.disabled = false;
       return;
     }
-    if (status) {
-      status.innerHTML = `<span class="ok">✓ NetcodePlus updated in ${installed} install${installed === 1 ? "" : "s"}.</span>`;
+    if (installed === 0) {
+      // Nothing was installed. Distinguish "already up to date" (benign — there
+      // were installs, all skipped) from "no UT4 install found to act on" (the
+      // real failure for a non-standard install not picked in Settings).
+      if (status) {
+        status.innerHTML = outcomes.length
+          ? `<span class="ok">✓ NetcodePlus is already up to date.</span>`
+          : `<span class="warn">No UT4 install was found to set up. Pick your install folder in the Settings tab, then try again.</span>`;
+      }
+      if (btn) btn.disabled = false;
+      return;
     }
-    // Success — re-detect so the install badges reflect the new state, then
-    // refresh the status card: loadStatusData re-fetches plugin_status and
-    // re-renders #dash-status, so its "update available" line flips to
-    // "up to date" once the install lands.
-    state.installs = await invoke<DetectedInstall[]>("detect_installs");
+    if (status) {
+      status.innerHTML = `<span class="ok">✓ NetcodePlus installed in ${installed} install${installed === 1 ? "" : "s"}.</span>`;
+    }
+    // Success — re-detect so the install badges reflect the new state (preserving
+    // a manually-picked install auto-detection can't find), then refresh the
+    // status card: loadStatusData re-fetches plugin_status and re-renders
+    // #dash-status, so its "install"/"update" line flips to "up to date".
+    await refetchInstallsPreservingManual();
     renderHomeHero();
     renderAdvanced();
     void loadStatusData();
@@ -345,8 +381,8 @@ async function fixStray(root: string, stray: StrayReport, btn: HTMLButtonElement
     await invoke("remove_stray_plugin", { root, kind: stray.kind, path: stray.path });
     if (statusEl) statusEl.innerHTML = `<span class="ok">✓ removed</span>`;
     // Re-detect + re-render so the badge, status card, and stray list all
-    // reflect the fixed state.
-    state.installs = await invoke<DetectedInstall[]>("detect_installs");
+    // reflect the fixed state (preserving a manually-picked install).
+    await refetchInstallsPreservingManual();
     renderHome();
     renderAdvanced();
     void loadStatusData();
@@ -395,7 +431,9 @@ const statusCache: {
 // one failing doesn't block the others (the card just omits that line).
 async function loadStatusData(): Promise<void> {
   try {
-    statusCache.plugin = await invoke<PluginStatusResult>("plugin_status");
+    statusCache.plugin = await invoke<PluginStatusResult>("plugin_status", {
+      roots: state.installs.map((d) => d.install.root),
+    });
   } catch (err) {
     console.error("plugin_status failed:", err);
   }
@@ -643,14 +681,25 @@ async function renderDashStatus(): Promise<void> {
   const p = statusCache.plugin;
   if (p && p.plugin_offered) {
     const ver = p.available_version != null ? ` (build ${p.available_version})` : "";
-    if (p.any_update_needed) {
-      pluginUpdate = true;
-      const n = p.installs.filter((i) => i.action === "install" || i.action === "update").length;
+    if (p.installs.length === 0) {
+      // No known UT4 install to check against — never claim "up to date" when
+      // nothing is installed (e.g. the game is at a non-standard path that
+      // auto-detection can't find and hasn't been picked in Settings yet).
       lines.push(
-        `<div class="statline"><span class="warn">↑</span><span>NetcodePlus update available${escape(
-          ver,
-        )} — ${n} install${n === 1 ? "" : "s"}.</span></div>
-        <button id="plugin-update-btn" type="button" class="btn btn-sm">Update NetcodePlus</button>
+        `<div class="statline"><span class="muted">○</span><span>No UT4 install detected — pick your folder in <button class="card-link" data-nav-to="settings" type="button">Settings</button> to set up NetcodePlus.</span></div>`,
+      );
+    } else if (p.any_update_needed) {
+      pluginUpdate = true;
+      const needInstall = p.installs.filter((i) => i.action === "install").length;
+      const needUpdate = p.installs.filter((i) => i.action === "update").length;
+      const n = needInstall + needUpdate;
+      const freshInstall = needUpdate === 0;
+      const msg = freshInstall
+        ? `NetcodePlus is not installed${ver} — install it in ${n} UT4 install${n === 1 ? "" : "s"}.`
+        : `NetcodePlus update available${ver} — ${n} install${n === 1 ? "" : "s"}.`;
+      lines.push(
+        `<div class="statline"><span class="warn">↑</span><span>${escape(msg)}</span></div>
+        <button id="plugin-update-btn" type="button" class="btn btn-sm">${freshInstall ? "Install NetcodePlus" : "Update NetcodePlus"}</button>
         <div id="plugin-status" class="launch-status"></div>`,
       );
     } else {
@@ -1510,6 +1559,10 @@ async function pickDir() {
     state.profileLabel = null;
     render();
     persist();
+    // Refresh the manifest-backed status card against the newly-picked install so
+    // the HOME "NetcodePlus & updates" line matches the hero/Settings immediately
+    // (it reads cached statusCache, populated at startup before this pick).
+    void loadStatusData();
   } catch (err) {
     advancedPanel.innerHTML = `<div class="warn">Validation failed: ${escape(String(err))}</div>`;
     console.error("check_install failed:", err);
@@ -1926,7 +1979,7 @@ function prettyMode(gamemode: string): string {
 }
 
 let serverCache: GameServerEntry[] = [];
-let serversShowEmpty = true;
+let serversShowEmpty = false;
 let serversFetching = false;
 // Two-pane browser view state (local; survives re-render, reset only by refetch).
 let serversMode: "hubs" | "servers" = "hubs";

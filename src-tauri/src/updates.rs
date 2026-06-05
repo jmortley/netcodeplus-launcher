@@ -312,6 +312,37 @@ fn plugin_action_str(a: &ncp_planner::PluginAction) -> &'static str {
     }
 }
 
+/// Resolve the install roots to act on. When the webview supplies its known
+/// install roots (`state.installs`, which includes a manually-picked install
+/// that auto-detection can't find), validate each through `check_install` — so
+/// we only ever act on a real UT4 tree, never an arbitrary path — and
+/// de-duplicate on the canonical root. With no roots (older frontend / empty
+/// list), fall back to auto-detection, preserving the original behaviour.
+fn resolve_roots(roots: Option<Vec<String>>) -> Vec<std::path::PathBuf> {
+    match roots {
+        Some(rs) if !rs.is_empty() => {
+            let Some(mod_paks_dir) = ncp_host::default_mod_paks_dir() else {
+                return Vec::new();
+            };
+            let mut out: Vec<std::path::PathBuf> = Vec::new();
+            for r in rs {
+                if let Some(install) =
+                    ncp_host::check_install(std::path::Path::new(&r), mod_paks_dir.clone())
+                {
+                    if !out.contains(&install.root) {
+                        out.push(install.root);
+                    }
+                }
+            }
+            out
+        }
+        _ => ncp_host::detect_installs()
+            .into_iter()
+            .map(|d| d.install.root)
+            .collect(),
+    }
+}
+
 /// Decide the plugin action for one install against the verified channel,
 /// without doing any I/O beyond the on-disk folder check.
 fn decide_for_install(
@@ -334,16 +365,18 @@ fn decide_for_install(
 /// re-verifying the manifest and diffing each install's recorded/​on-disk state
 /// against the channel's plugin entry. Read-only (no download, no write).
 #[tauri::command]
-pub async fn plugin_status(app: AppHandle) -> Result<PluginStatusResult, String> {
+pub async fn plugin_status(
+    app: AppHandle,
+    roots: Option<Vec<String>>,
+) -> Result<PluginStatusResult, String> {
     let (manifest, state, _, _) = fetch_verify(&app).await?;
     let channel = manifest.channels.get(&state.channel);
     let entry = channel.and_then(|c| c.plugin.as_ref());
     let available_version = entry.map(|e| e.version);
 
-    let installs: Vec<PluginInstallStatus> = ncp_host::detect_installs()
+    let installs: Vec<PluginInstallStatus> = resolve_roots(roots)
         .into_iter()
-        .map(|d| {
-            let root = d.install.root;
+        .map(|root| {
             let action = decide_for_install(channel, &root, &state);
             let installed_version = state
                 .installed_plugins
@@ -392,7 +425,10 @@ pub struct PluginInstallOutcome {
 /// records the per-root install state. Up-to-date / downgrade-blocked / no-op
 /// installs are skipped. A failure on one install does not abort the others.
 #[tauri::command]
-pub async fn install_plugin(app: AppHandle) -> Result<Vec<PluginInstallOutcome>, String> {
+pub async fn install_plugin(
+    app: AppHandle,
+    roots: Option<Vec<String>>,
+) -> Result<Vec<PluginInstallOutcome>, String> {
     use ncp_planner::PluginAction;
 
     let (manifest, mut state, manifest_json, manifest_sig) = fetch_verify(&app).await?;
@@ -414,8 +450,7 @@ pub async fn install_plugin(app: AppHandle) -> Result<Vec<PluginInstallOutcome>,
     // batched into ONE elevated pass after the user-writable installs.
     let mut needs_elevation: Vec<std::path::PathBuf> = Vec::new();
 
-    for d in ncp_host::detect_installs() {
-        let root = d.install.root;
+    for root in resolve_roots(roots) {
         let root_key = root.to_string_lossy().to_string();
         let action = decide_for_install(channel, &root, &state);
 
