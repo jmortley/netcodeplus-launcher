@@ -1767,50 +1767,6 @@ function matchPlayerIds(server: string): string[] {
   return [...(e?.publicPlayers ?? []), ...(e?.privatePlayers ?? [])];
 }
 
-// Caret handler: toggle a match's roster in its row-status slot. Names need the
-// signed-in user's session (the account endpoint is auth-gated), so signed-out
-// users get a prompt to sign in instead.
-async function toggleRoster(server: string, slot: HTMLElement | null) {
-  if (!slot) return;
-  if (slot.dataset.roster === "1") {
-    slot.dataset.roster = "";
-    slot.innerHTML = "";
-    return;
-  }
-  slot.dataset.roster = "1";
-  const ids = matchPlayerIds(server);
-  if (!ids.length) {
-    slot.innerHTML = `<span class="src">No players to list.</span>`;
-    return;
-  }
-  if (!state.ut4?.logged_in) {
-    slot.innerHTML = `<span class="src">Sign in on the Home tab to see who's playing.</span>`;
-    return;
-  }
-  slot.innerHTML = `<span class="src">Loading players…</span>`;
-  const missing = ids.filter((id) => !playerNames.has(id));
-  if (missing.length) {
-    try {
-      const resolved = await invoke<{ id: string; name: string }[]>("resolve_player_names", {
-        ids: missing,
-      });
-      for (const r of resolved) playerNames.set(r.id, r.name);
-    } catch (err) {
-      const msg = String(err);
-      slot.innerHTML = msg.includes("RELOGIN_REQUIRED")
-        ? `<span class="src">Your session expired — sign in again on the Home tab.</span>`
-        : `<span class="warn">Couldn't load players: ${escape(msg)}</span>`;
-      return;
-    }
-  }
-  // Toggled closed while the lookup was in flight — don't clobber.
-  if (slot.dataset.roster !== "1") return;
-  const names = ids.map((id) => playerNames.get(id) || id.slice(0, 8));
-  slot.innerHTML = `<div class="roster">${names
-    .map((n) => `<span class="roster-name">${escape(n)}</span>`)
-    .join("")}</div>`;
-}
-
 interface SpectatePug {
   pug_id: number;
   server: string;
@@ -1886,10 +1842,21 @@ interface ServerAttrs {
   UT_HUBGUID_s?: string;
   // Bitmask; bit 0x1 set = password-protected (the in-game browser's lock icon).
   UT_SERVERFLAGS_i?: number;
+  // Per-instance GUID; the key into a hub's UU_CUSTOMMATCHNAMES_s title list.
+  UT_SERVERINSTANCEGUID_s?: string;
+  // On a HUB: newline-joined "<instanceGUID>:<host match title>" for its matches.
+  UU_CUSTOMMATCHNAMES_s?: string;
+  // Comma-separated forced-mutator list (e.g. "AntiCheatV3,MutStatSQL").
+  UU_FORCEDMUTATORS_s?: string;
+  // Match clock, seconds (populated while InProgress; 0 = none / round-based).
+  UT_MATCHELAPSEDTIME_i?: number;
+  UT_MATCHDURATION_i?: number;
 }
 
 interface GameServerEntry {
   serverName?: string;
+  // Display name of the session owner (host); a match-title fallback.
+  ownerName?: string;
   serverAddress?: string;
   serverPort?: number;
   totalPlayers?: number;
@@ -1912,22 +1879,6 @@ function isLobby(s: GameServerEntry): boolean {
   );
 }
 
-// Friendly label for the UT4 match state; unknown/blank states show nothing.
-function matchState(s: string | undefined): string {
-  switch (s) {
-    case "InProgress":
-      return "in progress";
-    case "WaitingToStart":
-    case "CountdownToBegin":
-      return "warming up";
-    case "WaitingPostMatch":
-    case "MatchEnteringOvertime":
-      return "ending";
-    default:
-      return "";
-  }
-}
-
 // Turn a gamemode class path into something human ("…UTLobbyGameMode" → "Hub",
 // "…NCP-IGCTF_C" → "IGCTF", "…UTCTFGameMode" → "CTF").
 function prettyMode(gamemode: string): string {
@@ -1943,24 +1894,19 @@ function prettyMode(gamemode: string): string {
   );
 }
 
-function trustLabel(level: number | undefined): string {
-  switch (level) {
-    case 0:
-      return `<span class="ok" title="Epic-trusted">Epic</span>`;
-    case 1:
-      return `<span class="src" title="Trusted">Trusted</span>`;
-    default:
-      return `<span class="warn" title="Community / untrusted">Custom</span>`;
-  }
-}
-
 let serverCache: GameServerEntry[] = [];
-let serversShowEmpty = false;
+let serversShowEmpty = true;
 let serversFetching = false;
+// Two-pane browser view state (local; survives re-render, reset only by refetch).
+let serversMode: "hubs" | "servers" = "hubs";
+let selectedHubId: string | null = null;
+let selectedMatchId: string | null = null;
+let serversSearch = "";
 
 async function renderServers() {
   if (serversFetching) return;
   serversFetching = true;
+  serversPanel.classList.remove("srv-host");
   serversPanel.innerHTML = `<p>Loading the server list…</p>`;
   try {
     serverCache = JSON.parse(await invoke<string>("list_servers")) as GameServerEntry[];
@@ -1984,17 +1930,202 @@ function srvHasAddr(s: GameServerEntry): boolean {
   return !!s.serverAddress && s.serverAddress !== "0.0.0.0" && !!s.serverPort;
 }
 
-// Render from the cached list, so the "show empty" toggle re-filters without a
-// re-fetch. Groups every live match under its parent hub — like the Hubs tab on
-// ut4.timiimit.com. A match links to its hub by shared IP first (the reliable
-// signal — UT_HUBGUID_s on an instance rarely equals its hub's advertised GUID),
-// then by UT_HUBGUID_s as a fallback; matches that resolve to no listed hub fall
-// into a standalone "Other matches" group.
-function renderServerList() {
+// Render the two-pane master/detail server browser from the cached list, so the
+// toggle / search / "show empty" controls re-filter without a re-fetch. Hubs go
+// in the left (master) pane; the selected hub's live matches (instances) go in
+// the right (detail) pane. Instances link to their hub by shared IP first (the
+// reliable signal — UT_HUBGUID_s on an instance rarely equals its hub's
+// advertised GUID), then by UT_HUBGUID_s as a fallback.
+
+// Friendly gamemode name for a match card ("…UTDMGameMode" → "Deathmatch"),
+// falling back to the terse prettyMode() for anything unmapped. iCTF is split
+// out from CTF by sniffing the forced-mutator list for instagib.
+function friendlyMode(gamemode: string, mutators: string): string {
+  const seg = (gamemode || "").split(/[./]/).pop() ?? "";
+  const ig = /instagib/i.test(mutators || "");
+  if (/NCP-?IGCTF/i.test(seg)) return "Instagib CTF";
+  if (/UTDMGameMode/i.test(seg)) return "Deathmatch";
+  if (/Elimination_113/i.test(seg)) return "Elimination";
+  if (/ElimPlus/i.test(seg)) return "Elim+";
+  if (/WipeoutPlus/i.test(seg)) return "Wipeout";
+  if (/UTCTFGameMode/i.test(seg)) return ig ? "Instagib CTF" : "CTF";
+  if (/UTFlagRunGame/i.test(seg)) return "Blitz";
+  if (/UTDuelGame/i.test(seg)) return "Duel";
+  if (/UTTeamGameMode/i.test(seg)) return "Team DM";
+  return prettyMode(gamemode);
+}
+
+// Title-case match state for a card ("WaitingToStart" → "Waiting to Start").
+function matchStateLabel(s: string | undefined): string {
+  switch (s) {
+    case "InProgress":
+      return "In Progress";
+    case "WaitingToStart":
+      return "Waiting to Start";
+    case "CountdownToBegin":
+      return "Starting…";
+    case "WaitingPostMatch":
+    case "MatchEnteringOvertime":
+      return "Ending";
+    default:
+      return "";
+  }
+}
+
+function secondsToClock(n: number): string {
+  const t = Math.max(0, Math.floor(n));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, "0")}`;
+}
+
+// Match clock string, or null when there's nothing meaningful to show. Timed
+// modes show elapsed / limit; round-based modes (duration 0) show elapsed only —
+// which is why the Elimination card reads "4:32" with no "/ limit".
+function matchClock(a: ServerAttrs | undefined): string | null {
+  if (!a) return null;
+  const st = a.UT_MATCHSTATE_s;
+  const el = Number(a.UT_MATCHELAPSEDTIME_i ?? 0) || 0;
+  const dur = Number(a.UT_MATCHDURATION_i ?? 0) || 0;
+  if (st === "WaitingToStart" || st === "CountdownToBegin") {
+    return dur > 0 ? `0:00 / ${secondsToClock(dur)}` : "0:00";
+  }
+  if (dur > 0) return `${secondsToClock(el)} / ${secondsToClock(dur)}`;
+  if (el > 0) return secondsToClock(el);
+  return null;
+}
+
+// Build a global instanceGUID -> host match title map from every hub's
+// UU_CUSTOMMATCHNAMES_s ("<instanceGUID>:<host title>" entries, newline-joined).
+// Instance GUIDs are globally unique, so one map serves both panes.
+function customNameMap(hubs: GameServerEntry[]): Map<string, string> {
+  const m = new Map<string, string>();
+  for (const h of hubs) {
+    const raw = h.attributes?.UU_CUSTOMMATCHNAMES_s;
+    if (!raw) continue;
+    for (const line of raw.split(/\r?\n/)) {
+      const i = line.indexOf(":");
+      if (i > 0) m.set(line.slice(0, i).toUpperCase(), line.slice(i + 1));
+    }
+  }
+  return m;
+}
+
+// A match's display title: the host's custom name (keyed by instance GUID), else
+// "<owner>'s match", else "" (the card then promotes "<Mode> in <Map>").
+function matchTitle(inst: GameServerEntry, names: Map<string, string>): string {
+  const guid = String(inst.attributes?.UT_SERVERINSTANCEGUID_s ?? "").toUpperCase();
+  const custom = guid ? names.get(guid) : undefined;
+  if (custom && custom.trim()) return custom.trim();
+  if (inst.ownerName && inst.ownerName.trim()) return `${inst.ownerName.trim()}'s match`;
+  return "";
+}
+
+// Small inline icons (static markup — no user data, no escaping needed).
+const SRV_ICON = {
+  person: `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><circle cx="8" cy="4.3" r="3"/><path d="M2 14.5C2 11.4 4.7 9.3 8 9.3s6 2.1 6 5.2v.5H2z"/></svg>`,
+  pad: `<svg viewBox="0 0 24 24" width="16" height="16" fill="currentColor" aria-hidden="true"><path d="M7 8h10a4 4 0 0 1 4 4v1.6A3.4 3.4 0 0 1 14.7 15L14 14.2h-4l-.7.8A3.4 3.4 0 0 1 3 13.6V12a4 4 0 0 1 4-4Zm-.3 2.6v1.1H5.6v1.1h1.1v1.1h1.1v-1.1h1.1v-1.1H7.8v-1.1H6.7Zm9 .1a.85.85 0 1 0 0 1.7.85.85 0 0 0 0-1.7Zm1.6 1.6a.85.85 0 1 0 0 1.7.85.85 0 0 0 0-1.7Z"/></svg>`,
+  clock: `<svg viewBox="0 0 16 16" width="13" height="13" fill="none" stroke="currentColor" stroke-width="1.4" aria-hidden="true"><circle cx="8" cy="8" r="6"/><path d="M8 4.6V8l2.4 1.5" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  lock: `<svg viewBox="0 0 16 16" width="13" height="13" fill="currentColor" aria-hidden="true"><path d="M4.6 7V5a3.4 3.4 0 0 1 6.8 0v2H12a1 1 0 0 1 1 1v4.8a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V8a1 1 0 0 1 1-1h.6Zm1.4 0h4V5a2 2 0 1 0-4 0v2Z"/></svg>`,
+  search: `<svg viewBox="0 0 16 16" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><circle cx="7" cy="7" r="4.4"/><path d="M10.4 10.4 14 14" stroke-linecap="round"/></svg>`,
+  refresh: `<svg viewBox="0 0 16 16" width="15" height="15" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M13.4 8a5.4 5.4 0 1 1-1.55-3.8" stroke-linecap="round"/><path d="M13.9 2.4v2.7h-2.7" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+  arrow: `<svg viewBox="0 0 100 100" width="118" height="118" fill="none" stroke="currentColor" stroke-width="5" aria-hidden="true"><path d="M14 50h64M78 50 54 27M78 50 54 73" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+};
+
+// ---- hover popovers (mutators / players) ----------------------------------
+// Webviews have no rich native tooltips, so these are custom positioned divs:
+// ~1.5s delay for a card's mutators, ~0.5s for a player roster.
+let srvPopEl: HTMLDivElement | null = null;
+let srvPopTimer: number | undefined;
+
+function srvPopover(): HTMLDivElement {
+  if (!srvPopEl) {
+    srvPopEl = document.createElement("div");
+    srvPopEl.className = "srv-popover";
+    srvPopEl.style.display = "none";
+    document.body.appendChild(srvPopEl);
+  }
+  return srvPopEl;
+}
+
+function hideSrvPopover(): void {
+  if (srvPopTimer !== undefined) {
+    clearTimeout(srvPopTimer);
+    srvPopTimer = undefined;
+  }
+  if (srvPopEl) {
+    srvPopEl.style.display = "none";
+    srvPopEl.dataset.for = "";
+  }
+}
+
+// Place the popover just under its anchor, clamped to the window bounds.
+function placeSrvPopover(el: HTMLElement, anchor: HTMLElement): void {
+  const r = anchor.getBoundingClientRect();
+  el.style.display = "block";
+  const pr = el.getBoundingClientRect();
+  let top = r.bottom + 6;
+  let left = r.left;
+  if (top + pr.height > window.innerHeight - 8) top = r.top - pr.height - 6;
+  if (left + pr.width > window.innerWidth - 8) left = window.innerWidth - pr.width - 8;
+  el.style.top = `${Math.max(8, top)}px`;
+  el.style.left = `${Math.max(8, left)}px`;
+}
+
+function openMutatorPopover(anchor: HTMLElement, mutators: string): void {
+  const list = mutators
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean);
+  if (!list.length) return;
+  const el = srvPopover();
+  el.dataset.for = "mutators";
+  el.innerHTML =
+    `<div class="srv-pop-title">Mutators</div>` +
+    list.map((m) => `<div class="srv-pop-row">${escape(m)}</div>`).join("");
+  placeSrvPopover(el, anchor);
+}
+
+async function openPlayersPopover(anchor: HTMLElement, server: string): Promise<void> {
+  const el = srvPopover();
+  el.dataset.for = server;
+  const ids = matchPlayerIds(server);
+  const head = `<div class="srv-pop-title">Players</div>`;
+  if (!ids.length) {
+    el.innerHTML = head + `<div class="srv-pop-row src">No players.</div>`;
+    placeSrvPopover(el, anchor);
+    return;
+  }
+  if (!state.ut4?.logged_in) {
+    el.innerHTML = head + `<div class="srv-pop-row src">Sign in to see players.</div>`;
+    placeSrvPopover(el, anchor);
+    return;
+  }
+  el.innerHTML = head + `<div class="srv-pop-row src">Loading…</div>`;
+  placeSrvPopover(el, anchor);
+  const missing = ids.filter((id) => !playerNames.has(id));
+  if (missing.length) {
+    try {
+      const resolved = await invoke<{ id: string; name: string }[]>("resolve_player_names", {
+        ids: missing,
+      });
+      for (const r of resolved) playerNames.set(r.id, r.name);
+    } catch {
+      /* leave the unresolved ids as short hashes */
+    }
+  }
+  // Moved on / hidden while resolving — don't clobber a newer popover.
+  if (el.dataset.for !== server || el.style.display === "none") return;
+  const names = ids.map((id) => playerNames.get(id) || id.slice(0, 8));
+  el.innerHTML = head + names.map((n) => `<div class="srv-pop-row">${escape(n)}</div>`).join("");
+  placeSrvPopover(el, anchor);
+}
+
+// ---- the two-pane browser -------------------------------------------------
+function renderServerList(): void {
+  hideSrvPopover();
   const hubs = serverCache.filter((s) => isLobby(s) && srvHasAddr(s));
   const instances = serverCache.filter((s) => !isLobby(s) && srvHasAddr(s));
 
-  // Index hubs for instance->hub resolution: by IP (primary) and GUID (fallback).
+  // Index hubs for instance->hub resolution: by IP (primary), GUID (fallback).
   const hubByIp = new Map<string, GameServerEntry>();
   const hubByGuid = new Map<string, GameServerEntry>();
   for (const h of hubs) {
@@ -2021,150 +2152,267 @@ function renderServerList() {
     }
   }
 
-  // Per-row connect status lands in a slot keyed by the row's server address, so
-  // the "Launched — connecting…" / error message appears right under the row the
-  // user clicked instead of in one shared box at the bottom of the panel. The
-  // slot is empty (no reserved height) until a click fills it.
-  const statusId = (server: string): string => `srv-status-${server.replace(/[^a-zA-Z0-9]/g, "-")}`;
+  const names = customNameMap(hubs);
+  const q = serversSearch.trim().toLowerCase();
+  const hubId = (h: GameServerEntry): string => `${h.serverAddress}:${h.serverPort}`;
+  const matchId = (s: GameServerEntry): string => `${s.serverAddress}:${s.serverPort}`;
 
-  // A nested live-match row (mode · map · players · state) with connect actions
-  // and its own status slot directly beneath.
-  const matchRow = (s: GameServerEntry): string => {
-    const server = `${s.serverAddress}:${s.serverPort}`;
-    const p = srvPlayers(s);
-    const max = Number(s.attributes?.UT_MAXPLAYERS_i ?? s.maxPublicPlayers ?? 0);
-    const mode = prettyMode(String(s.attributes?.GAMEMODE_s ?? ""));
-    const map = String(s.attributes?.MAPNAME_s ?? "");
-    const st = matchState(s.attributes?.UT_MATCHSTATE_s);
-    const locked = ((s.attributes?.UT_SERVERFLAGS_i ?? 0) & 1) !== 0;
-    const sub =
-      `${escape(mode || "match")}${map ? ` · ${escape(map)}` : ""} · ${p}/${max} players` +
-      (st ? ` · ${st}` : "") +
-      (locked ? ` · <span title="Password protected">🔒</span>` : "");
-    const lockAttr = locked ? ` data-locked="1"` : "";
-    const rosterBtn =
-      p > 0
-        ? `<button class="server-roster" type="button" data-server="${escape(server)}" title="Show players">▾</button>`
-        : "";
-    return `<div style="padding:0 2px 0 16px;border-bottom:1px solid var(--row-sep)">
-        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:7px 0">
-          <div class="src" style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${sub}</div>
-          <span style="flex:none;display:flex;gap:6px;align-items:center">
-            ${rosterBtn}
-            <button class="server-spectate" type="button" data-server="${escape(server)}"${lockAttr}>Spectate</button>
-            <button class="server-join" type="button" data-server="${escape(server)}"${lockAttr}>Join</button>
-          </span>
-        </div>
-        <div id="${statusId(server)}" class="row-status"></div>
-      </div>`;
-  };
-
-  // A hub block: header (name, trust, live-match count, lobby occupancy) plus its
-  // nested matches. The header's Join button enters the hub lobby itself, with a
-  // status slot right under the header.
-  const hubBlock = (h: GameServerEntry): string => {
-    const kids = (childrenOf.get(h) ?? [])
-      .filter((s) => serversShowEmpty || srvPlayers(s) > 0)
-      .sort((a, b) => srvPlayers(b) - srvPlayers(a));
-    const name = String(h.attributes?.UT_SERVERNAME_s || h.serverName || "Hub");
-    const server = `${h.serverAddress}:${h.serverPort}`;
-    const lobby = srvPlayers(h);
-    const live = kids.length;
-    const header = `<div style="display:flex;justify-content:space-between;align-items:center;gap:12px;padding:9px 2px;border-bottom:1px solid var(--hub-sep)">
-        <div style="min-width:0">
-          <div style="font-weight:600;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><span class="ok" style="font-size:0.78em;border:1px solid currentColor;border-radius:3px;padding:0 4px;margin-right:6px">HUB</span>${escape(name)} &nbsp;${trustLabel(h.attributes?.UT_SERVERTRUSTLEVEL_i)}</div>
-          <div class="src">${live} live match${live === 1 ? "" : "es"} · ${lobby} in lobby</div>
-        </div>
-        <span style="flex:none"><button class="server-join" type="button" data-server="${escape(server)}">Join hub</button></span>
-      </div>
-      <div id="${statusId(server)}" class="row-status"></div>`;
-    const body = kids.length
-      ? kids.map(matchRow).join("")
-      : `<div class="src" style="padding:7px 2px 7px 16px">No live matches right now.</div>`;
-    return `<div style="margin-bottom:6px">${header}${body}</div>`;
-  };
-
-  // Show a hub if it has live matches, lobby players, or the toggle is on.
+  // Visible hubs: populated (or show-empty), then name-search, busiest first.
+  const hubActivity = (h: GameServerEntry): number =>
+    (childrenOf.get(h) ?? []).reduce((n, s) => n + srvPlayers(s), 0) + srvPlayers(h);
   const visibleHubs = hubs
     .filter((h) => {
       const kids = childrenOf.get(h) ?? [];
       return serversShowEmpty || srvPlayers(h) > 0 || kids.some((s) => srvPlayers(s) > 0);
     })
-    .sort((a, b) => {
-      const act = (h: GameServerEntry) =>
-        (childrenOf.get(h) ?? []).reduce((n, s) => n + srvPlayers(s), 0) + srvPlayers(h);
-      return act(b) - act(a);
-    });
+    .filter(
+      (h) => !q || String(h.attributes?.UT_SERVERNAME_s || h.serverName || "").toLowerCase().includes(q),
+    )
+    .sort((a, b) => hubActivity(b) - hubActivity(a));
 
-  const visibleStandalone = standalone
-    .filter((s) => serversShowEmpty || srvPlayers(s) > 0)
+  // Resolve the selected hub (keep selection across re-renders if it persists).
+  let selectedHub = visibleHubs.find((h) => hubId(h) === selectedHubId) ?? null;
+  if (!selectedHub && visibleHubs.length) selectedHub = visibleHubs[0];
+  selectedHubId = selectedHub ? hubId(selectedHub) : null;
+
+  // Detail-pane matches: selected hub's matches (HUBS mode) or all matches
+  // (SERVERS mode), filtered by show-empty + search, busiest first.
+  const cardMatch = (s: GameServerEntry): boolean => {
+    if (!serversShowEmpty && srvPlayers(s) <= 0) return false;
+    if (!q) return true;
+    const a = s.attributes;
+    const hay =
+      `${matchTitle(s, names)} ${friendlyMode(String(a?.GAMEMODE_s ?? ""), String(a?.UU_FORCEDMUTATORS_s ?? ""))} ${a?.MAPNAME_s ?? ""}`.toLowerCase();
+    return hay.includes(q);
+  };
+  const detailMatches = (
+    serversMode === "servers" ? [...instances] : selectedHub ? (childrenOf.get(selectedHub) ?? []) : []
+  )
+    .filter(cardMatch)
     .sort((a, b) => srvPlayers(b) - srvPlayers(a));
 
-  const liveMatchCount =
-    visibleHubs.reduce(
-      (n, h) => n + (childrenOf.get(h) ?? []).filter((s) => srvPlayers(s) > 0).length,
-      0,
-    ) + visibleStandalone.filter((s) => srvPlayers(s) > 0).length;
-
-  const sections: string[] = visibleHubs.map(hubBlock);
-  if (visibleStandalone.length) {
-    sections.push(
-      `<div style="margin-bottom:6px"><div class="src" style="padding:9px 2px;border-bottom:1px solid var(--hub-sep);font-weight:600">Other matches</div>${visibleStandalone
-        .map(matchRow)
-        .join("")}</div>`,
-    );
+  // Default the selected card to the first one shown.
+  if (!detailMatches.some((s) => matchId(s) === selectedMatchId)) {
+    selectedMatchId = detailMatches.length ? matchId(detailMatches[0]) : null;
   }
-  const body = sections.join("");
 
-  const hint = state.ut4?.logged_in
-    ? ""
-    : ` · <span class="warn">sign in on the Home tab to join</span>`;
+  // ---- markup ----
+  const hubRow = (h: GameServerEntry): string => {
+    const id = hubId(h);
+    const name = String(h.attributes?.UT_SERVERNAME_s || h.serverName || "Hub").trim();
+    const trust = h.attributes?.UT_SERVERTRUSTLEVEL_i;
+    const badge =
+      trust === 0 || trust === 1
+        ? `<span class="srv-badge" title="${trust === 0 ? "Epic-trusted" : "Trusted"} hub">XP</span>`
+        : "";
+    const live = (childrenOf.get(h) ?? []).length;
+    const players = hubActivity(h);
+    return `<div class="srv-hub${id === selectedHubId ? " sel" : ""}" data-hub="${escape(id)}">
+        <div class="srv-hub-name">${badge}${escape(name)}</div>
+        <div class="srv-hub-stats">
+          <span class="srv-stat" title="live matches">${SRV_ICON.pad}${live}</span>
+          <span class="srv-stat" title="players">${SRV_ICON.person}${players}</span>
+        </div>
+      </div>`;
+  };
+
+  const card = (s: GameServerEntry): string => {
+    const id = matchId(s);
+    const a = s.attributes;
+    const muts = String(a?.UU_FORCEDMUTATORS_s ?? "");
+    const p = srvPlayers(s);
+    const max = Number(a?.UT_MAXPLAYERS_i ?? s.maxPublicPlayers ?? 0);
+    const full = max > 0 && p >= max;
+    const locked = ((a?.UT_SERVERFLAGS_i ?? 0) & 1) !== 0;
+    const mode = friendlyMode(String(a?.GAMEMODE_s ?? ""), muts);
+    const map = String(a?.MAPNAME_s ?? "");
+    const sub = map ? `${mode} in ${map}` : mode;
+    const title = matchTitle(s, names);
+    const showSub = title !== "";
+    const line1 = escape(title || sub);
+    let stateText = matchStateLabel(a?.UT_MATCHSTATE_s);
+    if (locked && stateText) stateText += " -- private";
+    const clock = matchClock(a);
+    const countIcon = locked ? SRV_ICON.lock : SRV_ICON.person;
+    return `<div class="srv-card${id === selectedMatchId ? " sel" : ""}" data-match="${escape(id)}"${
+      locked ? ` data-locked="1"` : ""
+    } data-muts="${escape(muts)}">
+        <div class="srv-card-main">
+          <div class="srv-card-title">${line1}</div>
+          ${showSub ? `<div class="srv-card-sub">${escape(sub)}</div>` : ""}
+          ${stateText ? `<div class="srv-card-state">${escape(stateText)}</div>` : ""}
+        </div>
+        <div class="srv-card-side">
+          <span class="srv-count ${full ? "srv-count-full" : "srv-count-open"}" data-server="${escape(id)}">${countIcon}${p} / ${max || "?"}</span>
+          ${clock ? `<span class="srv-clock">${SRV_ICON.clock}${escape(clock)}</span>` : ""}
+        </div>
+      </div>`;
+  };
+
+  const totalHubs = hubs.length;
+  const totalMatches = instances.length;
+
+  const masterBody =
+    serversMode === "servers"
+      ? `<div class="srv-empty-arrow">${SRV_ICON.arrow}<div class="src">Matches are listed on the right →</div></div>`
+      : `<div class="srv-list">${
+          visibleHubs.length
+            ? visibleHubs.map(hubRow).join("")
+            : `<p class="src" style="padding:10px 12px">No hubs ${serversShowEmpty ? "online" : "with players"} right now.</p>`
+        }</div>`;
+
+  const detailBody = `<div class="srv-list"><div class="srv-cards">${
+    detailMatches.length
+      ? detailMatches.map(card).join("")
+      : `<p class="src" style="padding:12px 14px">${
+          serversMode === "servers" ? "No matches" : selectedHub ? "No live matches in this hub" : "Select a hub"
+        } right now.</p>`
+  }</div></div>`;
+
+  const signedOut = state.ut4?.logged_in ? "" : `<span class="warn">sign in on the Home tab to join</span>`;
+
+  serversPanel.classList.add("srv-host");
   serversPanel.innerHTML = `
-    <div class="controls" style="justify-content:space-between;align-items:center">
-      <span>${visibleHubs.length} hub${visibleHubs.length === 1 ? "" : "s"} · ${liveMatchCount} live match${liveMatchCount === 1 ? "" : "es"}${hint}</span>
-      <span style="display:flex;align-items:center;gap:12px">
-        <label style="font-weight:normal;display:flex;align-items:center;gap:5px"><input type="checkbox" id="servers-empty"${serversShowEmpty ? " checked" : ""}/> show empty</label>
-        <button id="servers-refresh" type="button">Refresh</button>
-      </span>
-    </div>
-    <div style="max-height:60vh;overflow:auto">${
-      body || `<p>No ${serversShowEmpty ? "servers online" : "live matches or populated hubs"} right now.</p>`
-    }</div>`;
+    <div class="srv-browser">
+      <div class="srv-header">
+        <div class="srv-toggle">
+          <button type="button" data-mode="hubs" class="${serversMode === "hubs" ? "on" : ""}">HUBS (${visibleHubs.length}/${totalHubs})</button>
+          <button type="button" data-mode="servers" class="${serversMode === "servers" ? "on" : ""}">SERVERS (${totalMatches})</button>
+        </div>
+        <label class="srv-search">${SRV_ICON.search}<input id="srv-search" type="text" placeholder="Search…" autocomplete="off" spellcheck="false" value="${escape(serversSearch)}" /></label>
+        <label class="srv-show-empty"><input id="srv-empty" type="checkbox" ${serversShowEmpty ? "checked" : ""}/> Show Empty</label>
+        <button id="srv-refresh" class="srv-refresh" type="button" title="Refresh">${SRV_ICON.refresh}</button>
+      </div>
+      <div class="srv-panes">
+        <div class="srv-master">
+          ${masterBody}
+          <div class="srv-actions master">
+            <button id="srv-hub-join" type="button"${selectedHub && serversMode === "hubs" ? "" : " disabled"}>Join</button>
+            <div id="srv-master-status" class="row-status"></div>
+          </div>
+        </div>
+        <div class="srv-detail">
+          ${detailBody}
+          <div class="srv-actions detail">
+            <div id="srv-detail-status" class="row-status">${signedOut}</div>
+            <button id="srv-match-join" type="button"${selectedMatchId ? "" : " disabled"}>Join</button>
+            <button id="srv-match-spectate" type="button"${selectedMatchId ? "" : " disabled"}>Spectate</button>
+          </div>
+        </div>
+      </div>
+    </div>`;
 
-  document.getElementById("servers-refresh")?.addEventListener("click", () => void renderServers());
-  document.getElementById("servers-empty")?.addEventListener("change", (e) => {
+  // ---- wiring ----
+  const masterStatus = (): HTMLElement | null => document.getElementById("srv-master-status");
+  const detailStatus = (): HTMLElement | null => document.getElementById("srv-detail-status");
+
+  serversPanel.querySelectorAll<HTMLButtonElement>(".srv-toggle button").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const m = btn.dataset.mode === "servers" ? "servers" : "hubs";
+      if (m !== serversMode) {
+        serversMode = m;
+        renderServerList();
+      }
+    });
+  });
+
+  const searchEl = document.getElementById("srv-search") as HTMLInputElement | null;
+  searchEl?.addEventListener("input", () => {
+    serversSearch = searchEl.value;
+    renderServerList();
+    const again = document.getElementById("srv-search") as HTMLInputElement | null;
+    if (again) {
+      again.focus();
+      again.selectionStart = again.selectionEnd = again.value.length;
+    }
+  });
+
+  document.getElementById("srv-empty")?.addEventListener("change", (e) => {
     serversShowEmpty = (e.target as HTMLInputElement).checked;
     renderServerList();
   });
-  serversPanel.querySelectorAll<HTMLButtonElement>(".server-join").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const server = btn.dataset.server;
-      if (!server) return;
-      const status = document.getElementById(statusId(server));
-      if (btn.dataset.locked) {
-        promptServerPassword(status, (pw) => void connectTo(server, pw, status));
-      } else {
-        void connectTo(server, "", status);
-      }
+  document.getElementById("srv-refresh")?.addEventListener("click", () => void renderServers());
+
+  // Hub selection (master).
+  serversPanel.querySelectorAll<HTMLElement>(".srv-hub").forEach((row) => {
+    row.addEventListener("click", () => {
+      const id = row.dataset.hub;
+      if (!id || id === selectedHubId) return;
+      selectedHubId = id;
+      selectedMatchId = null;
+      renderServerList();
     });
   });
-  serversPanel.querySelectorAll<HTMLButtonElement>(".server-spectate").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const server = btn.dataset.server;
-      if (!server) return;
-      const status = document.getElementById(statusId(server));
-      if (btn.dataset.locked) {
-        promptServerPassword(status, (pw) => void connectTo(`${server}?SpectatorOnly=1`, pw, status));
-      } else {
-        void connectTo(`${server}?SpectatorOnly=1`, "", status);
-      }
+
+  // Card selection (detail) — lightweight highlight, no full re-render.
+  serversPanel.querySelectorAll<HTMLElement>(".srv-card").forEach((cardEl) => {
+    const muts = cardEl.dataset.muts || "";
+    cardEl.addEventListener("click", () => {
+      selectedMatchId = cardEl.dataset.match ?? null;
+      serversPanel.querySelectorAll(".srv-card.sel").forEach((c) => c.classList.remove("sel"));
+      cardEl.classList.add("sel");
+      const j = document.getElementById("srv-match-join") as HTMLButtonElement | null;
+      const sp = document.getElementById("srv-match-spectate") as HTMLButtonElement | null;
+      if (j) j.disabled = false;
+      if (sp) sp.disabled = false;
     });
+    // Mutators popover on card hover (~1.5s).
+    cardEl.addEventListener("mouseenter", () => {
+      hideSrvPopover();
+      if (muts) srvPopTimer = window.setTimeout(() => openMutatorPopover(cardEl, muts), 1500);
+    });
+    cardEl.addEventListener("mouseleave", () => hideSrvPopover());
+    // Players popover on the player count (~0.5s) — overrides the mutators timer.
+    const count = cardEl.querySelector<HTMLElement>(".srv-count");
+    if (count) {
+      count.addEventListener("mouseenter", () => {
+        if (srvPopTimer !== undefined) clearTimeout(srvPopTimer);
+        const server = count.dataset.server || "";
+        srvPopTimer = window.setTimeout(() => void openPlayersPopover(count, server), 500);
+      });
+      count.addEventListener("mouseleave", () => {
+        if (srvPopTimer !== undefined) clearTimeout(srvPopTimer);
+        hideSrvPopover();
+        if (muts) srvPopTimer = window.setTimeout(() => openMutatorPopover(cardEl, muts), 1500);
+      });
+    }
   });
-  serversPanel.querySelectorAll<HTMLButtonElement>(".server-roster").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const server = btn.dataset.server;
-      if (server) void toggleRoster(server, document.getElementById(statusId(server)));
-    });
+  serversPanel
+    .querySelectorAll<HTMLElement>(".srv-list")
+    .forEach((l) => l.addEventListener("scroll", () => hideSrvPopover()));
+
+  // Hub Join (master action) — enters the selected hub's lobby.
+  document.getElementById("srv-hub-join")?.addEventListener("click", () => {
+    const h = visibleHubs.find((x) => hubId(x) === selectedHubId);
+    if (!h) return;
+    const server = hubId(h);
+    const status = masterStatus();
+    const locked = ((h.attributes?.UT_SERVERFLAGS_i ?? 0) & 1) !== 0;
+    if (locked) promptServerPassword(status, (pw) => void connectTo(server, pw, status));
+    else void connectTo(server, "", status);
+  });
+
+  // Match Join / Spectate (detail actions) act on the selected card.
+  const selectedMatch = (): GameServerEntry | undefined =>
+    instances.find((s) => matchId(s) === selectedMatchId);
+  document.getElementById("srv-match-join")?.addEventListener("click", () => {
+    const s = selectedMatch();
+    if (!s) return;
+    const server = matchId(s);
+    const status = detailStatus();
+    const locked = ((s.attributes?.UT_SERVERFLAGS_i ?? 0) & 1) !== 0;
+    if (locked) promptServerPassword(status, (pw) => void connectTo(server, pw, status));
+    else void connectTo(server, "", status);
+  });
+  document.getElementById("srv-match-spectate")?.addEventListener("click", () => {
+    const s = selectedMatch();
+    if (!s) return;
+    const server = matchId(s);
+    const status = detailStatus();
+    const locked = ((s.attributes?.UT_SERVERFLAGS_i ?? 0) & 1) !== 0;
+    if (locked)
+      promptServerPassword(status, (pw) => void connectTo(`${server}?SpectatorOnly=1`, pw, status));
+    else void connectTo(`${server}?SpectatorOnly=1`, "", status);
   });
 }
 
