@@ -1469,6 +1469,7 @@ async function loadAll() {
     void renderGameInstall();
     void loadStatusData();
     renderCommunityLinks();
+    renderCommunityVideos();
     // Tokenless live-PUG banner: always polled (no token needed to watch).
     void pollLivePugs();
     startLivePolling();
@@ -1542,6 +1543,36 @@ function renderCommunityLinks(): void {
   if (!el) return;
   el.innerHTML = COMMUNITIES.map(
     (c) => `<button class="btn btn-discord" data-extlink="${escape(c.url)}" type="button">${escape(c.name)}</button>`,
+  ).join("");
+}
+
+// Community video highlights (tutorials / tributes / frag movies). Thumbnails are
+// bundled locally (public/videos/<id>.jpg) so the shipped launcher makes NO runtime
+// request to Google — clicking a card opens the video externally via open_external.
+interface Video {
+  id: string;
+  title: string;
+  by: string;
+  tag: string;
+}
+const VIDEOS: Video[] = [
+  { id: "DStf9pEWfaI", title: "UT4 Movement Tutorial", by: "HateBreeD", tag: "How to play" },
+  { id: "EHoZMQsHAW8", title: "UT4 Legend Demon1_", by: "Demon1", tag: "Tribute" },
+  { id: "DqxerotwzfA", title: "phantaci — Your Majesty", by: "phantasi ut", tag: "Frags" },
+  { id: "1hlAqRPBnFM", title: "ZNATCH — 4K Fragmovie", by: "Flikswich", tag: "Frags" },
+];
+
+// Fill the Community tab's video grid. Cards carry data-extlink → the delegated
+// https-gated opener (same path as the Discord buttons), so no per-card wiring.
+function renderCommunityVideos(): void {
+  const el = document.getElementById("community-videos");
+  if (!el) return;
+  el.innerHTML = VIDEOS.map(
+    (v) =>
+      `<button class="video-card" type="button" data-extlink="https://www.youtube.com/watch?v=${escape(v.id)}" title="Open on YouTube">` +
+      `<span class="video-thumb"><img src="/videos/${escape(v.id)}.jpg" alt="" loading="lazy" /><span class="video-tag">${escape(v.tag)}</span><span class="video-play">▶</span></span>` +
+      `<span class="video-meta"><span class="video-title">${escape(v.title)}</span><span class="video-by">${escape(v.by)}</span></span>` +
+      `</button>`,
   ).join("");
 }
 
