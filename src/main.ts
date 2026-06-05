@@ -2186,7 +2186,7 @@ function renderServerList(): void {
     return hay.includes(q);
   };
   const detailMatches = (
-    serversMode === "servers" ? [...instances] : selectedHub ? (childrenOf.get(selectedHub) ?? []) : []
+    serversMode === "servers" ? [...standalone] : selectedHub ? (childrenOf.get(selectedHub) ?? []) : []
   )
     .filter(cardMatch)
     .sort((a, b) => srvPlayers(b) - srvPlayers(a));
@@ -2250,7 +2250,7 @@ function renderServerList(): void {
   };
 
   const totalHubs = hubs.length;
-  const totalMatches = instances.length;
+  const totalMatches = standalone.length;
 
   const masterBody =
     serversMode === "servers"
