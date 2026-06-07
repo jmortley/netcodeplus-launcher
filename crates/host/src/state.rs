@@ -90,6 +90,12 @@ pub struct LauncherState {
     #[serde(default)]
     pub launcher_token: Option<String>,
 
+    /// Whether Discord Rich Presence is enabled (opt-in; default off). When on,
+    /// the launcher broadcasts the user's PUG state to their Discord profile.
+    /// See `src-tauri/src/presence.rs`.
+    #[serde(default)]
+    pub discord_presence_enabled: bool,
+
     /// UT4 master-server account username the user logged in with, used as the
     /// `-AUTH_LOGIN` value at launch and for the UI. NOT a secret — the refresh
     /// token (the secret) lives in the OS credential store, never here. `None` =
@@ -173,6 +179,7 @@ impl Default for LauncherState {
             ut4stats_playerid: None,
             ut4stats_playername: None,
             launcher_token: None,
+            discord_presence_enabled: false,
             ut4_username: None,
             ut4_display_name: None,
             ut4_account_id: None,

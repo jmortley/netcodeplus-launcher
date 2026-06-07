@@ -27,6 +27,10 @@ tauri-plugin-dialog = "2"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 
+# Discord Rich Presence (opt-in, presence-only). Pure-Rust IPC client to the
+# local Discord app — no native Game SDK. See src/presence.rs.
+discord-rich-presence = "0.2"
+
 # Process enumeration for the connect flow — detect an already-running UT4 so
 # the launcher can offer the in-game `open` console command instead of spawning
 # a second game instance.

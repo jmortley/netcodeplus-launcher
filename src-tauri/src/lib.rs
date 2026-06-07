@@ -9,6 +9,7 @@ mod auth;
 mod commands;
 mod elevated;
 mod installer;
+mod presence;
 mod trust_root;
 mod updates;
 
@@ -57,6 +58,8 @@ pub fn run() {
             commands::reveal_plugins_folder,
             commands::reveal_openal_folder,
             commands::launcher_version,
+            presence::set_discord_presence,
+            presence::set_discord_presence_enabled,
             installer::game_installer_info,
             installer::default_download_dir,
             installer::download_game_installer,

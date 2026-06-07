@@ -88,6 +88,7 @@ interface LauncherState {
   ut4stats_playerid: string | null;
   ut4stats_playername: string | null;
   launcher_token: string | null;
+  discord_presence_enabled?: boolean;
 }
 
 interface PlayerSearchResult {
@@ -212,6 +213,8 @@ const state = {
   livePugs: [] as SpectatePug[],
   ut4: null as Ut4Auth | null,
   trendMode: "" as string,
+  // Discord Rich Presence opt-in (default off; mirrors discord_presence_enabled).
+  discordPresence: false,
 };
 
 function escape(value: string): string {
@@ -901,6 +904,9 @@ function renderAdvanced() {
           customAffinity ? escape(state.affinityHex) : ""
         }" />
       </label>
+      <label class="discord-rpc-toggle"><input id="discord-rpc" type="checkbox"${
+        state.discordPresence ? " checked" : ""
+      } /> Show my PUG status on Discord (Rich Presence)</label>
     </div>`;
   wire();
 }
@@ -950,6 +956,15 @@ function wire() {
   hexInput?.addEventListener("change", () => {
     state.affinityHex = hexInput.value.trim();
     persist();
+  });
+
+  const rpc = document.getElementById("discord-rpc") as HTMLInputElement | null;
+  rpc?.addEventListener("change", () => {
+    state.discordPresence = rpc.checked;
+    void invoke("set_discord_presence_enabled", { enabled: rpc.checked }).catch((err) =>
+      console.error("set_discord_presence_enabled failed:", err),
+    );
+    updateDiscordPresence();
   });
 }
 
@@ -1547,6 +1562,7 @@ function applyPrefs(prefs: LauncherState) {
   state.linkedId = prefs.ut4stats_playerid;
   state.linkedName = prefs.ut4stats_playername;
   state.launcherToken = prefs.launcher_token;
+  state.discordPresence = prefs.discord_presence_enabled ?? false;
   if (prefs.install_path) {
     const i = state.installs.findIndex((d) => d.install.root === prefs.install_path);
     if (i >= 0) state.selInstall = i;
@@ -1601,6 +1617,11 @@ async function loadAll() {
     renderTopbarAuth();
     renderStats();
     renderPug();
+    // Arm Discord presence from the persisted opt-in, then push initial state.
+    if (state.discordPresence) {
+      void invoke("set_discord_presence_enabled", { enabled: true }).catch(() => {});
+      updateDiscordPresence();
+    }
     void renderConfig();
     void renderAddons();
     void renderLauncherUpdate();
@@ -1787,12 +1808,51 @@ async function saveLauncherToken(token: string | null) {
     console.error("save_launcher_token failed:", err);
   }
   renderPug();
+  updateDiscordPresence();
   if (token) {
     void pollPugStatus();
     startPugPolling();
   } else {
     stopPugPolling();
   }
+}
+
+// ---- Discord Rich Presence (opt-in) ---------------------------------------
+// Translate the launcher's PUG state into a Discord activity push. The backend
+// no-ops when the toggle is off or Discord isn't running; deduped here so the
+// 5 s poll doesn't spam the IPC. See src-tauri/src/presence.rs.
+let lastPresenceKey = "";
+
+function updateDiscordPresence(): void {
+  if (!state.discordPresence) return;
+  const st = state.pugStatus;
+  let input: {
+    kind: string;
+    mode?: string;
+    detail?: string;
+    players?: number;
+    max_players?: number;
+  };
+  if (st && st.state === "live") {
+    input = { kind: "live", mode: "ictf", detail: st.server ?? undefined };
+  } else if (st && st.state === "starting") {
+    input = { kind: "live", mode: "ictf", detail: "starting…" };
+  } else if (st && st.state === "queued") {
+    input = {
+      kind: "queued",
+      mode: "ictf",
+      players: st.players ?? 0,
+      max_players: st.max_players ?? 10,
+    };
+  } else {
+    input = { kind: "idle" };
+  }
+  const key = JSON.stringify(input);
+  if (key === lastPresenceKey) return;
+  lastPresenceKey = key;
+  void invoke("set_discord_presence", { input }).catch((err) =>
+    console.error("set_discord_presence failed:", err),
+  );
 }
 
 function renderPug() {
@@ -2641,6 +2701,7 @@ async function pollPugStatus() {
     const next = JSON.parse(await invoke<string>("pug_status", { token: state.launcherToken })) as PugStatus;
     const prev = state.pugStatus;
     state.pugStatus = next;
+    updateDiscordPresence();
     // Re-render only on a meaningful change, so the 5 s poll doesn't clobber
     // the status line / token input.
     if (!prev || prev.state !== next.state || prev.server !== next.server || prev.players !== next.players) {
