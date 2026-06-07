@@ -2,6 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
+import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
 
 interface UtInstall {
   root: string;
@@ -1622,6 +1623,8 @@ async function loadAll() {
       void invoke("set_discord_presence_enabled", { enabled: true }).catch(() => {});
       updateDiscordPresence();
     }
+    // ncp://connect deep links (cold-start URL + live listener).
+    void wireDeepLinks();
     void renderConfig();
     void renderAddons();
     void renderLauncherUpdate();
@@ -1997,6 +2000,78 @@ async function connectTo(server: string, password: string, status: HTMLElement |
 
 async function connectToPug(server: string, password: string) {
   await connectTo(server, password, document.getElementById("pug-status"));
+}
+
+// ---- ncp://connect deep link ----------------------------------------------
+// External "connect to this server" intents (ut4stats / Discord / the Discord RP
+// Join button) arrive as ncp://connect?server=ip:port&password=..&spectate=1. The
+// URL is UNTRUSTED (any web page or message can craft one), so we validate it
+// strictly, confirm with the user, and only ever feed a clean host:port into the
+// existing connect path. We append ?SpectatorOnly=1 ourselves — raw query options
+// are never passed through. See src-tauri/src/lib.rs for the scheme registration.
+let deepLinkWired = false;
+
+async function handleConnectUri(raw: string): Promise<void> {
+  let u: URL;
+  try {
+    u = new URL(raw);
+  } catch {
+    return;
+  }
+  if (u.protocol !== "ncp:") return;
+  // Accept both ncp://connect?… (host) and ncp:connect?… (path) forms.
+  const action = (u.host || u.pathname.replace(/^\/+/, "")).toLowerCase();
+  if (action !== "connect") return;
+
+  const server = (u.searchParams.get("server") ?? "").trim();
+  const password = (u.searchParams.get("password") ?? "").trim();
+  const spectate = u.searchParams.get("spectate") === "1";
+
+  // host:port only — rejects anything that could inject extra launch args.
+  if (!/^[A-Za-z0-9.\-]+:\d{1,5}$/.test(server)) {
+    console.warn("ncp://connect rejected — bad server:", server);
+    return;
+  }
+  if (password.length > 64 || /[^A-Za-z0-9_\-]/.test(password)) {
+    console.warn("ncp://connect rejected — bad password");
+    return;
+  }
+
+  const ok = await confirm(`${spectate ? "Spectate" : "Connect to"} ${server}?`, {
+    title: "UT4 Community Launcher",
+    kind: "warning",
+  });
+  if (!ok) return;
+
+  // The link may have arrived while we were minimized — surface the window.
+  try {
+    await getCurrentWindow().unminimize();
+    await getCurrentWindow().setFocus();
+  } catch {
+    /* non-fatal */
+  }
+
+  const target = spectate ? `${server}?SpectatorOnly=1` : server;
+  await connectTo(target, password, document.getElementById("pug-status"));
+}
+
+// Handle a cold-start URL + register the live listener, exactly once.
+async function wireDeepLinks(): Promise<void> {
+  if (deepLinkWired) return;
+  deepLinkWired = true;
+  try {
+    const startUrls = await getCurrent();
+    if (startUrls && startUrls.length) void handleConnectUri(startUrls[0]);
+  } catch (err) {
+    console.error("deep-link getCurrent failed:", err);
+  }
+  try {
+    await onOpenUrl((urls) => {
+      if (urls.length) void handleConnectUri(urls[0]);
+    });
+  } catch (err) {
+    console.error("deep-link onOpenUrl failed:", err);
+  }
 }
 
 // For a password-protected server (UT_SERVERFLAGS_i bit 0x1), reveal a password

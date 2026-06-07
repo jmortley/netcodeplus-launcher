@@ -17,9 +17,38 @@ pub use elevated::run_elevated_install;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
-    tauri::Builder::default()
+    let mut builder = tauri::Builder::default();
+
+    // single-instance MUST be registered first. Its `deep-link` feature routes an
+    // `ncp://` link opened while we're already running into THIS instance (the URL
+    // then arrives via the deep-link plugin's onOpenUrl in the frontend); here we
+    // just bring the existing window forward.
+    #[cfg(desktop)]
+    {
+        builder = builder.plugin(tauri_plugin_single_instance::init(|app, _argv, _cwd| {
+            use tauri::Manager;
+            if let Some(window) = app.get_webview_window("main") {
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        }));
+    }
+
+    builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_deep_link::init())
+        .setup(|app| {
+            // Register the `ncp` scheme at runtime — dev needs this; packaged
+            // builds also get it from the installer. Non-fatal so a registry
+            // hiccup can't block startup.
+            #[cfg(any(windows, target_os = "linux"))]
+            {
+                use tauri_plugin_deep_link::DeepLinkExt;
+                let _ = app.deep_link().register_all();
+            }
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             commands::detect_installs,
             commands::check_install,

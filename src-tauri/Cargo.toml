@@ -31,6 +31,13 @@ serde_json = "1"
 # local Discord app — no native Game SDK. See src/presence.rs.
 discord-rich-presence = "0.2"
 
+# Custom `ncp://connect` URI scheme so ut4stats / Discord / the RP Join button can
+# hand the launcher a connect intent. single-instance routes a link opened while
+# we're already running into the existing app; its `deep-link` feature delivers
+# the URL via the deep-link plugin's onOpenUrl. See lib.rs + src/main.ts.
+tauri-plugin-deep-link = "2"
+tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
+
 # Process enumeration for the connect flow — detect an already-running UT4 so
 # the launcher can offer the in-game `open` console command instead of spawning
 # a second game instance.
