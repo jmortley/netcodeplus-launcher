@@ -271,14 +271,16 @@ async function refetchInstallsPreservingManual(): Promise<void> {
   if (state.selInstall >= state.installs.length) state.selInstall = 0;
 }
 
-async function doInstallPlugin(): Promise<void> {
-  const btn = document.getElementById("plugin-update-btn") as HTMLButtonElement | null;
+async function doInstallPlugin(force = false): Promise<void> {
+  const btn = (document.getElementById("plugin-update-btn") ??
+    document.getElementById("plugin-reinstall-btn")) as HTMLButtonElement | null;
   const status = document.getElementById("plugin-status");
   if (btn) btn.disabled = true;
   if (status) status.textContent = "Downloading and installing… this can take a moment.";
   try {
     const outcomes = await invoke<PluginInstallOutcome[]>("install_plugin", {
       roots: state.installs.map((d) => d.install.root),
+      force,
     });
     const installed = outcomes.filter((o) => o.result === "installed").length;
     const failed = outcomes.filter((o) => o.result === "failed");
@@ -288,7 +290,7 @@ async function doInstallPlugin(): Promise<void> {
       // Keep the button enabled so the user can retry after fixing the cause
       // (e.g. close the game, run as admin for a Program Files install).
       if (status)
-        status.innerHTML = `<span class="warn">Update failed: ${escape(
+        status.innerHTML = `<span class="warn">Install failed: ${escape(
           failed.map((f) => f.detail).join("; "),
         )}</span>`;
       if (btn) btn.disabled = false;
@@ -702,6 +704,7 @@ async function renderDashStatus(): Promise<void> {
   }
   const lines: string[] = [];
   let pluginUpdate = false;
+  let pluginUpToDate = false;
   const p = statusCache.plugin;
   if (p && p.plugin_offered) {
     const ver = p.available_version != null ? ` (build ${p.available_version})` : "";
@@ -727,8 +730,11 @@ async function renderDashStatus(): Promise<void> {
         <div id="plugin-status" class="launch-status"></div>`,
       );
     } else {
+      pluginUpToDate = true;
       lines.push(
-        `<div class="statline"><span class="ok">✓</span><span>NetcodePlus up to date${escape(ver)}.</span></div>`,
+        `<div class="statline"><span class="ok">✓</span><span>NetcodePlus up to date${escape(ver)}.</span></div>
+        <button id="plugin-reinstall-btn" type="button" class="link-btn">Reinstall</button>
+        <div id="plugin-status" class="launch-status"></div>`,
       );
     }
   }
@@ -767,6 +773,22 @@ async function renderDashStatus(): Promise<void> {
   el.innerHTML = `<h3>NetcodePlus &amp; updates</h3>${lines.join("")}`;
   if (pluginUpdate) {
     document.getElementById("plugin-update-btn")?.addEventListener("click", () => void doInstallPlugin());
+  }
+  if (pluginUpToDate) {
+    // Reinstall = force the current manifest build over whatever's on disk — the
+    // repair path when the launcher thinks it's up to date but the actual binary
+    // is a manual/dev/corrupted one (which the version record can't see).
+    const av = statusCache.plugin?.available_version;
+    const buildTxt = av != null ? ` (build ${av})` : "";
+    document.getElementById("plugin-reinstall-btn")?.addEventListener("click", () => {
+      void (async () => {
+        const ok = await confirm(
+          `Reinstall NetcodePlus${buildTxt}? This re-downloads the current build and overwrites the plugin files in your UT4 install — including any manual or dev build you've placed there.`,
+          { title: "Reinstall NetcodePlus", kind: "warning", okLabel: "Reinstall", cancelLabel: "Cancel" },
+        );
+        if (ok) await doInstallPlugin(true);
+      })();
+    });
   }
 }
 

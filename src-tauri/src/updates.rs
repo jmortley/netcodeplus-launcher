@@ -424,10 +424,17 @@ pub struct PluginInstallOutcome {
 /// the signed manifest), extracts it with the zip-slip-guarded installer, and
 /// records the per-root install state. Up-to-date / downgrade-blocked / no-op
 /// installs are skipped. A failure on one install does not abort the others.
+///
+/// `force` = a user-triggered **Reinstall**: re-extract the manifest's plugin
+/// even into installs the launcher already considers up-to-date (or would refuse
+/// as a downgrade). This is the repair path for a hand-swapped or corrupted
+/// on-disk plugin the version record can't see. Channels that offer no plugin
+/// are still skipped (there is nothing to reinstall).
 #[tauri::command]
 pub async fn install_plugin(
     app: AppHandle,
     roots: Option<Vec<String>>,
+    force: bool,
 ) -> Result<Vec<PluginInstallOutcome>, String> {
     use ncp_planner::PluginAction;
 
@@ -455,7 +462,7 @@ pub async fn install_plugin(
         let action = decide_for_install(channel, &root, &state);
 
         match action {
-            PluginAction::UpToDate { version } => outcomes.push(PluginInstallOutcome {
+            PluginAction::UpToDate { version } if !force => outcomes.push(PluginInstallOutcome {
                 root: root_key,
                 result: "skipped",
                 detail: format!("already up to date (build {version})"),
@@ -465,7 +472,7 @@ pub async fn install_plugin(
                 result: "skipped",
                 detail: "channel offers no plugin".into(),
             }),
-            PluginAction::DowngradeBlocked { installed, offered } => {
+            PluginAction::DowngradeBlocked { installed, offered } if !force => {
                 outcomes.push(PluginInstallOutcome {
                     root: root_key,
                     result: "skipped",
@@ -474,7 +481,10 @@ pub async fn install_plugin(
                 ),
                 })
             }
-            PluginAction::Install { .. } | PluginAction::Update { .. } => {
+            // Install / Update — or a forced Reinstall over an up-to-date or
+            // downgrade-blocked install. The body installs `entry` (the manifest's
+            // plugin) regardless of which action routed here.
+            _ => {
                 // Download once, lazily, on the first install that needs it.
                 if !downloaded {
                     if let Err(e) = ncp_net::download(
