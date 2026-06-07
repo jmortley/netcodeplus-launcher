@@ -27,6 +27,7 @@ pub fn run() {
             commands::game_requires_admin,
             commands::clear_game_requires_admin,
             commands::launch_game_elevated,
+            commands::is_game_running,
             commands::load_state,
             commands::save_launch_prefs,
             commands::save_ut4stats_link,

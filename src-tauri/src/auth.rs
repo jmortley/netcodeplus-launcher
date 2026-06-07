@@ -75,6 +75,11 @@ pub struct Ut4Auth {
     pub username: Option<String>,
     /// Account display name for the UI, if signed in.
     pub display_name: Option<String>,
+    /// Canonical account id — the player's UT4ID (Epic account GUID), the value
+    /// players paste to link Discord bots and stats sites. `None` when signed out,
+    /// or for a pre-account-id-capture session that must re-login once to capture
+    /// it (see [`Ut4LaunchAuth::account_id`]).
+    pub account_id: Option<String>,
     /// Set by [`ut4_login`] only when this sign-in replaced a *different* account
     /// that was already signed in: the display name of that previous account, so
     /// the UI can warn "now signed in as X (was Y)". `None` for a first sign-in, a
@@ -244,6 +249,7 @@ pub async fn ut4_login(
         logged_in: true,
         username: Some(username),
         display_name: Some(display),
+        account_id: st.ut4_account_id.clone(),
         switched_from,
     })
 }
@@ -261,6 +267,7 @@ pub fn ut4_auth_status(app: tauri::AppHandle) -> Result<Ut4Auth, String> {
         logged_in,
         username: if logged_in { st.ut4_username } else { None },
         display_name: if logged_in { st.ut4_display_name } else { None },
+        account_id: if logged_in { st.ut4_account_id } else { None },
         switched_from: None,
     })
 }

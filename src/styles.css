@@ -1130,7 +1130,7 @@ body {
    ========================================================================= */
 .dash-head {
   display: flex;
-  align-items: baseline;
+  align-items: center;
   gap: 12px;
   flex-wrap: wrap;
   margin: 2px 0 16px;
@@ -1246,6 +1246,36 @@ body {
   font-size: 0.72rem;
   text-transform: uppercase;
   letter-spacing: 0.04em;
+}
+
+/* HOME UT4ID chip: monospace id + inline copy button (renderHome → #dash-sub) */
+.ut4id-chip {
+  /* center the label, id, and Copy button — the base .chip is baseline-aligned,
+     which leaves the bordered button sitting low next to the text */
+  align-items: center;
+  gap: 8px;
+}
+.ut4id-chip .mono {
+  font-family: ui-monospace, "Cascadia Mono", "JetBrains Mono", Menlo, monospace;
+  font-weight: 600;
+  letter-spacing: 0.01em;
+}
+.copy-btn {
+  border: 1px solid var(--line-blue);
+  background: transparent;
+  color: var(--txt-dim);
+  border-radius: 5px;
+  padding: 1px 7px;
+  font-size: 0.72rem;
+  cursor: pointer;
+}
+.copy-btn:hover {
+  color: var(--accent-hi);
+  border-color: var(--accent-hi);
+}
+.copy-btn.copied {
+  color: #4ade80;
+  border-color: #4ade80;
 }
 
 /* compact "row" used in stats / servers / community cards */

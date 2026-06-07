@@ -178,6 +178,9 @@ interface Ut4Auth {
   logged_in: boolean;
   username: string | null;
   display_name: string | null;
+  // The player's UT4ID (Epic account GUID) — null when signed out, or for a
+  // pre-account-id-capture session that must re-login once to populate it.
+  account_id: string | null;
   // Set by ut4_login only when the sign-in replaced a different account that was
   // already signed in: the previous account's display name (for the switch warning).
   switched_from?: string | null;
@@ -460,6 +463,27 @@ function renderHome() {
   if (greet) {
     const name = state.ut4?.display_name ?? state.ut4?.username;
     greet.textContent = name ? `Welcome back, ${name}` : "UT4 Community Launcher";
+  }
+  // The subtitle carries the signed-in player's UT4ID (the value they paste to
+  // link Discord bots and stats sites) as a copyable chip. Signed out → a prompt.
+  const sub = document.getElementById("dash-sub");
+  if (sub) {
+    const u = state.ut4;
+    if (u?.logged_in && u.account_id) {
+      const id = u.account_id;
+      sub.innerHTML =
+        `<span class="chip ut4id-chip" title="Your UT4ID — paste it to link Discord bots and stats sites">` +
+        `<span class="lbl">UT4ID</span>` +
+        `<b class="mono">${escape(id)}</b>` +
+        `<button type="button" class="copy-btn" data-copy="${escape(id)}">Copy</button>` +
+        `</span>`;
+    } else if (u?.logged_in) {
+      // Signed in but the id wasn't captured (session predates account-id
+      // capture) — one re-login fills it in.
+      sub.textContent = "Sign in again to see your UT4ID";
+    } else {
+      sub.textContent = "Sign in to see your UT4ID";
+    }
   }
   renderHomeHero();
   renderHomeLivePug();
@@ -921,6 +945,51 @@ function persist() {
 
 async function launch() {
   const di = state.installs[state.selInstall];
+  // If UT4 is already running, pressing Play would spawn a second instance.
+  // Warn and let them launch anyway (Play has no server target, so there's no
+  // `open` command to hand back — just guard the accidental double-launch).
+  let gameRunning = false;
+  try {
+    gameRunning = await invoke<boolean>("is_game_running", {
+      executable: di.install.executable,
+    });
+  } catch (err) {
+    console.error("is_game_running failed:", err);
+  }
+  if (gameRunning) {
+    const go = await confirm("UT4 is already running. Launch another instance anyway?", {
+      title: "UT4 already running",
+      kind: "warning",
+      okLabel: "Launch anyway",
+      cancelLabel: "Cancel",
+    });
+    if (!go) return;
+  }
+  // Pre-play NetcodePlus check: if this install's plugin is missing or out of
+  // date, warn before launching — players otherwise join NetcodePlus servers on
+  // the wrong build. Non-blocking: Install/Update now runs the installer and
+  // cancels the launch; Play anyway proceeds. Skipped when status isn't known yet.
+  const pluginInst = statusCache.plugin?.installs.find((i) => i.root === di.install.root);
+  if (pluginInst && (pluginInst.action === "install" || pluginInst.action === "update")) {
+    const avail = statusCache.plugin?.available_version;
+    const verText = avail != null ? ` (build ${avail})` : "";
+    const outdated = pluginInst.action === "update";
+    const doUpdate = await confirm(
+      outdated
+        ? `A newer NetcodePlus is available${verText} — you're on build ${pluginInst.installed_version ?? "?"}. Joining a NetcodePlus server on an old build can cause problems. Update before playing?`
+        : `NetcodePlus isn't installed${verText} for this UT4 install — NetcodePlus servers require it. Install before playing?`,
+      {
+        title: outdated ? "NetcodePlus update available" : "NetcodePlus not installed",
+        kind: "warning",
+        okLabel: outdated ? "Update now" : "Install now",
+        cancelLabel: "Play anyway",
+      },
+    );
+    if (doUpdate) {
+      void doInstallPlugin();
+      return;
+    }
+  }
   const profile =
     di.profiles.find((p) => p.label === state.profileLabel) ?? di.profiles[selectedProfileIndex(di)];
   const status = document.getElementById("launch-status")!;
@@ -1120,7 +1189,7 @@ async function ut4Logout() {
   } catch (err) {
     console.error("ut4_logout failed:", err);
   }
-  state.ut4 = { logged_in: false, username: null, display_name: null };
+  state.ut4 = { logged_in: false, username: null, display_name: null, account_id: null };
   renderHome();
   renderTopbarAuth();
 }
@@ -1157,7 +1226,7 @@ async function ut4AuthArgs(): Promise<string[]> {
 // when it handled a relogin, so the caller aborts the launch.
 function handleReloginError(err: unknown, statusEl: HTMLElement | null): boolean {
   if (!String(err).includes("RELOGIN_REQUIRED")) return false;
-  state.ut4 = { logged_in: false, username: null, display_name: null };
+  state.ut4 = { logged_in: false, username: null, display_name: null, account_id: null };
   renderHome();
   const msg = "Your UT4 session expired — sign in again on the Home tab, then try again.";
   if (statusEl) {
@@ -1789,29 +1858,59 @@ async function connectTo(server: string, password: string, status: HTMLElement |
   const profile =
     di.profiles.find((p) => p.label === state.profileLabel) ?? di.profiles[selectedProfileIndex(di)];
   const connectUrl = password ? `${server}?Password=${password}` : server;
-  let authArgs: string[];
+  // The actual launch: resolve auth args, attach -ncpconnect, spawn the game.
+  const doLaunch = async () => {
+    let authArgs: string[];
+    try {
+      authArgs = await ut4AuthArgs();
+    } catch (err) {
+      if (handleReloginError(err, status)) return;
+      if (status) status.innerHTML = `<span class="warn">UT4 login failed: ${escape(String(err))}</span>`;
+      return;
+    }
+    const args = [...profile.args, ...authArgs, `-ncpconnect=${connectUrl}`];
+    if (status) status.textContent = "Connecting…";
+    try {
+      await invoke("launch_game", {
+        executable: di.install.executable,
+        args,
+        priority: state.priority,
+        affinityMaskHex: state.affinityHex || null,
+        windowAction: state.launchWindowAction,
+      });
+      if (status) status.innerHTML = `<span class="ok">Launched — connecting to ${escape(server)}…</span>`;
+    } catch (err) {
+      if (status) status.innerHTML = `<span class="warn">Launch failed: ${escape(String(err))}</span>`;
+      console.error("connect launch failed:", err);
+    }
+  };
+
+  // If UT4 is already running, a second Connect would spawn another game window
+  // (the multi-instance footgun). Offer the in-game console command instead —
+  // paste it with the ~ key — with a Copy button and an explicit escape hatch.
+  let alreadyRunning = false;
   try {
-    authArgs = await ut4AuthArgs();
+    alreadyRunning = await invoke<boolean>("is_game_running", {
+      executable: di.install.executable,
+    });
   } catch (err) {
-    if (handleReloginError(err, status)) return;
-    if (status) status.innerHTML = `<span class="warn">UT4 login failed: ${escape(String(err))}</span>`;
+    console.error("is_game_running failed:", err);
+  }
+  if (alreadyRunning && status) {
+    const openCmd = `open ${connectUrl}`;
+    status.innerHTML =
+      `<div><span class="warn">UT4 is already running.</span> Paste this in the game console (press the ~ key):</div>` +
+      `<span class="chip ut4id-chip" style="margin:6px 0;">` +
+      `<b class="mono">${escape(openCmd)}</b>` +
+      `<button type="button" class="copy-btn" data-copy="${escape(openCmd)}">Copy</button>` +
+      `</span>` +
+      `<div><button type="button" class="link-btn" id="connect-anyway">Launch a new instance anyway</button></div>`;
+    status
+      .querySelector<HTMLButtonElement>("#connect-anyway")
+      ?.addEventListener("click", () => void doLaunch());
     return;
   }
-  const args = [...profile.args, ...authArgs, `-ncpconnect=${connectUrl}`];
-  if (status) status.textContent = "Connecting…";
-  try {
-    await invoke("launch_game", {
-      executable: di.install.executable,
-      args,
-      priority: state.priority,
-      affinityMaskHex: state.affinityHex || null,
-      windowAction: state.launchWindowAction,
-    });
-    if (status) status.innerHTML = `<span class="ok">Launched — connecting to ${escape(server)}…</span>`;
-  } catch (err) {
-    if (status) status.innerHTML = `<span class="warn">Launch failed: ${escape(String(err))}</span>`;
-    console.error("connect launch failed:", err);
-  }
+  await doLaunch();
 }
 
 async function connectToPug(server: string, password: string) {
@@ -3249,8 +3348,29 @@ document.getElementById("theme-toggle")?.addEventListener("click", () => {
 });
 
 pickButton.addEventListener("click", () => void pickDir());
+
+// Copy text to the clipboard and flash a brief "Copied!" on the triggering
+// button. Uses navigator.clipboard — allowed under our CSP (script-src governs
+// script loading, not the Clipboard API; the Tauri webview is a secure context
+// and the copy is a user gesture). Used by the HOME UT4ID chip.
+async function copyToClipboard(text: string, btn: HTMLButtonElement): Promise<void> {
+  const restore = btn.textContent;
+  try {
+    await navigator.clipboard.writeText(text);
+    btn.textContent = "Copied!";
+    btn.classList.add("copied");
+  } catch {
+    btn.textContent = "Copy failed";
+  }
+  window.setTimeout(() => {
+    btn.textContent = restore;
+    btn.classList.remove("copied");
+  }, 1200);
+}
+
 // Delegated click handlers (survive re-renders):
 // - the "✓ NetcodePlus installed" badge opens that install's plugin folder;
+// - any [data-copy] button copies its value (the HOME UT4ID chip);
 // - any [data-extlink] button (the About tab) opens its URL via the https-gated
 //   opener.
 document.addEventListener("click", (e) => {
@@ -3263,6 +3383,11 @@ document.addEventListener("click", (e) => {
   const nav = t?.closest<HTMLElement>("[data-nav-to]");
   if (nav?.dataset.navTo) {
     switchView(nav.dataset.navTo);
+    return;
+  }
+  const copy = t?.closest<HTMLElement>("[data-copy]");
+  if (copy?.dataset.copy) {
+    void copyToClipboard(copy.dataset.copy, copy as HTMLButtonElement);
     return;
   }
   const ext = t?.closest<HTMLElement>("[data-extlink]");

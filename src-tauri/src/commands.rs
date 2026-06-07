@@ -140,6 +140,27 @@ pub fn launch_game_elevated(
     Ok(())
 }
 
+/// Whether a process whose image name matches the given game executable is
+/// currently running. The connect flow uses this to offer the in-game `open`
+/// console command instead of spawning a second UT4 when one is already open.
+///
+/// Windows reports process names *without* the `.exe` suffix (and sysinfo
+/// follows), while the install path carries it — so both ends are lowercased
+/// and stripped of a trailing `.exe` before comparing.
+#[tauri::command]
+pub fn is_game_running(executable: String) -> bool {
+    let Some(name) = Path::new(&executable).file_name() else {
+        return false;
+    };
+    let target = name.to_string_lossy().to_ascii_lowercase();
+    let target = target.trim_end_matches(".exe");
+    let mut sys = sysinfo::System::new();
+    sys.refresh_processes();
+    sys.processes()
+        .values()
+        .any(|p| p.name().to_ascii_lowercase().trim_end_matches(".exe") == target)
+}
+
 /// Path to the persistent launcher state file in the per-app config dir.
 pub(crate) fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;
