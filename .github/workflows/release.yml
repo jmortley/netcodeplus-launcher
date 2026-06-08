@@ -10,32 +10,43 @@ name: Release (build, sign, publish)
 # The manifest sign CANNOT move to CI (hardware key). Code-signing MUTATES the exe, so
 # the manifest sha256 (the 1.4.1 hash-pin) is computed AFTER signing, here in CI.
 #
+# Supply-chain split (defends the signing credential against a poisoned build dependency):
+#   - `build` is UNTRUSTED: it runs npm/cargo + arbitrary dependency build code
+#     (postinstall, build.rs). It has NO secrets and NO id-token, so compromised
+#     build-time code cannot reach the Azure signing credential or the release-publish
+#     token. It only emits the icon-applied, UNSIGNED exe as an artifact.
+#   - `sign-and-publish` is TRUSTED: minimal first-party steps only. It holds the OIDC
+#     token + contents:write, signs the artifact, and publishes it. Gated by the
+#     `release` environment (add a required reviewer for a human approval gate).
+#
 # Signing never blocks a release: if Azure isn't configured (secrets/vars absent) the
-# job still builds + uploads an UNSIGNED exe — update integrity is already covered by the
-# YubiKey-signed manifest hash-pin; signing is first-run SmartScreen UX only.
+# trusted job still publishes the UNSIGNED exe — update integrity is already covered by
+# the YubiKey-signed manifest hash-pin; signing is first-run SmartScreen UX only.
 
 on:
   push:
     tags:
       - 'v*'
 
-# OIDC -> id-token: write. Uploading release assets -> contents: write.
-permissions:
-  contents: write
-  id-token: write
+# Default-deny; each job opts into exactly the permissions it needs.
+permissions: {}
 
 env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  release:
-    name: Build + sign + upload
+  # ---------------------------------------------------------------------------
+  # UNTRUSTED — no secrets, no id-token. Runs the dependency-heavy build.
+  # ---------------------------------------------------------------------------
+  build:
+    name: Build (untrusted)
     runs-on: windows-latest
-    # The OIDC token's subject is repo:<owner>/<repo>:environment:release — the Entra
-    # federated credential is scoped to exactly this (see docs/CODE_SIGNING.md). GitHub
-    # auto-creates the environment on first run; add approval rules there if you want a
-    # human gate before a signed build is published.
-    environment: release
+    permissions:
+      contents: read
+    outputs:
+      version: ${{ steps.ver.outputs.version }}
+      asset:   ${{ steps.ver.outputs.asset }}
+      tag:     ${{ steps.ver.outputs.tag }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
@@ -53,29 +64,6 @@ jobs:
           "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           "asset=$asset"     | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Tag=$tag  Version=$version  Asset=$asset"
-
-      # Is Azure Artifact Signing fully configured? If not, build + upload UNSIGNED
-      # (graceful degradation) instead of failing the release.
-      - name: Signing preflight
-        id: preflight
-        shell: pwsh
-        env:
-          AZ_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
-          AZ_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
-          AZ_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
-          AZ_ENDPOINT:        ${{ vars.AZURE_SIGNING_ENDPOINT }}
-          AZ_ACCOUNT:         ${{ vars.AZURE_SIGNING_ACCOUNT }}
-          AZ_PROFILE:         ${{ vars.AZURE_SIGNING_PROFILE }}
-        run: |
-          $have = $env:AZ_CLIENT_ID -and $env:AZ_TENANT_ID -and $env:AZ_SUBSCRIPTION_ID -and `
-                  $env:AZ_ENDPOINT -and $env:AZ_ACCOUNT -and $env:AZ_PROFILE
-          $sign = if ($have) { "true" } else { "false" }
-          "sign=$sign" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
-          if ($sign -eq "true") {
-            Write-Host "Azure Artifact Signing IS configured -> exe will be Authenticode-signed."
-          } else {
-            Write-Warning "Azure Artifact Signing NOT fully configured -> building + uploading an UNSIGNED exe. (Update integrity still covered by the signed manifest hash-pin; configure secrets/vars per docs/CODE_SIGNING.md to enable signing.)"
-          }
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
@@ -95,9 +83,8 @@ jobs:
       - name: Build (tauri, --no-bundle)
         run: npm run tauri build -- --no-bundle
 
-      # Stage the final-named asset, then re-apply the icon with rcedit BEFORE signing.
-      # rcedit mutates the exe, so it must run before the Authenticode signature (which
-      # must be the last write). Mirrors the local ship ritual.
+      # Stage the final-named asset, then re-apply the icon with rcedit. This is the LAST
+      # mutation of the bytes before signing — the trusted job signs exactly this artifact.
       - name: Stage asset + re-apply icon (rcedit)
         id: stage
         shell: pwsh
@@ -106,26 +93,86 @@ jobs:
           RCEDIT_URL:    https://github.com/electron/rcedit/releases/download/v2.0.0/rcedit-x64.exe
           RCEDIT_SHA256: 3e7801db1a5edbec91b49a24a094aad776cb4515488ea5a4ca2289c400eade2a
         run: |
-          $version = "${{ steps.ver.outputs.version }}"
-          $asset   = "${{ steps.ver.outputs.asset }}"
-          $src     = "target/release/netcodeplus-launcher.exe"
+          $asset = "${{ steps.ver.outputs.asset }}"
+          $src   = "target/release/netcodeplus-launcher.exe"
           if (-not (Test-Path $src)) { throw "Build artifact not found: $src" }
           New-Item -ItemType Directory -Force -Path "dist-release" | Out-Null
           $out = "dist-release/$asset"
           Copy-Item $src $out -Force
 
-          # Download + verify pinned rcedit, then re-apply the icon.
           $rc = Join-Path $env:RUNNER_TEMP "rcedit-x64.exe"
           Invoke-WebRequest -Uri $env:RCEDIT_URL -OutFile $rc
           $got = (Get-FileHash $rc -Algorithm SHA256).Hash.ToLower()
           if ($got -ne $env:RCEDIT_SHA256) { throw "rcedit sha256 mismatch: got $got expected $env:RCEDIT_SHA256" }
           & $rc $out --set-icon "src-tauri/icons/icon.ico"
           if ($LASTEXITCODE -ne 0) { throw "rcedit --set-icon failed ($LASTEXITCODE)" }
-
-          "path=$out" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           Write-Host "Staged + icon-applied: $out"
 
-      # --- Authenticode sign (only when Azure is configured) ---
+      - name: Upload unsigned exe artifact
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: launcher-exe
+          path: dist-release/${{ steps.ver.outputs.asset }}
+          if-no-files-found: error
+          retention-days: 1
+
+  # ---------------------------------------------------------------------------
+  # TRUSTED — holds the OIDC token + contents:write. Minimal first-party steps.
+  # Gated by the `release` environment (set a required reviewer there).
+  # ---------------------------------------------------------------------------
+  sign-and-publish:
+    name: Sign + publish (trusted)
+    needs: build
+    runs-on: windows-latest
+    environment: release
+    permissions:
+      contents: write
+      id-token: write
+    steps:
+      - name: Download unsigned exe
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: launcher-exe
+          path: incoming
+
+      # Normalize to a known path regardless of the artifact's internal layout, so the
+      # signing folder contains exactly the one exe.
+      - name: Normalize artifact path
+        id: stage
+        shell: pwsh
+        run: |
+          $asset = "${{ needs.build.outputs.asset }}"
+          $found = Get-ChildItem incoming -Recurse -Filter *.exe | Select-Object -First 1
+          if (-not $found) { throw "No exe found in the build artifact" }
+          New-Item -ItemType Directory -Force -Path "dist-release" | Out-Null
+          $out = "dist-release/$asset"
+          Copy-Item $found.FullName $out -Force
+          "path=$out" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          Write-Host "Normalized: $out"
+
+      # Is Azure Artifact Signing fully configured? If not, publish UNSIGNED (graceful)
+      # instead of failing the release.
+      - name: Signing preflight
+        id: preflight
+        shell: pwsh
+        env:
+          AZ_CLIENT_ID:       ${{ secrets.AZURE_CLIENT_ID }}
+          AZ_TENANT_ID:       ${{ secrets.AZURE_TENANT_ID }}
+          AZ_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+          AZ_ENDPOINT:        ${{ vars.AZURE_SIGNING_ENDPOINT }}
+          AZ_ACCOUNT:         ${{ vars.AZURE_SIGNING_ACCOUNT }}
+          AZ_PROFILE:         ${{ vars.AZURE_SIGNING_PROFILE }}
+        run: |
+          $have = $env:AZ_CLIENT_ID -and $env:AZ_TENANT_ID -and $env:AZ_SUBSCRIPTION_ID -and `
+                  $env:AZ_ENDPOINT -and $env:AZ_ACCOUNT -and $env:AZ_PROFILE
+          $sign = if ($have) { "true" } else { "false" }
+          "sign=$sign" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          if ($sign -eq "true") {
+            Write-Host "Azure Artifact Signing IS configured -> exe will be Authenticode-signed."
+          } else {
+            Write-Warning "Azure Artifact Signing NOT fully configured -> publishing an UNSIGNED exe. (Update integrity still covered by the signed manifest hash-pin; configure secrets/vars per docs/CODE_SIGNING.md to enable signing.)"
+          }
+
       - name: Azure login (OIDC, secretless)
         if: steps.preflight.outputs.sign == 'true'
         uses: azure/login@a457da9ea143d694b1b9c7c869ebb04ebe844ef5 # v2.3.0
@@ -149,7 +196,7 @@ jobs:
 
       # Fail the release if signing was attempted but produced an invalid signature —
       # never ship an exe we *claim* is signed but isn't. (Artifact Signing certs have a
-      # 3-day validity; the embedded RFC3161 timestamp is what keeps it valid long-term.)
+      # 3-day validity; the embedded RFC3161 timestamp keeps it valid long-term.)
       - name: Verify Authenticode signature
         if: steps.preflight.outputs.sign == 'true'
         shell: pwsh
@@ -176,9 +223,9 @@ jobs:
 
           # JSON sidecar (uploaded as an artifact) for the local manifest step.
           $obj = [ordered]@{
-            version    = "${{ steps.ver.outputs.version }}"
-            asset      = "${{ steps.ver.outputs.asset }}"
-            url        = "https://github.com/${{ github.repository }}/releases/download/${{ steps.ver.outputs.tag }}/${{ steps.ver.outputs.asset }}"
+            version    = "${{ needs.build.outputs.version }}"
+            asset      = "${{ needs.build.outputs.asset }}"
+            url        = "https://github.com/${{ github.repository }}/releases/download/${{ needs.build.outputs.tag }}/${{ needs.build.outputs.asset }}"
             sha256     = $sha
             size_bytes = $size
             signed     = ("${{ steps.preflight.outputs.sign }}" -eq "true")
@@ -186,16 +233,16 @@ jobs:
           ($obj | ConvertTo-Json) | Out-File -FilePath "dist-release/manifest-pin.json" -Encoding ascii
 
           # Loud job summary so the hash-pin is one click away for the manifest step.
-          # Built as a line array (not a here-string) so markdown backticks don't
-          # collide with PowerShell's backtick escape char.
+          # Built as a line array (not a here-string) so markdown backticks don't collide
+          # with PowerShell's backtick escape char.
           $signedLabel = if ("${{ steps.preflight.outputs.sign }}" -eq "true") { "yes (Authenticode)" } else { "NO (Azure not configured)" }
           $fence = ([string][char]96) * 3
           $lines = @(
-            "## Launcher release ${{ steps.ver.outputs.version }}",
+            "## Launcher release ${{ needs.build.outputs.version }}",
             "",
             "| field | value |",
             "|---|---|",
-            "| asset | ${{ steps.ver.outputs.asset }} |",
+            "| asset | ${{ needs.build.outputs.asset }} |",
             "| signed | $signedLabel |",
             "| sha256 | $sha |",
             "| size_bytes | $size |",
@@ -209,12 +256,12 @@ jobs:
           )
           $lines | Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
 
-      - name: Upload signed exe to the GitHub release
+      - name: Upload exe to the GitHub release
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          $tag = "${{ steps.ver.outputs.tag }}"
+          $tag = "${{ needs.build.outputs.tag }}"
           $exe = "${{ steps.stage.outputs.path }}"
           # Normally the user pre-creates the release with hype notes, then pushes the tag
           # (see docs/CODE_SIGNING.md). For a bare `git push origin vX.Y.Z` we create it.
