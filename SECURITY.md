@@ -13,6 +13,12 @@ CDN being uncompromised.
   and is never present on a build server.
 - Every pak entry in the manifest carries a SHA-256 hash. The launcher
   refuses to install a pak whose downloaded bytes do not match.
+- The launcher's own update entry may carry a SHA-256 + size. When it
+  does, the launcher downloads, verifies, and only then relaunches into
+  the new exe — so the signed manifest transitively protects the launcher
+  binary on self-update (a swapped or tampered exe fails the check and is
+  discarded). Older manifests without these fields fall back to a
+  notify-only link.
 - Manifests carry an `expires_at` timestamp. Stale signed manifests are
   rejected even if the signature itself is still cryptographically
   valid.
@@ -28,13 +34,18 @@ CDN being uncompromised.
 | MITM on the manifest or pak download | Manifest signature verified against the compiled-in public key before parsing JSON. |
 | Replay of an old, signed manifest | `expires_at` is enforced before any install action. |
 | Pak bytes swapped at the host | SHA-256 of the downloaded file is compared against the value in the signed manifest, before atomic replace. |
+| Launcher exe swapped on self-update | When the manifest's launcher entry carries a SHA-256, the self-downloaded exe is verified against it before it is ever run. |
 | Downgrade attack against the launcher | `min_launcher_version` is checked before applying an update. |
 
 ### What this does NOT defend against
 
-- A malicious launcher binary itself. The trust root is the binary, so
-  the launcher binary's own distribution must be protected by code
-  signing (planned via [SignPath Foundation](https://signpath.org/)).
+- The **initial** launcher download, or a malicious launcher binary
+  itself. The trust root is the binary, so the binary's own distribution
+  (the first install — before any signed manifest is involved) must be
+  protected by code signing (planned via
+  [SignPath Foundation](https://signpath.org/)). Self-update *is* now
+  verified against the signed manifest (above), but the first install is
+  not.
 - Compromise of the offline signing key.
 - Vulnerabilities in Unreal Tournament 4 itself, or in third-party paks
   that the launcher merely keeps up to date.

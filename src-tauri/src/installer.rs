@@ -13,6 +13,7 @@
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
 
 use serde::Serialize;
 use tauri::{AppHandle, Emitter};
@@ -22,6 +23,19 @@ use crate::updates::fetch_verify;
 /// Set by [`cancel_game_download`], polled by the download loop. One installer
 /// download runs at a time, so a single flag suffices.
 static CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// Path of the most recently downloaded **and verified** installer zip, recorded
+/// by [`download_game_installer`] and consumed by [`install_game`].
+///
+/// Defense-in-depth: [`install_game`] unpacks this zip and shell-launches the
+/// installer it contains (which self-elevates via UAC), so the path must NOT
+/// come from the frontend — an injected IPC call could otherwise point it at an
+/// arbitrary attacker-staged zip. By taking the path from this backend record
+/// (set only after the SHA-256 verification passes), the unpack+elevate path can
+/// only ever act on bytes the launcher itself verified against the signed
+/// manifest. (The CSP + `withGlobalTauri:false` already gate `invoke`; this
+/// closes the primitive on its own merits.)
+static VERIFIED_INSTALLER: Mutex<Option<PathBuf>> = Mutex::new(None);
 
 /// What the UI needs to offer the download (or hide it).
 #[derive(Debug, Serialize)]
@@ -183,8 +197,11 @@ pub async fn download_game_installer(app: AppHandle, dir: String) -> Result<Stri
         );
     }
 
-    // Verified — commit the `.part` to the final name.
+    // Verified — commit the `.part` to the final name, and record it as THE
+    // installer `install_game` may act on (so the unpack+elevate path never
+    // trusts a frontend-supplied path).
     std::fs::rename(&part, &final_path).map_err(|e| e.to_string())?;
+    *VERIFIED_INSTALLER.lock().unwrap() = Some(final_path.clone());
     Ok(final_path.to_string_lossy().into_owned())
 }
 
@@ -210,9 +227,17 @@ pub struct InstallGameResult {
 /// Emits `game-download-progress` events with phase `"extract"`. Returns the
 /// unpack folder + launched exe path. The verified `.zip` is kept (the user can
 /// delete it, and the unpack folder, once UT4 is installed).
+///
+/// Takes NO path: it acts only on the installer [`download_game_installer`]
+/// verified this session (recorded in [`VERIFIED_INSTALLER`]). A frontend-
+/// supplied path is deliberately not accepted — see that static's docs.
 #[tauri::command]
-pub async fn install_game(app: AppHandle, zip_path: String) -> Result<InstallGameResult, String> {
-    let zip = PathBuf::from(&zip_path);
+pub async fn install_game(app: AppHandle) -> Result<InstallGameResult, String> {
+    let zip = VERIFIED_INSTALLER
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("download the UT4 installer first — there's no verified download to install")?;
     if !zip.is_file() {
         return Err("the downloaded installer is missing — download it again".into());
     }

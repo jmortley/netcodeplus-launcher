@@ -47,12 +47,16 @@ interface PluginInstallOutcome {
   detail: string;
 }
 
-// Notify-only launcher self-update status from `launcher_update_status`.
+// Launcher self-update status from `launcher_update_status`. When
+// `can_auto_update` is true the manifest carries a signed SHA-256 + size, so the
+// launcher can download + verify + relaunch the new exe itself; otherwise it's
+// notify-only (the user fetches + runs it from `url`).
 interface LauncherUpdateResult {
   update_available: boolean;
   current_version: string;
   available_version: string | null;
   url: string | null;
+  can_auto_update: boolean;
 }
 
 // Post-update housekeeping status from `launcher_update_housekeeping`.
@@ -89,6 +93,7 @@ interface LauncherState {
   ut4stats_playerid: string | null;
   ut4stats_playername: string | null;
   launcher_token: string | null;
+  utpugs_launcher_token: string | null;
   discord_presence_enabled?: boolean;
 }
 
@@ -209,6 +214,13 @@ const state = {
   linkedName: null as string | null,
   launcherToken: null as string | null,
   pugStatus: null as PugStatus | null,
+  // UTPugs (autopug) — a second community with its own per-user token, its own
+  // status, and several modes (the user picks one). `utpugsConfigured` mirrors
+  // the Rust `utpugs_configured()` (false hides the whole UTPugs section).
+  utpugsToken: null as string | null,
+  utpugsMode: "wipe" as string,
+  utpugsStatus: null as PugStatus | null,
+  utpugsConfigured: false,
   // Live PUGs anyone can spectate (from the tokenless bot /live endpoint) —
   // drives the HOME "watch to learn" banner. Empty when nothing is live.
   livePugs: [] as SpectatePug[],
@@ -223,7 +235,8 @@ function escape(value: string): string {
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
     .replace(/>/g, "&gt;")
-    .replace(/"/g, "&quot;");
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#39;");
 }
 
 // ---- install + launch -----------------------------------------------------
@@ -1134,7 +1147,9 @@ async function doLaunchElevated(): Promise<void> {
   }
   try {
     await invoke("launch_game_elevated", {
-      executable: di.install.executable,
+      // Pass the install root (an id the backend re-validates), not the exe path
+      // — the backend resolves the executable itself (defense-in-depth).
+      root: di.install.root,
       args: [...profile.args, ...authArgs],
       windowAction: state.launchWindowAction,
     });
@@ -1563,6 +1578,7 @@ function applyPrefs(prefs: LauncherState) {
   state.linkedId = prefs.ut4stats_playerid;
   state.linkedName = prefs.ut4stats_playername;
   state.launcherToken = prefs.launcher_token;
+  state.utpugsToken = prefs.utpugs_launcher_token;
   state.discordPresence = prefs.discord_presence_enabled ?? false;
   if (prefs.install_path) {
     const i = state.installs.findIndex((d) => d.install.root === prefs.install_path);
@@ -1584,17 +1600,20 @@ async function showVersion() {
 
 async function loadAll() {
   try {
-    const [installs, presets, prefs, ut4] = await Promise.all([
+    const [installs, presets, prefs, ut4, utpugsConfigured] = await Promise.all([
       invoke<DetectedInstall[]>("detect_installs"),
       invoke<AffinityPreset[]>("affinity_presets"),
       invoke<LauncherState>("load_state"),
       // A credential-store hiccup must not block startup — treat as signed out.
       invoke<Ut4Auth>("ut4_auth_status").catch(() => null),
+      // Whether this build has the UTPugs base URL wired in (false hides it).
+      invoke<boolean>("utpugs_configured").catch(() => false),
     ]);
     state.installs = installs;
     state.presets = presets;
     state.selInstall = 0;
     state.ut4 = ut4;
+    state.utpugsConfigured = utpugsConfigured;
     applyPrefs(prefs);
     // A manually-picked install that auto-detection doesn't find would otherwise
     // be lost on restart (detect_installs overwrote state.installs, so the saved
@@ -1618,6 +1637,7 @@ async function loadAll() {
     renderTopbarAuth();
     renderStats();
     renderPug();
+    renderUtpugs();
     // Arm Discord presence from the persisted opt-in, then push initial state.
     if (state.discordPresence) {
       void invoke("set_discord_presence_enabled", { enabled: true }).catch(() => {});
@@ -1640,6 +1660,10 @@ async function loadAll() {
     if (state.launcherToken) {
       void pollPugStatus();
       startPugPolling();
+    }
+    if (state.utpugsConfigured && state.utpugsToken) {
+      void pollUtpugsStatus();
+      startUtpugsPolling();
     }
   } catch (err) {
     homeHero.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
@@ -1821,31 +1845,55 @@ async function saveLauncherToken(token: string | null) {
 }
 
 // ---- Discord Rich Presence (opt-in) ---------------------------------------
-// Translate the launcher's PUG state into a Discord activity push. The backend
-// no-ops when the toggle is off or Discord isn't running; deduped here so the
-// 5 s poll doesn't spam the IPC. See src-tauri/src/presence.rs.
+// Translate the launcher's PUG state into a Discord activity push, across BOTH
+// communities the user may be linked to (iCTF + UTPugs). The backend no-ops when
+// the toggle is off or Discord isn't running; deduped here so the 5 s polls don't
+// spam the IPC. See src-tauri/src/presence.rs.
 let lastPresenceKey = "";
+
+// Rank PUG states so the most "advanced" one wins when the user is queued in more
+// than one community at once: a live/starting game beats a different community's
+// queue, which beats idle.
+function pugStateRank(s: string | undefined): number {
+  return s === "live" ? 3 : s === "starting" ? 2 : s === "queued" ? 1 : 0;
+}
 
 function updateDiscordPresence(): void {
   if (!state.discordPresence) return;
-  const st = state.pugStatus;
+
+  // Each community the user is linked to is a candidate; pick the most-advanced
+  // state so the profile reflects whichever PUG actually matters right now.
+  const candidates: { community: string; mode: string; st: PugStatus }[] = [];
+  if (state.launcherToken && state.pugStatus) {
+    candidates.push({ community: "Instagib Nation", mode: "ictf", st: state.pugStatus });
+  }
+  if (state.utpugsConfigured && state.utpugsToken && state.utpugsStatus) {
+    candidates.push({ community: "UTPugs", mode: state.utpugsMode, st: state.utpugsStatus });
+  }
+  let best: { community: string; mode: string; st: PugStatus } | null = null;
+  for (const c of candidates) {
+    if (!best || pugStateRank(c.st.state) > pugStateRank(best.st.state)) best = c;
+  }
+
   let input: {
     kind: string;
     mode?: string;
     detail?: string;
     players?: number;
     max_players?: number;
+    community?: string;
   };
-  if (st && st.state === "live") {
-    input = { kind: "live", mode: "ictf", detail: st.server ?? undefined };
-  } else if (st && st.state === "starting") {
-    input = { kind: "live", mode: "ictf", detail: "starting…" };
-  } else if (st && st.state === "queued") {
+  if (best && best.st.state === "live") {
+    input = { kind: "live", mode: best.mode, detail: best.st.server ?? undefined, community: best.community };
+  } else if (best && best.st.state === "starting") {
+    input = { kind: "live", mode: best.mode, detail: "starting…", community: best.community };
+  } else if (best && best.st.state === "queued") {
     input = {
       kind: "queued",
-      mode: "ictf",
-      players: st.players ?? 0,
-      max_players: st.max_players ?? 10,
+      mode: best.mode,
+      players: best.st.players ?? 0,
+      max_players: best.st.max_players ?? 10,
+      community: best.community,
     };
   } else {
     input = { kind: "idle" };
@@ -2165,6 +2213,256 @@ async function spectatePug(p: SpectatePug, status: HTMLElement | null) {
     ? `${p.server}?Password=${p.password}?SpectatorOnly=1`
     : `${p.server}?SpectatorOnly=1`;
   await connectTo(target, "", status);
+}
+
+// ---- in-launcher PUG join (UTPugs / autopug, multi-mode) -------------------
+// A second community alongside iCTF. autopug runs several queues, so the user
+// picks a mode; everything else mirrors the iCTF flow but against the UTPugs
+// commands and the separate per-user UTPugs token. The whole section is hidden
+// when this build has no UTPugs base URL wired in (state.utpugsConfigured).
+
+// autopug's PUG modes (key = the Discord pickup queue name it matches). CTF is
+// omitted until autopug has a CTF host-rule (see commands.rs AUTOPUG_MODES) —
+// keep this list in lockstep with that Rust allowlist.
+const UTPUGS_MODES: { key: string; label: string }[] = [
+  { key: "wipe", label: "Wipeout" },
+  { key: "elim", label: "Elimination" },
+  { key: "duel", label: "Duel" },
+];
+
+let utpugsTokenRejected = false;
+
+function utpugsModeLabel(key: string): string {
+  return UTPUGS_MODES.find((m) => m.key === key)?.label ?? key.toUpperCase();
+}
+
+// A token problem on any UTPugs call: drop the dead token (stops polling,
+// re-renders the link prompt) and flag why — mirrors handlePugTokenError.
+function handleUtpugsTokenError(): void {
+  utpugsTokenRejected = true;
+  void saveUtpugsToken(null);
+}
+
+async function utpugsPug(action: "joinpug" | "leavepug" | "listpug") {
+  if (!state.utpugsToken?.trim()) {
+    renderUtpugs();
+    return;
+  }
+  const status = document.getElementById("utpugs-status");
+  if (status) status.textContent = action === "listpug" ? "Checking queue…" : "Working…";
+  try {
+    const raw = await invoke<string>("utpugs_action", {
+      action,
+      mode: state.utpugsMode,
+      token: state.utpugsToken ?? "",
+    });
+    let msg = raw;
+    try {
+      msg = (JSON.parse(raw) as { message?: string }).message ?? raw;
+    } catch {
+      /* response wasn't JSON; show it raw */
+    }
+    if (status) status.textContent = msg;
+  } catch (err) {
+    console.error("utpugs_action failed:", err);
+    if (isPugTokenError(err)) handleUtpugsTokenError();
+    else if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+  }
+}
+
+async function saveUtpugsToken(token: string | null) {
+  state.utpugsToken = token;
+  if (token) utpugsTokenRejected = false;
+  if (!token) state.utpugsStatus = null;
+  try {
+    await invoke("save_utpugs_token", { token });
+  } catch (err) {
+    console.error("save_utpugs_token failed:", err);
+  }
+  renderUtpugs();
+  updateDiscordPresence();
+  if (token) {
+    void pollUtpugsStatus();
+    startUtpugsPolling();
+  } else {
+    stopUtpugsPolling();
+  }
+}
+
+async function utpugsSpectate() {
+  const status = document.getElementById("utpugs-status");
+  if (status) status.textContent = "Finding live games…";
+  let st: { state: string; pugs?: SpectatePug[] };
+  try {
+    st = JSON.parse(await invoke<string>("utpugs_spectate", { token: state.utpugsToken ?? "" }));
+  } catch (err) {
+    console.error("utpugs_spectate failed:", err);
+    if (isPugTokenError(err)) handleUtpugsTokenError();
+    else if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    return;
+  }
+  const pugs = st.pugs ?? [];
+  if (st.state !== "live" || pugs.length === 0) {
+    if (status) status.textContent = "No live UTPugs game to spectate right now.";
+    return;
+  }
+  if (pugs.length === 1) {
+    await spectatePug(pugs[0], status);
+    return;
+  }
+  if (status) {
+    status.innerHTML =
+      `<div>${pugs.length} live games — pick one to spectate:</div>` +
+      `<div class="discord-btns">${pugs
+        .map(
+          (p, i) =>
+            `<button class="spec-pick" type="button" data-i="${i}">${escape(p.mode || "PUG")}${
+              p.map ? ` · ${escape(p.map)}` : ""
+            } · #${p.pug_id}</button>`,
+        )
+        .join("")}</div>`;
+    status.querySelectorAll<HTMLButtonElement>(".spec-pick").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const p = pugs[Number(btn.dataset.i)];
+        if (p) void spectatePug(p, status);
+      });
+    });
+  }
+}
+
+async function connectToUtpugs(server: string, password: string) {
+  await connectTo(server, password, document.getElementById("utpugs-status"));
+}
+
+function renderUtpugs(): void {
+  const section = document.getElementById("utpugs-section");
+  const el = document.getElementById("utpugs-controls");
+  if (!section || !el) return;
+  // Not wired up in this build → hide the whole section, heading and all.
+  if (!state.utpugsConfigured) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+
+  if (!state.utpugsToken) {
+    el.innerHTML = `
+      ${
+        utpugsTokenRejected
+          ? `<p class="warn">Your UTPugs token wasn't recognized — it may not be linked yet, or it was reset. Re-link it below.</p>`
+          : ""
+      }
+      <p>Queue UTPugs PUGs — Wipeout, Elimination, Duel — here. Run <code>/launchertoken</code> in the UTPugs Discord and paste the token it DMs you:</p>
+      <div class="controls">
+        <label>Launcher token
+          <input id="utpugs-token" type="password" placeholder="paste your /launchertoken value" spellcheck="false" autocomplete="off" />
+        </label>
+        <button id="utpugs-token-save" type="button">Save token</button>
+      </div>`;
+    document.getElementById("utpugs-token-save")?.addEventListener("click", () => {
+      const v = (document.getElementById("utpugs-token") as HTMLInputElement).value.trim();
+      if (v) void saveUtpugsToken(v);
+    });
+    return;
+  }
+
+  const modeLabel = utpugsModeLabel(state.utpugsMode);
+  const modeOpts = UTPUGS_MODES.map(
+    (m) =>
+      `<option value="${escape(m.key)}"${m.key === state.utpugsMode ? " selected" : ""}>${escape(m.label)}</option>`,
+  ).join("");
+  const modeBar = `
+    <div class="utpugs-modebar">
+      <label>Mode <select id="utpugs-mode">${modeOpts}</select></label>
+      <button id="utpugs-token-clear" type="button" class="link-btn">change token</button>
+    </div>`;
+
+  const st = state.utpugsStatus;
+  let block: string;
+  if (st && st.state === "live" && st.server) {
+    block = `
+      <p class="ok">🎮 Your ${escape(modeLabel)} PUG is live!</p>
+      <p class="src">Server <code>${escape(st.server)}</code>${
+        st.password ? ` · password <code>${escape(st.password)}</code>` : ""
+      }</p>
+      <button id="utpugs-connect" type="button" class="launch-primary pug-connect">▶&nbsp;&nbsp;Connect to PUG</button>`;
+  } else if (st && st.state === "starting") {
+    block = `
+      <p class="ok">🛰️ Your ${escape(modeLabel)} PUG is starting…</p>
+      <p class="src">Server spinning up — Connect unlocks the moment it's ready (~90s).</p>
+      <button type="button" class="launch-primary pug-connect" disabled>▶&nbsp;&nbsp;Starting…</button>`;
+  } else {
+    const queueLine =
+      st && st.state === "queued"
+        ? `In queue — ${st.players ?? 0}/${st.max_players ?? 10}`
+        : `Queue for ${escape(modeLabel)}`;
+    block = `
+      <p>${queueLine}</p>
+      <div class="discord-btns">
+        <button id="utpugs-join" type="button">Join ${escape(modeLabel)} PUG</button>
+        <button id="utpugs-leave" type="button">Leave</button>
+        <button id="utpugs-refresh" type="button">Queue status</button>
+        <button id="utpugs-spectate" type="button">Spectate live game</button>
+      </div>`;
+  }
+
+  el.innerHTML = `${modeBar}${block}<div id="utpugs-status" class="launch-status"></div>`;
+
+  const modeSel = document.getElementById("utpugs-mode") as HTMLSelectElement | null;
+  modeSel?.addEventListener("change", () => {
+    state.utpugsMode = modeSel.value;
+    // Status is per-mode — clear it so we don't show the old mode's queue while
+    // the first poll for the new mode is in flight.
+    state.utpugsStatus = null;
+    renderUtpugs();
+    void pollUtpugsStatus();
+  });
+  document
+    .getElementById("utpugs-token-clear")
+    ?.addEventListener("click", () => void saveUtpugsToken(null));
+  if (st && st.state === "live" && st.server) {
+    const server = st.server;
+    const password = st.password ?? "";
+    document
+      .getElementById("utpugs-connect")
+      ?.addEventListener("click", () => void connectToUtpugs(server, password));
+  }
+  document.getElementById("utpugs-join")?.addEventListener("click", () => void utpugsPug("joinpug"));
+  document.getElementById("utpugs-leave")?.addEventListener("click", () => void utpugsPug("leavepug"));
+  document.getElementById("utpugs-refresh")?.addEventListener("click", () => void utpugsPug("listpug"));
+  document.getElementById("utpugs-spectate")?.addEventListener("click", () => void utpugsSpectate());
+}
+
+let utpugsPollTimer: number | undefined;
+
+function startUtpugsPolling() {
+  if (utpugsPollTimer !== undefined) return;
+  utpugsPollTimer = window.setInterval(() => void pollUtpugsStatus(), 5000);
+}
+
+function stopUtpugsPolling() {
+  if (utpugsPollTimer !== undefined) {
+    clearInterval(utpugsPollTimer);
+    utpugsPollTimer = undefined;
+  }
+}
+
+async function pollUtpugsStatus() {
+  if (!state.utpugsToken || !state.utpugsConfigured) return;
+  try {
+    const next = JSON.parse(
+      await invoke<string>("utpugs_status", { mode: state.utpugsMode, token: state.utpugsToken }),
+    ) as PugStatus;
+    const prev = state.utpugsStatus;
+    state.utpugsStatus = next;
+    updateDiscordPresence();
+    if (!prev || prev.state !== next.state || prev.server !== next.server || prev.players !== next.players) {
+      renderUtpugs();
+    }
+  } catch (err) {
+    console.error("utpugs_status failed:", err);
+    if (isPugTokenError(err)) handleUtpugsTokenError();
+  }
 }
 
 // ---- server browser -------------------------------------------------------
@@ -3143,7 +3441,9 @@ async function startGameDownload(): Promise<void> {
 // Unpack the verified zip and launch its installer (which self-elevates via the
 // Windows admin prompt). Shows "Unpacking" progress, then the launch result.
 // Reached automatically right after a verified download (one-click), and from
-// its own "Try again" button on failure.
+// its own "Try again" button on failure. `zipPath` is kept only for the
+// "Open folder" reveal — the backend resolves the zip to unpack from its own
+// verified record (install_game takes no path).
 async function startGameInstall(zipPath: string): Promise<void> {
   const status = document.getElementById("game-install-status");
   if (status) status.innerHTML = gameProgressSkeleton(false);
@@ -3155,9 +3455,7 @@ async function startGameInstall(zipPath: string): Promise<void> {
   gameDownloadUnlisten = await attachGameProgress();
 
   try {
-    const res = await invoke<{ installer_dir: string; exe_path: string }>("install_game", {
-      zipPath,
-    });
+    const res = await invoke<{ installer_dir: string; exe_path: string }>("install_game");
     if (status) {
       status.innerHTML = `<span class="ok">✓ Installer launched — follow it in its own window.</span>
         You'll get a Windows admin prompt, and you choose where UT4 installs there.
@@ -3284,16 +3582,90 @@ async function renderLauncherUpdate(): Promise<void> {
   }
   const url = st.url;
   const newer = st.available_version ? ` ${escape(st.available_version)}` : "";
+
+  if (!st.can_auto_update) {
+    // Notify-only (manifest with no verified download): just link out, exactly
+    // as before. The user downloads + runs the new launcher themselves.
+    panel.innerHTML = `
+      <div class="launcher-update">
+        <div class="launcher-update-text">A newer launcher${newer} is available — you have v${escape(
+          st.current_version,
+        )}. Download and run it to update.</div>
+        <button id="launcher-update-btn" type="button">Get the update</button>
+      </div>`;
+    document
+      .getElementById("launcher-update-btn")
+      ?.addEventListener("click", () => openExternal(url));
+    return;
+  }
+
+  // Verified self-update: the launcher downloads the new exe, checks it against
+  // the SHA-256 in the signed manifest, and relaunches into it. The manual link
+  // stays as a fallback if the in-app apply fails.
   panel.innerHTML = `
     <div class="launcher-update">
       <div class="launcher-update-text">A newer launcher${newer} is available — you have v${escape(
         st.current_version,
-      )}. Download and run it to update.</div>
-      <button id="launcher-update-btn" type="button">Get the update</button>
+      )}. The launcher can download it, verify it against the signed manifest, and restart into it.</div>
+      <div class="launcher-update-actions">
+        <button id="launcher-update-apply" type="button">Download &amp; apply update</button>
+        <button id="launcher-update-manual" type="button" class="link-btn">Download manually</button>
+      </div>
+      <div id="launcher-update-progress"></div>
     </div>`;
   document
-    .getElementById("launcher-update-btn")
+    .getElementById("launcher-update-manual")
     ?.addEventListener("click", () => openExternal(url));
+  document
+    .getElementById("launcher-update-apply")
+    ?.addEventListener("click", () => void applyLauncherUpdate());
+}
+
+// Phase → verb for the launcher self-update progress bar.
+function launcherPhaseLabel(phase: string): string {
+  return phase === "verify" ? "Verifying" : "Downloading";
+}
+
+// Download + verify + relaunch into the new launcher (the verified self-update).
+// On success the backend spawns the verified new exe and exits, so this normally
+// never returns; on failure the error is shown and the "Download manually"
+// button (left in the DOM) remains as the fallback.
+async function applyLauncherUpdate(): Promise<void> {
+  const apply = document.getElementById("launcher-update-apply") as HTMLButtonElement | null;
+  const progress = document.getElementById("launcher-update-progress");
+  if (apply) apply.disabled = true;
+  if (progress) {
+    progress.innerHTML = `
+      <div class="game-progress"><div id="launcher-progress-bar" class="game-progress-bar"></div></div>
+      <div class="src"><span id="launcher-progress-label">Starting…</span></div>`;
+  }
+  const unlisten = await listen<{ phase: string; done: number; total: number }>(
+    "launcher-download-progress",
+    (e) => {
+      const { phase, done, total } = e.payload;
+      const pct = total > 0 ? Math.floor((done / total) * 100) : 0;
+      const bar = document.getElementById("launcher-progress-bar");
+      if (bar) bar.style.width = `${pct}%`;
+      const label = document.getElementById("launcher-progress-label");
+      if (label) {
+        label.textContent = `${launcherPhaseLabel(phase)} ${pct}% — ${(done / 1e6).toFixed(1)} / ${(
+          total / 1e6
+        ).toFixed(1)} MB`;
+      }
+    },
+  );
+  try {
+    await invoke("download_and_apply_launcher_update");
+    // Reached only if the process didn't exit (it normally relaunches + exits).
+    const label = document.getElementById("launcher-progress-label");
+    if (label) label.textContent = "Update verified — restarting…";
+  } catch (err) {
+    console.error("download_and_apply_launcher_update failed:", err);
+    if (progress) progress.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    if (apply) apply.disabled = false;
+  } finally {
+    unlisten();
+  }
 }
 
 // ---- post-update housekeeping (remove old launcher + make a shortcut) ------

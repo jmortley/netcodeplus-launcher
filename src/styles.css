@@ -697,6 +697,39 @@ main {
   font-size: 0.9rem;
 }
 
+/* Verified self-update: actions + progress wrap to their own full-width rows
+   inside the flex card so the progress bar spans the card. */
+.launcher-update-actions {
+  display: flex;
+  gap: 0.6rem;
+  flex-wrap: wrap;
+  flex-basis: 100%;
+}
+#launcher-update-progress {
+  flex-basis: 100%;
+}
+#launcher-update-progress:empty {
+  display: none;
+}
+
+/* Community PUG sections (iCTF + UTPugs), each with a small heading + a per-
+   community queue UI. The UTPugs section adds a mode selector row. */
+.pug-section {
+  margin-bottom: 1rem;
+}
+.pug-section-title {
+  margin: 0 0 0.4rem;
+  font-size: 0.95rem;
+  opacity: 0.85;
+}
+.utpugs-modebar {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.5rem;
+}
+
 /* Post-update housekeeping card — shows once after the launcher updates to a
    new exe, offering to create a shortcut + remove the outdated copy. Neutral
    slate accent (informational, not an error or a call-to-action). */

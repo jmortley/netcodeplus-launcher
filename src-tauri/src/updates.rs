@@ -768,9 +768,15 @@ pub struct LauncherUpdateResult {
     pub current_version: String,
     /// The version the manifest advertises, if it advertises a launcher at all.
     pub available_version: Option<String>,
-    /// HTTPS release URL to download the new launcher — set only when
-    /// `update_available` is true.
+    /// HTTPS URL to download the new launcher — set only when `update_available`
+    /// is true. The direct exe asset when `can_auto_update`, else a release page.
     pub url: Option<String>,
+    /// `true` when the advertised launcher entry carries a SHA-256 + size, so the
+    /// launcher can download + verify + relaunch the new exe itself
+    /// ([`download_and_apply_launcher_update`]). `false` ⇒ notify-only (the user
+    /// fetches and runs it from `url` themselves) — the back-compat path for
+    /// manifests authored before the hash-pin hardening.
+    pub can_auto_update: bool,
 }
 
 /// Check whether the signed manifest advertises a newer launcher than this
@@ -794,23 +800,187 @@ pub async fn launcher_update_status(app: AppHandle) -> Result<LauncherUpdateResu
     let (manifest, _state, _, _) = fetch_verify(&app).await?;
 
     Ok(match manifest.launcher {
-        Some(entry) if entry.version > current => LauncherUpdateResult {
-            update_available: true,
-            current_version: current.to_string(),
-            available_version: Some(entry.version.to_string()),
-            url: Some(entry.url),
-        },
+        Some(entry) if entry.version > current => {
+            // Verified self-update is possible only when the entry carries BOTH
+            // the digest and the size — the integrity material the download path
+            // enforces. Either missing ⇒ notify-only.
+            let can_auto_update = entry.sha256.is_some() && entry.size_bytes.is_some();
+            LauncherUpdateResult {
+                update_available: true,
+                current_version: current.to_string(),
+                available_version: Some(entry.version.to_string()),
+                url: Some(entry.url),
+                can_auto_update,
+            }
+        }
         Some(entry) => LauncherUpdateResult {
             update_available: false,
             current_version: current.to_string(),
             available_version: Some(entry.version.to_string()),
             url: None,
+            can_auto_update: false,
         },
         None => LauncherUpdateResult {
             update_available: false,
             current_version: current.to_string(),
             available_version: None,
             url: None,
+            can_auto_update: false,
         },
     })
+}
+
+/// `launcher-download-progress` event payload. `phase` is `"download"` then
+/// `"verify"` — mirrors the game-installer download so the UI renders the same
+/// kind of progress bar.
+#[derive(Clone, Serialize)]
+struct LauncherDownloadProgress {
+    phase: &'static str,
+    done: u64,
+    total: u64,
+}
+
+fn emit_progress(app: &AppHandle, phase: &'static str, done: u64, total: u64) {
+    use tauri::Emitter;
+    let _ = app.emit(
+        "launcher-download-progress",
+        LauncherDownloadProgress { phase, done, total },
+    );
+}
+
+/// Sanitise a manifest-supplied version into a filename-safe fragment (the new
+/// exe is named after it). Mirrors the installer's `safe_version`.
+fn safe_version(v: &str) -> String {
+    v.chars()
+        .map(|c| {
+            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
+                c
+            } else {
+                '_'
+            }
+        })
+        .collect()
+}
+
+/// Download the manifest's advertised launcher exe, verify it against the
+/// signed SHA-256 + size, then relaunch into the verified copy.
+///
+/// This is the hash-pinned counterpart to [`launcher_update_status`]'s
+/// notify-only path. The whole point is that the digest lives **inside the
+/// YubiKey-signed manifest**, so verifying the download against it makes the
+/// signature transitively protect the binary — a swapped or tampered exe fails
+/// the SHA-256 check and is discarded, never run.
+///
+/// Flow:
+/// 1. Re-verify the manifest in Rust (never trust a round-tripped value), and
+///    require an advertised launcher that is strictly newer than this build and
+///    carries both `sha256` and `size_bytes`.
+/// 2. Stream `url` to `<current-exe-dir>/UT4-Community-Launcher-<ver>.exe.part`
+///    with size enforcement + progress events, then hash it in a final pass and
+///    reject anything whose digest ≠ the signed one. Commit the verified bytes
+///    to the `.exe` name.
+/// 3. Spawn the new exe with `--post-update-wait <our-pid>` (so it waits for us
+///    to release the single-instance lock before taking over) and exit. The new
+///    instance then runs the existing post-update housekeeping, which detects
+///    this now-outdated exe and offers to remove it.
+///
+/// Windows can't overwrite a running image, which is exactly why the new exe is
+/// a *sibling* (new version → new filename) rather than an in-place swap.
+#[tauri::command]
+pub async fn download_and_apply_launcher_update(app: AppHandle) -> Result<(), String> {
+    let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
+        .map_err(|e| format!("launcher version is not valid semver: {e}"))?;
+    let (manifest, _state, _, _) = fetch_verify(&app).await?;
+    let entry = manifest
+        .launcher
+        .ok_or("the update manifest advertises no launcher")?;
+    if entry.version <= current {
+        return Err("this launcher is already up to date".into());
+    }
+    // Verified self-update requires BOTH integrity fields. Absence is the
+    // notify-only path (the UI never offers this button there), but re-check in
+    // Rust so a stale frontend can't drive an unverified download.
+    let (Some(expected_sha), Some(expected_size)) = (entry.sha256, entry.size_bytes) else {
+        return Err(
+            "this update can't be applied automatically (the manifest has no verified download) — use the download link instead"
+                .into(),
+        );
+    };
+
+    // Stage the new exe beside the running one: a new version means a new
+    // filename, so it never collides with the locked, running image.
+    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+    let dir = current_exe
+        .parent()
+        .ok_or("can't locate the launcher's folder")?
+        .to_path_buf();
+    let dest = dir.join(format!(
+        "UT4-Community-Launcher-{}.exe",
+        safe_version(&entry.version.to_string())
+    ));
+    // Guard: never target the exe currently running (would be a no-op update and
+    // an unwritable, locked target anyway).
+    if dest == current_exe {
+        return Err("the new launcher resolves to the file already running".into());
+    }
+    let part = std::path::PathBuf::from(format!("{}.part", dest.to_string_lossy()));
+
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+
+    // Download — size-enforced, progress-reported (resume-capable, though the
+    // exe is small). Not cancellable: a launcher exe is a few MB, not ~10 GB.
+    let app_dl = app.clone();
+    static NEVER_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    ncp_net::download_resumable(
+        &client,
+        &entry.url,
+        expected_size,
+        &part,
+        &NEVER_CANCEL,
+        move |done, total| emit_progress(&app_dl, "download", done, total),
+    )
+    .await
+    .map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        format!("couldn't download the new launcher: {e}")
+    })?;
+
+    // Final verification against the SIGNED digest. A mismatch ⇒ a swapped or
+    // corrupted exe; discard it and refuse to run anything.
+    let app_v = app.clone();
+    let digest = ncp_net::hash_file(&part, move |done, total| {
+        emit_progress(&app_v, "verify", done, total)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if digest != expected_sha {
+        let _ = std::fs::remove_file(&part);
+        return Err(
+            "the downloaded launcher failed verification (its contents don't match the signed manifest) — it was discarded, nothing was run"
+                .into(),
+        );
+    }
+
+    // Verified — commit the `.part` to the final `.exe`.
+    std::fs::rename(&part, &dest).map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        format!("couldn't finalize the downloaded launcher: {e}")
+    })?;
+
+    // Hand off: start the verified new exe, telling it to wait for THIS process
+    // (single-instance lock holder) to exit first, then quit. If the spawn
+    // itself fails we must NOT exit — surface the error so the user can fall back
+    // to the manual download.
+    let pid = std::process::id();
+    std::process::Command::new(&dest)
+        .arg("--post-update-wait")
+        .arg(pid.to_string())
+        .current_dir(&dir)
+        .spawn()
+        .map_err(|e| {
+            format!("downloaded and verified the update, but couldn't start it: {e}")
+        })?;
+
+    app.exit(0);
+    Ok(())
 }

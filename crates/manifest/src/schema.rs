@@ -66,11 +66,13 @@ pub struct Manifest {
     /// back-compat with manifests authored before launcher-update support)
     /// means "no launcher update info" and the launcher shows nothing.
     ///
-    /// Used for **notify-only** self-update: the launcher compares its own
-    /// version to [`LauncherEntry::version`] and, if older, surfaces a banner
-    /// linking to [`LauncherEntry::url`] for the user to download and run
-    /// themselves. There is no in-place exe swap (which would require code
-    /// signing to avoid AV/SmartScreen quarantine).
+    /// Drives self-update: the launcher compares its own version to
+    /// [`LauncherEntry::version`] and, if older, surfaces an update banner. When
+    /// the entry also carries [`LauncherEntry::sha256`] + [`LauncherEntry::
+    /// size_bytes`], the launcher downloads the new exe itself, verifies it
+    /// against that signed digest, and relaunches into it; otherwise it falls
+    /// back to **notify-only** (a link to [`LauncherEntry::url`] the user fetches
+    /// and runs themselves).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launcher: Option<LauncherEntry>,
 
@@ -84,12 +86,20 @@ pub struct Manifest {
 
 /// The latest launcher build advertised by a [`Manifest`].
 ///
-/// Notify-only: this carries just enough to tell the user a newer launcher
-/// exists and where to get it. It deliberately has **no `sha256`** — the
-/// launcher does not download or verify its own replacement here (the user
-/// fetches it through the normal release page, same trust path as their first
-/// install). A future in-place self-update would add a verified-download field
-/// set, gated on code signing.
+/// Carries the new version, where to get it, and — when present — the integrity
+/// material to verify a self-downloaded replacement:
+///
+/// - With [`Self::sha256`] **and** [`Self::size_bytes`], the launcher downloads
+///   [`Self::url`] itself, enforces the size, verifies the SHA-256 against this
+///   (signed) digest, and relaunches into the verified exe. Because the digest
+///   lives inside the YubiKey-signed manifest, the signature transitively
+///   protects the binary: a swapped or tampered exe fails the check.
+/// - Without them (older manifests), the launcher falls back to **notify-only**:
+///   it just surfaces a banner linking to [`Self::url`] for the user to download
+///   and run themselves — the same trust path as their first install.
+///
+/// Both integrity fields are optional and `#[serde(default)]` so manifests
+/// authored before the hash-pin hardening still parse (→ notify-only).
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LauncherEntry {
     /// Latest launcher version. The launcher compares this to its own
@@ -98,10 +108,24 @@ pub struct LauncherEntry {
     /// integer-versioned plugin).
     pub version: Version,
 
-    /// HTTPS URL the user is sent to in order to download the new launcher
-    /// (e.g. a GitHub release page). Opened in the user's browser via the
-    /// opener plugin; never auto-executed.
+    /// HTTPS URL to download the new launcher from. With [`Self::sha256`] set
+    /// this should be the **direct exe asset** (the launcher streams + verifies
+    /// it); without it, a human-facing release page the user opens in a browser.
+    /// **Untrusted** when auto-updating — integrity comes from [`Self::sha256`].
     pub url: String,
+
+    /// SHA-256 digest of the launcher exe bytes. When present (with
+    /// [`Self::size_bytes`]) it enables verified self-update: a downloaded exe
+    /// whose bytes do not produce this digest is rejected. `None` on older
+    /// manifests → notify-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub sha256: Option<Sha256Digest>,
+
+    /// Declared size of the launcher exe in bytes; a download whose length
+    /// differs is aborted before hashing. Pairs with [`Self::sha256`]; `None` on
+    /// older manifests.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub size_bytes: Option<u64>,
 }
 
 /// A full UT4 game installer advertised by a [`Manifest`], for users who don't
@@ -468,6 +492,40 @@ mod tests {
         let m: Manifest = serde_json::from_str(json).unwrap();
         let launcher = m.launcher.as_ref().expect("launcher entry present");
         assert_eq!(launcher.version, semver::Version::new(0, 2, 0));
+        // Back-compat: a launcher entry without sha256/size_bytes parses with
+        // both integrity fields absent → the launcher stays notify-only.
+        assert!(launcher.sha256.is_none());
+        assert!(launcher.size_bytes.is_none());
+        let reparsed: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(reparsed, m);
+    }
+
+    #[test]
+    fn launcher_with_sha256_and_size_round_trips() {
+        // The hash-pinned form: a launcher entry carrying the integrity material
+        // that enables verified self-update. Must parse and round-trip.
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-05-31T00:00:00Z",
+            "expires_at": "2027-05-31T00:00:00Z",
+            "sequence": 3,
+            "min_launcher_version": "0.1.0",
+            "channels": {},
+            "launcher": {
+                "version": "1.4.1",
+                "url": "https://example.invalid/UT4-Community-Launcher-1.4.1.exe",
+                "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "size_bytes": 12345678
+            }
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let launcher = m.launcher.as_ref().expect("launcher entry present");
+        assert_eq!(launcher.version, semver::Version::new(1, 4, 1));
+        assert_eq!(launcher.size_bytes, Some(12_345_678));
+        assert_eq!(
+            launcher.sha256.expect("digest present").to_string(),
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+        );
         let reparsed: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(reparsed, m);
     }

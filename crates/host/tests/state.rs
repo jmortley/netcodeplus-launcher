@@ -56,6 +56,8 @@ fn sample_state() -> LauncherState {
         ut4stats_playerid: Some("76561190000000000".to_string()),
         ut4stats_playername: Some("phantaci".to_string()),
         launcher_token: Some("tok_example".to_string()),
+        utpugs_launcher_token: Some("utpugs_tok_example".to_string()),
+        discord_presence_enabled: true,
         ut4_username: Some("phantaci".to_string()),
         ut4_display_name: Some("phantaci".to_string()),
         ut4_account_id: Some("64bf8c6d81004e88823d577abe157373".to_string()),

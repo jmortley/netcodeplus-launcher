@@ -114,14 +114,25 @@ pub fn clear_game_requires_admin(executable: String) -> Result<(), String> {
 /// through the elevated-launch primitive the CPU priority/affinity knobs do not
 /// apply. Fire-and-forget: that primitive waits on the child, so it runs on a
 /// detached thread and the command returns once the UAC prompt is handled.
+///
+/// Defense-in-depth: the elevated target is resolved from the install `root`
+/// (re-validated here via [`ncp_host::check_install`]), NOT from a frontend-
+/// supplied exe path. So even an injected IPC call can only ever elevate a
+/// genuine UT4 shipping client under a real install — never an arbitrary exe.
+/// (The CSP `script-src 'self'` + `withGlobalTauri:false` already keep injected
+/// markup from reaching `invoke` at all; this closes the primitive regardless.)
 #[tauri::command]
 pub fn launch_game_elevated(
     app: tauri::AppHandle,
-    executable: String,
+    root: String,
     args: Vec<String>,
     window_action: String,
 ) -> Result<(), String> {
-    let exe = PathBuf::from(&executable);
+    let mod_paks_dir =
+        ncp_host::default_mod_paks_dir().ok_or("could not locate your mod paks directory")?;
+    let install = ncp_host::check_install(Path::new(&root), mod_paks_dir)
+        .ok_or("that isn't a UT4 install — can't elevate-launch it")?;
+    let exe = install.executable;
     if !exe.is_file() {
         return Err("the game executable was not found".into());
     }
@@ -231,7 +242,7 @@ pub fn save_ut4stats_link(
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
 }
 
-/// Save (or clear, by passing null) the per-user PUG launcher token.
+/// Save (or clear, by passing null) the per-user PUG launcher token (IGBot/iCTF).
 #[tauri::command]
 pub fn save_launcher_token(app: tauri::AppHandle, token: Option<String>) -> Result<(), String> {
     let path = state_path(&app)?;
@@ -239,6 +250,20 @@ pub fn save_launcher_token(app: tauri::AppHandle, token: Option<String>) -> Resu
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     state.launcher_token = token
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
+/// Save (or clear, by passing null) the per-user UTPugs PUG launcher token.
+/// Stored separately from the iCTF token — PUG tokens are per-community.
+#[tauri::command]
+pub fn save_utpugs_token(app: tauri::AppHandle, token: Option<String>) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.utpugs_launcher_token = token
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty());
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
@@ -453,6 +478,131 @@ pub async fn pug_live() -> Result<String, String> {
     ncp_net::post_json(&client, BOT_LIVE_URL, &[], "{}".to_string(), 64 * 1024)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ===================================================================
+// UTPugs (autopug) PUG API — a SECOND community, compiled in alongside
+// the IGBot/iCTF endpoints above. autopug implements the same launcher
+// PUG contract (LAUNCHER-PUG-API-SPEC-v1) at its OWN HTTPS base, and runs
+// SEVERAL modes (Wipeout / Elimination / CTF / Duel), so `mode` is a
+// parameter here rather than hardcoded. Same trust model as the iCTF base:
+// the launcher only ever talks to a base baked into this signed binary,
+// never a webview-supplied endpoint. (The signed-manifest communities[]
+// registry — architecture C in the spec — generalises this without a
+// rebuild; this hardcoded second community is the right-sized step for now.)
+// ===================================================================
+
+/// autopug's launcher PUG API base URL (HTTPS, **no trailing slash**). The
+/// launcher appends `/pug_action`, `/pug_status`, `/spectate`; ut4pugs.us's
+/// Apache reverse-proxies each `/launcher/<op>` → `127.0.0.1:9100/launcher_<op>`
+/// (autopug's aiohttp app). Empty string would disable UTPugs
+/// ([`utpugs_configured`] → `false`, UI hides the section, commands refuse).
+const AUTOPUG_BASE: &str = "https://ut4pugs.us/launcher";
+
+/// The PUG modes autopug offers — the `mode` key sent on join/leave/list and
+/// status, matched against autopug's Discord pickup queue **names** (exact, then
+/// substring, in `launcher_api._find_channel_pickup`). The launcher accepts only
+/// these (defensive: the value is forwarded into the bot's JSON body, so we never
+/// relay an arbitrary mode).
+///
+/// CTF is intentionally absent: autopug's `pickup_rules.json` has no CTF
+/// host-rule, so a CTF pickup would auto-host with the elimination fallback. Add
+/// `"ctf"` here (and to the frontend `UTPUGS_MODES`) once that rule exists.
+/// `duel` lives in a separate Discord channel, which is fine — `_find_channel_
+/// pickup` scans every channel's pickups, and member resolution is guild-wide.
+const AUTOPUG_MODES: &[&str] = &["wipe", "elim", "duel"];
+
+/// Whether UTPugs PUGs are wired up in this build (the base URL is set). The UI
+/// shows the UTPugs section only when this is true.
+#[tauri::command]
+pub fn utpugs_configured() -> bool {
+    !AUTOPUG_BASE.is_empty()
+}
+
+/// Build an autopug endpoint URL, refusing if the base isn't configured.
+fn autopug_url(path: &str) -> Result<String, String> {
+    if AUTOPUG_BASE.is_empty() {
+        return Err("UTPugs PUGs aren't enabled in this launcher build yet.".into());
+    }
+    Ok(format!("{AUTOPUG_BASE}{path}"))
+}
+
+/// Reject any `mode` autopug doesn't advertise, before it reaches the bot.
+fn check_autopug_mode(mode: &str) -> Result<(), String> {
+    if AUTOPUG_MODES.contains(&mode) {
+        Ok(())
+    } else {
+        Err(format!("unknown UTPugs mode '{mode}'"))
+    }
+}
+
+/// UTPugs join/leave/list for `mode` (one of wipe/elim/ctf/duel), authenticated
+/// by the per-user UTPugs `token`. Mirrors [`pug_action`] but against autopug and
+/// with a real mode parameter (autopug runs several queues).
+#[tauri::command]
+pub async fn utpugs_action(action: String, mode: String, token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err(
+            "Set your UTPugs launcher token first (run /launchertoken in the UTPugs Discord).".into(),
+        );
+    }
+    check_autopug_mode(&mode)?;
+    let url = autopug_url("/pug_action")?;
+    let body = serde_json::json!({ "action": action, "mode": mode }).to_string();
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(
+        &client,
+        &url,
+        &[("launcher-token", token.trim())],
+        body,
+        64 * 1024,
+    )
+    .await
+    .map_err(pug_error)
+}
+
+/// Poll the caller's UTPugs status for `mode` (queued / starting / live + the
+/// live server's connect info). Mirrors [`pug_status`]; sends `mode` so autopug
+/// reports the right queue. Drives the per-mode one-click CONNECT.
+#[tauri::command]
+pub async fn utpugs_status(mode: String, token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err("no launcher token set".into());
+    }
+    check_autopug_mode(&mode)?;
+    let url = autopug_url("/pug_status")?;
+    let body = serde_json::json!({ "mode": mode }).to_string();
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(
+        &client,
+        &url,
+        &[("launcher-token", token.trim())],
+        body,
+        64 * 1024,
+    )
+    .await
+    .map_err(pug_error)
+}
+
+/// Ask autopug for the live UTPugs PUGs the caller can spectate (across ALL
+/// modes — the response carries each pug's mode). Mirrors [`pug_spectate`];
+/// mode-agnostic. The UI connects with `?SpectatorOnly=1`.
+#[tauri::command]
+pub async fn utpugs_spectate(token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err("no launcher token set".into());
+    }
+    let url = autopug_url("/spectate")?;
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(
+        &client,
+        &url,
+        &[("launcher-token", token.trim())],
+        "{}".to_string(),
+        64 * 1024,
+    )
+    .await
+    .map_err(pug_error)
 }
 
 /// Launcher version (from `Cargo.toml`). Surfaced in the UI for bug reports.

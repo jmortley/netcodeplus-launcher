@@ -61,30 +61,45 @@ pub struct ActivityInput {
     pub players: Option<u32>,
     #[serde(default)]
     pub max_players: Option<u32>,
+    /// Community name (e.g. "UTPugs", "Instagib Nation") appended to the details
+    /// line so the profile shows WHICH community's queue you're in. Optional —
+    /// absent renders exactly as before.
+    #[serde(default)]
+    pub community: Option<String>,
     /// Epoch seconds the current activity started, for Discord's elapsed timer.
     #[serde(default)]
     pub started_unix: Option<i64>,
 }
 
-/// Human label for a mode key ("ictf" → "iCTF").
+/// Human label for a mode key ("ictf" → "iCTF"). Accepts the UTPugs queue keys
+/// (wipe/elim/duel) alongside the iCTF/legacy ones.
 fn mode_label(mode: Option<&str>) -> String {
     match mode.map(str::to_ascii_lowercase).as_deref() {
         Some("ictf") => "iCTF".to_string(),
         Some("ctf") => "CTF".to_string(),
         Some("duel") => "Duel".to_string(),
+        Some("wipe" | "wipeout" | "carnage") => "Wipeout".to_string(),
+        Some("elim" | "elimination") => "Elimination".to_string(),
         Some("elimplus") => "Elim+".to_string(),
         Some("blitz") => "Blitz".to_string(),
-        Some("wipeout") => "Wipeout".to_string(),
         Some(other) if !other.is_empty() => other.to_uppercase(),
         _ => "PUG".to_string(),
     }
 }
 
-/// Small image asset key for a mode ("ictf" → "mode_ictf").
+/// Small image asset key for a mode ("ictf" → "mode_ictf"). The UTPugs short keys
+/// are canonicalised onto the uploaded asset names (wipe → `mode_wipeout`, elim →
+/// `mode_elimplus`) so the icon resolves; an unknown mode just yields no icon.
 fn mode_asset(mode: Option<&str>) -> String {
-    match mode.map(str::to_ascii_lowercase) {
-        Some(m) if !m.is_empty() => format!("mode_{m}"),
-        _ => "idle".to_string(),
+    let canon = match mode.map(str::to_ascii_lowercase).as_deref() {
+        Some("wipe" | "carnage") => Some("wipeout".to_string()),
+        Some("elim") => Some("elimplus".to_string()),
+        Some(m) if !m.is_empty() => Some(m.to_string()),
+        _ => None,
+    };
+    match canon {
+        Some(m) => format!("mode_{m}"),
+        None => "idle".to_string(),
     }
 }
 
@@ -118,9 +133,17 @@ pub fn set_discord_presence(input: ActivityInput) {
     // Build owned strings first so they outlive the borrowing Activity.
     let label = mode_label(input.mode.as_deref());
     let small_image = mode_asset(input.mode.as_deref());
+    // " · UTPugs" / " · Instagib Nation" suffix on the details line, when a
+    // community was supplied — so the profile shows which queue you're in.
+    let community_suffix = input
+        .community
+        .as_deref()
+        .filter(|c| !c.is_empty())
+        .map(|c| format!(" · {c}"))
+        .unwrap_or_default();
     let (details, state_line, small_text): (String, String, String) = match input.kind.as_str() {
         "queued" => (
-            format!("{label} PUG"),
+            format!("{label} PUG{community_suffix}"),
             format!(
                 "In queue — {}/{}",
                 input.players.unwrap_or(0),
@@ -129,7 +152,7 @@ pub fn set_discord_presence(input: ActivityInput) {
             label.clone(),
         ),
         "live" => (
-            format!("Playing {label}"),
+            format!("Playing {label}{community_suffix}"),
             input.detail.clone().unwrap_or_default(),
             label.clone(),
         ),

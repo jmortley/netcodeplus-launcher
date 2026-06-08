@@ -15,8 +15,47 @@ mod updates;
 
 pub use elevated::run_elevated_install;
 
+/// If we were relaunched by the verified self-update
+/// ([`crate::updates::download_and_apply_launcher_update`]), the previous
+/// launcher passed `--post-update-wait <pid>`. Wait (bounded) for that process
+/// to exit BEFORE Tauri is built — otherwise the single-instance plugin would
+/// see the still-alive predecessor holding the lock, defer to it, and exit,
+/// aborting the handoff. Once the old process is gone the lock is free and we
+/// start normally as the sole instance.
+///
+/// No-op when the flag is absent (a normal launch). The predecessor calls
+/// `exit(0)` immediately after spawning us, so this returns in well under a
+/// second in practice; the loop cap stops a stuck old process hanging startup.
+#[cfg(desktop)]
+fn wait_for_predecessor_exit() {
+    let args: Vec<String> = std::env::args().collect();
+    let Some(pid) = args
+        .iter()
+        .position(|a| a == "--post-update-wait")
+        .and_then(|i| args.get(i + 1))
+        .and_then(|s| s.parse::<usize>().ok())
+    else {
+        return;
+    };
+    use sysinfo::{Pid, System};
+    let target = Pid::from(pid);
+    let mut sys = System::new();
+    for _ in 0..100 {
+        sys.refresh_processes();
+        if sys.process(target).is_none() {
+            return;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(150));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // A self-update relaunch must let its predecessor release the single-instance
+    // lock first — wait for it before building anything.
+    #[cfg(desktop)]
+    wait_for_predecessor_exit();
+
     let mut builder = tauri::Builder::default();
 
     // single-instance MUST be registered first. Its `deep-link` feature routes an
@@ -71,7 +110,12 @@ pub fn run() {
             commands::pug_status,
             commands::pug_spectate,
             commands::pug_live,
+            commands::utpugs_configured,
+            commands::utpugs_action,
+            commands::utpugs_status,
+            commands::utpugs_spectate,
             commands::save_launcher_token,
+            commands::save_utpugs_token,
             commands::engine_config_state,
             commands::openal_status,
             commands::ulticross_status,
@@ -107,6 +151,7 @@ pub fn run() {
             updates::scan_strays,
             updates::remove_stray_plugin,
             updates::launcher_update_status,
+            updates::download_and_apply_launcher_update,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

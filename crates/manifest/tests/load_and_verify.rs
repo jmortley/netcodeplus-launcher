@@ -10,7 +10,9 @@ use std::io::Cursor;
 use chrono::{DateTime, Duration, Utc};
 use minisign::{sign, KeyPair, PublicKeyBox, SignatureBox};
 use minisign_verify::PublicKey;
-use ncp_manifest::{Channel, Error, Manifest, ManifestPak, Sha256Digest, SUPPORTED_SCHEMA_VERSION};
+use ncp_manifest::{
+    Channel, Error, LauncherEntry, Manifest, ManifestPak, Sha256Digest, SUPPORTED_SCHEMA_VERSION,
+};
 use semver::{Version, VersionReq};
 
 // ---------- helpers --------------------------------------------------
@@ -130,6 +132,67 @@ fn dependent_pak_with_versionreq_round_trips() {
         Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
             .expect("manifest with dep should verify");
     assert_eq!(loaded, manifest);
+}
+
+// ---------- launcher entry (hash-pinned self-update) -----------------
+
+#[test]
+fn launcher_entry_with_sha256_survives_verification() {
+    // A manifest advertising a hash-pinned launcher must verify and preserve the
+    // integrity fields through load_and_verify — this is what the launcher reads
+    // to decide it can self-download + verify its own replacement.
+    let now = Utc::now();
+    let keys = fresh_keys();
+    let mut manifest = sample_manifest(now);
+    manifest.launcher = Some(LauncherEntry {
+        version: Version::parse("1.4.1").unwrap(),
+        url: "https://example.test/UT4-Community-Launcher-1.4.1.exe".to_string(),
+        sha256: Some(
+            Sha256Digest::from_hex(
+                "0000000000000000000000000000000000000000000000000000000000000099",
+            )
+            .unwrap(),
+        ),
+        size_bytes: Some(12_345_678),
+    });
+    let json = serde_json::to_vec(&manifest).unwrap();
+    let sig = sign_blob(&json, &keys);
+
+    let loaded =
+        Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
+            .expect("manifest with a hash-pinned launcher should verify");
+    let launcher = loaded.launcher.expect("launcher entry present");
+    assert_eq!(launcher.version, Version::parse("1.4.1").unwrap());
+    assert_eq!(launcher.size_bytes, Some(12_345_678));
+    assert_eq!(
+        launcher.sha256.expect("digest present").to_string(),
+        "0000000000000000000000000000000000000000000000000000000000000099"
+    );
+}
+
+#[test]
+fn launcher_entry_without_sha256_verifies_as_notify_only() {
+    // Back-compat: a launcher entry authored before the hash-pin hardening (no
+    // sha256/size_bytes) must still verify, with both integrity fields absent so
+    // the launcher stays on the notify-only path.
+    let now = Utc::now();
+    let keys = fresh_keys();
+    let mut manifest = sample_manifest(now);
+    manifest.launcher = Some(LauncherEntry {
+        version: Version::parse("1.4.1").unwrap(),
+        url: "https://github.com/jmortley/netcodeplus-launcher/releases/tag/v1.4.1".to_string(),
+        sha256: None,
+        size_bytes: None,
+    });
+    let json = serde_json::to_vec(&manifest).unwrap();
+    let sig = sign_blob(&json, &keys);
+
+    let loaded =
+        Manifest::load_and_verify(&json, &sig, &keys.verify_pk, now, &current_launcher(), 0)
+            .expect("notify-only launcher entry should verify");
+    let launcher = loaded.launcher.expect("launcher entry present");
+    assert!(launcher.sha256.is_none());
+    assert!(launcher.size_bytes.is_none());
 }
 
 // ---------- pak filename safety --------------------------------------
