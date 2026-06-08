@@ -41,11 +41,14 @@ CDN being uncompromised.
 
 - The **initial** launcher download, or a malicious launcher binary
   itself. The trust root is the binary, so the binary's own distribution
-  (the first install — before any signed manifest is involved) must be
-  protected by code signing (planned via
-  [SignPath Foundation](https://signpath.org/)). Self-update *is* now
-  verified against the signed manifest (above), but the first install is
-  not.
+  (the first install — before any signed manifest is involved) is
+  protected by **Authenticode code signing** (Azure Artifact Signing,
+  applied in CI via OIDC — see
+  [`docs/CODE_SIGNING.md`](docs/CODE_SIGNING.md)). Code signing addresses
+  the OS-level "unknown publisher" / SmartScreen prompt on first run; its
+  reputation builds over downloads rather than clearing instantly. Note
+  this is distinct from update integrity: self-update *is* verified
+  against the signed manifest (above) regardless of code signing.
 - Compromise of the offline signing key.
 - Vulnerabilities in Unreal Tournament 4 itself, or in third-party paks
   that the launcher merely keeps up to date.
