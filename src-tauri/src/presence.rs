@@ -199,6 +199,18 @@ pub fn set_discord_presence(input: ActivityInput) {
         act = act.timestamps(activity::Timestamps::new().start(ts));
     }
 
+    // One public button on every state — turns the "In queue" card into a one-click
+    // download funnel (and feeds SmartScreen reputation + public-visibility signals).
+    // Both args are &'static str, so no borrow-lifetime conflict with the owned
+    // detail/state strings above. Discord hides your OWN buttons from your self-view —
+    // they render only on others' view of your profile, so test with a second account.
+    // Max 2 buttons; we ship one. Never put a "Watch live" button here with a PUG
+    // password — RP buttons are public to all profile viewers and would leak it.
+    act = act.buttons(vec![activity::Button::new(
+        "Get the Launcher",
+        "https://github.com/jmortley/netcodeplus-launcher/releases/latest",
+    )]);
+
     // A failed push usually means Discord went away — drop the client so the next
     // call reconnects.
     if let Some(client) = guard.client.as_mut() {
