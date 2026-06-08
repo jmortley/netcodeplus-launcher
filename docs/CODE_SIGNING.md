@@ -58,43 +58,57 @@ the `<...>` placeholders. Pick a region in the US (e.g. `eastus`) — the
 **endpoint URL depends on it** (mismatch → 403 at sign time).
 
 ### 0. Prereqs
+The CLI noun is **`az artifact-signing`** (the rename of `az codesigning`; the
+provider namespace stays `Microsoft.CodeSigning`). Do **not** use
+`az trustedsigning` — that's the org-only service.
 ```bash
 az login
 az account set --subscription "<your-subscription-name-or-id>"
 az provider register --namespace Microsoft.CodeSigning
+az extension add --name artifact-signing
 ```
+> **Individual billing gotcha:** individual identity validation is sourced from
+> the **Azure billing account** under this subscription — its Account Type must be
+> **"Individual"**, and your legal name + address there must already match what you
+> want on the certificate (the validation form is read-only, auto-populated from
+> billing). Fix billing first if it's off.
 
 ### 1. Resource group + Artifact Signing account
 ```bash
 az group create -n ut4launcher-signing -l eastus
 
-az codesigning account create \
-  --name ut4launcher \
-  --resource-group ut4launcher-signing \
-  --location eastus \
-  --sku Basic
+az artifact-signing create -n ut4launcher -g ut4launcher-signing -l eastus --sku Basic
+# verify: az artifact-signing show -g ut4launcher-signing -n ut4launcher
 ```
-- `--name ut4launcher` → this is your **AZURE_SIGNING_ACCOUNT**.
+- `-n ut4launcher` → this is your **AZURE_SIGNING_ACCOUNT** (3–24 alphanumerics,
+  start with a letter, must not start with "one", globally unique).
 - Region `eastus` → endpoint **`https://eus.codesigning.azure.net`**
   (see the region→endpoint table in
-  [Microsoft Learn](https://learn.microsoft.com/azure/artifact-signing/how-to-signing-integrations#create-a-json-file)).
+  [Microsoft Learn](https://learn.microsoft.com/azure/artifact-signing/quickstart#azure-regions-that-support-artifact-signing)).
 
-### 2. Identity validation (the gate)
-In the portal: **Artifact Signing account → Identity validations → New**.
-Choose **Public** trust, **Individual**. Submit your legal name + government ID.
-**Wait for it to reach "Completed"** — the certificate profile can't be created
-until then.
+### 2. Identity validation (the gate — portal ONLY, the CLI can't do this)
+You need the **Artifact Signing Identity Verifier** role on the account to even
+start (the **New identity** button is greyed out otherwise — assign it to
+yourself: account → Access control (IAM) → Add role assignment). Then:
+**Artifact Signing account → Objects → Identity validations →** select
+**Individual** in the dropdown → **New Identity → Public**. Pick your billing
+account (fields auto-populate, read-only). You complete a **Verified ID** flow on
+your phone (Microsoft Authenticator + an AU10TIX QR scan of a government photo
+ID). **Wait for status "Completed"** — the certificate profile can't be created
+until then. Processing is **1–20 business days** (often fast, but can pull extra
+docs). Copy the **Identity validation Id** from the validation pane when done.
 
 ### 3. Certificate profile
 ```bash
-az codesigning certificate-profile create \
-  --account-name ut4launcher \
-  --resource-group ut4launcher-signing \
-  --profile-name ut4launcher-public \
-  --profile-type PublicTrust \
+az artifact-signing certificate-profile create \
+  -g ut4launcher-signing --account-name ut4launcher \
+  -n ut4launcher-public --profile-type PublicTrust \
   --identity-validation-id <the-completed-validation-id>
+# verify: az artifact-signing certificate-profile show -g ut4launcher-signing --account-name ut4launcher -n ut4launcher-public
 ```
-- `--profile-name ut4launcher-public` → this is your **AZURE_SIGNING_PROFILE**.
+- `-n ut4launcher-public` → this is your **AZURE_SIGNING_PROFILE** (5–100
+  alphanumerics). Can also be created in the portal under **Objects → Certificate
+  profiles → Create → Public Trust**.
 
 ### 4. Entra app + federated credential (OIDC, secretless)
 ```bash
@@ -121,7 +135,7 @@ az ad app federated-credential create --id "$APP_ID" --parameters '{
 Grant the service principal the **Artifact Signing Certificate Profile Signer**
 role on the account (scope can be the account or the specific profile):
 ```bash
-ACCOUNT_ID=$(az codesigning account show -n ut4launcher -g ut4launcher-signing --query id -o tsv)
+ACCOUNT_ID=$(az artifact-signing show -g ut4launcher-signing -n ut4launcher --query id -o tsv)
 SP_OBJECT_ID=$(az ad sp show --id "$APP_ID" --query id -o tsv)
 az role assignment create \
   --assignee-object-id "$SP_OBJECT_ID" \
