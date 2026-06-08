@@ -179,6 +179,9 @@ interface PugStatus {
   server?: string;
   password?: string;
   pug_id?: number;
+  /** Which pickup/mode a `queued` status is actually for (UTPugs is multi-mode).
+   *  Absent on older bots → callers fall back to assuming the selected mode. */
+  mode?: string;
 }
 
 interface Ut4Auth {
@@ -1797,6 +1800,25 @@ function handlePugTokenError(): void {
   void saveLauncherToken(null);
 }
 
+// Throttle the spammy join/leave toggles so a user can't flood the bot (and the
+// Discord channel it posts join/leave notices to) by rapidly clicking Join/Leave.
+// Read-only actions (listpug / Queue status) aren't gated. State-based, not a DOM
+// disable, so it survives the 5 s poll re-render. Keyed per community. The bot also
+// rate-limits server-side; this just keeps the launcher a good citizen.
+const PUG_TOGGLE_COOLDOWN_MS = 4000;
+const pugToggleGate: Record<string, { inFlight: boolean; lastAt: number }> = {};
+function pugToggleAllowed(key: string, action: string, status: HTMLElement | null): boolean {
+  if (action !== "joinpug" && action !== "leavepug") return true; // only gate toggles
+  const g = (pugToggleGate[key] ??= { inFlight: false, lastAt: 0 });
+  if (g.inFlight) return false; // a request is already in flight — ignore the click
+  const wait = PUG_TOGGLE_COOLDOWN_MS - (Date.now() - g.lastAt);
+  if (wait > 0) {
+    if (status) status.textContent = `Easy — wait ${Math.ceil(wait / 1000)}s before changing the queue again.`;
+    return false;
+  }
+  return true;
+}
+
 async function pug(action: "joinpug" | "leavepug" | "listpug") {
   // Defensive: never POST an empty token. renderPug already gates the buttons on
   // a token, but this stops a stale render from firing a guaranteed 401.
@@ -1805,6 +1827,13 @@ async function pug(action: "joinpug" | "leavepug" | "listpug") {
     return;
   }
   const status = document.getElementById("pug-status");
+  if (!pugToggleAllowed("ictf", action, status)) return;
+  const gate = pugToggleGate["ictf"];
+  const toggle = action === "joinpug" || action === "leavepug";
+  if (toggle) {
+    gate.inFlight = true;
+    gate.lastAt = Date.now();
+  }
   if (status) status.textContent = action === "listpug" ? "Checking queue…" : "Working…";
   try {
     const raw = await invoke<string>("pug_action", { action, token: state.launcherToken ?? "" });
@@ -1822,6 +1851,8 @@ async function pug(action: "joinpug" | "leavepug" | "listpug") {
     } else if (status) {
       status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
     }
+  } finally {
+    if (toggle) gate.inFlight = false;
   }
 }
 
@@ -1868,7 +1899,13 @@ function updateDiscordPresence(): void {
     candidates.push({ community: "Instagib Nation", mode: "ictf", st: state.pugStatus });
   }
   if (state.utpugsConfigured && state.utpugsToken && state.utpugsStatus) {
-    candidates.push({ community: "UTPugs", mode: state.utpugsMode, st: state.utpugsStatus });
+    // Reflect the mode the bot says we're actually queued in (st.mode), not the
+    // dropdown — so presence is right even if the user is browsing another tab.
+    const utMode =
+      state.utpugsStatus.state === "queued" && state.utpugsStatus.mode
+        ? normUtpugsMode(state.utpugsStatus.mode)
+        : state.utpugsMode;
+    candidates.push({ community: "UTPugs", mode: utMode, st: state.utpugsStatus });
   }
   let best: { community: string; mode: string; st: PugStatus } | null = null;
   for (const c of candidates) {
@@ -2236,6 +2273,17 @@ function utpugsModeLabel(key: string): string {
   return UTPUGS_MODES.find((m) => m.key === key)?.label ?? key.toUpperCase();
 }
 
+// Normalize a bot-reported pickup name to a launcher mode key (wipe/elim/duel).
+// Pickup names already match the keys today, but map the gametype synonyms too so
+// a rename (carnage→wipe, elimination→elim, wipeout) still resolves.
+function normUtpugsMode(s?: string): string {
+  const m = (s ?? "").toLowerCase();
+  if (m.includes("carnage") || m.includes("wipe")) return "wipe";
+  if (m.includes("elim")) return "elim";
+  if (m.includes("duel")) return "duel";
+  return m;
+}
+
 // A token problem on any UTPugs call: drop the dead token (stops polling,
 // re-renders the link prompt) and flag why — mirrors handlePugTokenError.
 function handleUtpugsTokenError(): void {
@@ -2249,6 +2297,13 @@ async function utpugsPug(action: "joinpug" | "leavepug" | "listpug") {
     return;
   }
   const status = document.getElementById("utpugs-status");
+  if (!pugToggleAllowed("utpugs", action, status)) return;
+  const gate = pugToggleGate["utpugs"];
+  const toggle = action === "joinpug" || action === "leavepug";
+  if (toggle) {
+    gate.inFlight = true;
+    gate.lastAt = Date.now();
+  }
   if (status) status.textContent = action === "listpug" ? "Checking queue…" : "Working…";
   try {
     const raw = await invoke<string>("utpugs_action", {
@@ -2267,6 +2322,8 @@ async function utpugsPug(action: "joinpug" | "leavepug" | "listpug") {
     console.error("utpugs_action failed:", err);
     if (isPugTokenError(err)) handleUtpugsTokenError();
     else if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+  } finally {
+    if (toggle) gate.inFlight = false;
   }
 }
 
@@ -2378,6 +2435,13 @@ function renderUtpugs(): void {
     </div>`;
 
   const st = state.utpugsStatus;
+  // `queued` is per-mode. If the bot tells us which pickup it's for (st.mode) and
+  // that's NOT the selected mode, don't render it as this mode's queue — the user is
+  // queued elsewhere. Older bots omit st.mode → fall back to assuming the selection.
+  // live/starting carry no mode and are global (you can connect from any tab).
+  const queuedMode = st?.state === "queued" && st.mode ? normUtpugsMode(st.mode) : null;
+  const queuedHere = st?.state === "queued" && (queuedMode === null || queuedMode === state.utpugsMode);
+  const queuedElsewhere = queuedMode !== null && queuedMode !== state.utpugsMode;
   let block: string;
   if (st && st.state === "live" && st.server) {
     block = `
@@ -2392,12 +2456,17 @@ function renderUtpugs(): void {
       <p class="src">Server spinning up — Connect unlocks the moment it's ready (~90s).</p>
       <button type="button" class="launch-primary pug-connect" disabled>▶&nbsp;&nbsp;Starting…</button>`;
   } else {
-    const queueLine =
-      st && st.state === "queued"
-        ? `In queue — ${st.players ?? 0}/${st.max_players ?? 10}`
-        : `Queue for ${escape(modeLabel)}`;
+    const queueLine = queuedHere
+      ? `In queue — ${st?.players ?? 0}/${st?.max_players ?? 10}`
+      : `Queue for ${escape(modeLabel)}`;
+    // When queued in a different mode, say so instead of silently showing this
+    // tab as empty — so the player knows where they actually are.
+    const elsewhereNote = queuedElsewhere
+      ? `<p class="src">You're in the ${escape(utpugsModeLabel(queuedMode as string))} queue — switch Mode to manage it.</p>`
+      : "";
     block = `
       <p>${queueLine}</p>
+      ${elsewhereNote}
       <div class="discord-btns">
         <button id="utpugs-join" type="button">Join ${escape(modeLabel)} PUG</button>
         <button id="utpugs-leave" type="button">Leave</button>
