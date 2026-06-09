@@ -24,6 +24,12 @@ pub mod extract;
 mod fs_util;
 pub mod install;
 pub mod launch;
+// Linux (Wine/Lutris) support — pure path/argv helpers. Compiled in test builds
+// on any host (so the tests run on the Windows dev box + CI) and in real
+// non-Windows builds; excluded from a non-test Windows build, where nothing uses
+// it (avoids a dead-code warning).
+#[cfg(any(test, not(windows)))]
+pub mod linux;
 pub mod pak_install;
 pub mod plugin_install;
 pub mod shortcut;

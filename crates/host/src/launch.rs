@@ -172,17 +172,37 @@ fn set_process_affinity(child: &std::process::Child, mask: u64) -> std::io::Resu
     Ok(())
 }
 
-/// Non-Windows fallback: spawn directly (priority/affinity flags are
-/// Windows-specific and ignored). Linux/Proton support is post-v1.
+/// Non-Windows launch. On Linux, UT4 is the **Windows** build under Wine/Lutris
+/// (see [`crate::linux`]), so when the exe lives inside a Wine prefix we run it
+/// **through Wine** against that prefix; otherwise we fall back to a direct spawn
+/// (a genuine native build, or a test). The Windows-only priority/affinity knobs
+/// are ignored.
 ///
 /// # Errors
-/// Returns the spawn error if the game cannot start.
+/// Returns the spawn error if the game (or Wine) cannot start.
 #[cfg(not(windows))]
 pub fn launch(exe: &Path, args: &[String], _opts: &LaunchOptions) -> std::io::Result<()> {
     use std::process::Command;
-    let cwd = exe.parent().unwrap_or(exe);
-    Command::new(exe).args(args).current_dir(cwd).spawn()?;
+
+    if let Some(plan) = crate::linux::plan_wine_launch(exe, args, wine_binary().as_deref()) {
+        Command::new(&plan.program)
+            .args(&plan.args)
+            .env("WINEPREFIX", &plan.wineprefix)
+            .current_dir(&plan.cwd)
+            .spawn()?;
+    } else {
+        let cwd = exe.parent().unwrap_or(exe);
+        Command::new(exe).args(args).current_dir(cwd).spawn()?;
+    }
     Ok(())
+}
+
+/// The wine binary to launch through, honouring a `WINE` environment override so
+/// a user (or a Lutris wrapper) can point at a specific build; defaults to `wine`
+/// on `PATH`.
+#[cfg(not(windows))]
+fn wine_binary() -> Option<String> {
+    std::env::var("WINE").ok().filter(|s| !s.is_empty())
 }
 
 #[cfg(test)]

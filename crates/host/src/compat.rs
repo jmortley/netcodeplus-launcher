@@ -14,6 +14,9 @@
 #[cfg(windows)]
 use std::path::Path;
 
+// Gated to match its only users (`has_runasadmin`/`strip_runasadmin` below);
+// otherwise it's dead code on a non-test non-Windows build (e.g. the Linux build).
+#[cfg(any(windows, test))]
 const RUNASADMIN: &str = "RUNASADMIN";
 
 #[cfg(windows)]
