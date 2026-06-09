@@ -3,6 +3,11 @@ import { listen, type UnlistenFn } from "@tauri-apps/api/event";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { confirm, open } from "@tauri-apps/plugin-dialog";
 import { getCurrent, onOpenUrl } from "@tauri-apps/plugin-deep-link";
+import {
+  isPermissionGranted,
+  requestPermission,
+  sendNotification,
+} from "@tauri-apps/plugin-notification";
 
 interface UtInstall {
   root: string;
@@ -173,7 +178,7 @@ interface NewsItem {
 }
 
 interface PugStatus {
-  state: "idle" | "queued" | "starting" | "live";
+  state: "idle" | "queued" | "readycheck" | "starting" | "live";
   players?: number;
   max_players?: number;
   server?: string;
@@ -182,6 +187,16 @@ interface PugStatus {
   /** Which pickup/mode a `queued` status is actually for (UTPugs is multi-mode).
    *  Absent on older bots → callers fall back to assuming the selected mode. */
   mode?: string;
+  // readycheck — the PUG filled and the check-in ("ready up") step is running.
+  // This is the Discord-outage backup: the player can ready up from the launcher
+  // instead of the Discord button. Absent on bots that don't expose readycheck
+  // yet → the state simply never appears and nothing changes (graceful).
+  ready_count?: number;
+  ready_needed?: number;
+  you_readied?: boolean;
+  /** Whole seconds left in the check-in window. Used for urgency wording only —
+   *  we deliberately do NOT render a ticking countdown (see the ready-up UI). */
+  seconds_left?: number;
 }
 
 // One pickup's fill from a bot's tokenless /queues endpoint.
@@ -545,6 +560,7 @@ function renderHome() {
     }
   }
   renderHomeHero();
+  renderHomeReadycheck();
   renderHomeLivePug();
   void renderStrays();
   renderDashStats();
@@ -733,6 +749,169 @@ async function joinFillingQueue(q: FillingQueue): Promise<void> {
       return;
     }
     await pug("joinpug");
+  }
+}
+
+// ---- PUG ready-up (the Discord-outage backup) ------------------------------
+// When a PUG fills, the bot runs a "check-in": every player must confirm they're
+// here or the PUG cancels. That confirm normally happens on a Discord message —
+// so when Discord is down, PUGs die. The bot's FastAPI is independent of the
+// Discord gateway, so the launcher lets the player ready up directly. The
+// `readycheck` state (from pug_status) drives a prominent, impossible-to-miss
+// banner + a native notification (for a minimized launcher) + an audio cue.
+
+// Shared markup for the ready-up banner, used on both HOME and the Community
+// tab. `scope` keeps the button/status ids unique so both can be on screen.
+// All content is static text + integers (no remote strings) — no escaping needed.
+function readycheckInnerHtml(st: PugStatus, scope: "home" | "community"): string {
+  const readied = st.you_readied === true;
+  const count = st.ready_count ?? 0;
+  const needed = st.ready_needed ?? 0;
+  const others = Math.max(0, needed - count);
+  const progress = needed > 0 ? ` · ${count}/${needed} ready` : "";
+  const headline = readied ? "You're ready ✓" : "✅ Ready up — your PUG is filling!";
+  const sub = readied
+    ? others > 0
+      ? `Waiting for ${others} more to ready up${progress}`
+      : "Everyone's ready — the match is starting…"
+    : `Confirm you're here so the match can start — works even if Discord is down.${progress}`;
+  const btn = readied
+    ? `<button id="readyup-btn-${scope}" type="button" class="btn readyup-btn readyup-done" disabled>✓ Readied</button>`
+    : `<button id="readyup-btn-${scope}" type="button" class="btn readyup-btn">✅&nbsp;&nbsp;Ready up</button>`;
+  return `
+    <span class="readycheck-bang" aria-hidden="true">⚡</span>
+    <div class="live-pug-text">
+      <b>${headline}</b>
+      <span class="live-pug-sub">${sub}</span>
+    </div>
+    ${btn}
+    <div id="readyup-status-${scope}" class="launch-status live-pug-status"></div>`;
+}
+
+function wireReadycheck(container: HTMLElement, scope: "home" | "community"): void {
+  container
+    .querySelector<HTMLButtonElement>(`#readyup-btn-${scope}`)
+    ?.addEventListener("click", () => void pugReady(scope));
+}
+
+// HOME ready-up banner — the headline of the whole feature, placed above the
+// live/queue banners because it's the most time-sensitive thing the launcher can
+// show. Renders only in the `readycheck` state; self-clears otherwise.
+function renderHomeReadycheck(): void {
+  const el = document.getElementById("home-readycheck");
+  if (!el) return;
+  const st = state.pugStatus;
+  if (!st || st.state !== "readycheck") {
+    el.className = "";
+    el.innerHTML = "";
+    return;
+  }
+  el.className = "readycheck-banner";
+  el.innerHTML = readycheckInnerHtml(st, "home");
+  wireReadycheck(el, "home");
+}
+
+// Ready up via the bot's FastAPI (Discord-independent). Marks the player ready
+// in the active check-in; once everyone's in, the bot resolves it and the PUG
+// proceeds without Discord. `scope` selects which banner's button/status to
+// drive (HOME vs Community — both can be on screen at once).
+async function pugReady(scope: "home" | "community"): Promise<void> {
+  if (!state.launcherToken?.trim()) return;
+  const status = document.getElementById(`readyup-status-${scope}`);
+  const btn = document.getElementById(`readyup-btn-${scope}`) as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+  if (status) status.textContent = "Readying up…";
+  try {
+    const raw = await invoke<string>("pug_ready", { token: state.launcherToken });
+    // The /launcher_ready response: "readied" (+ ready counts) or "no_readycheck".
+    const res = JSON.parse(raw) as {
+      state: string;
+      ready_count?: number;
+      ready_needed?: number;
+    };
+    if (res.state === "readied") {
+      // Reflect immediately rather than waiting for the 5 s poll: mark
+      // you_readied and refresh both surfaces.
+      if (state.pugStatus && state.pugStatus.state === "readycheck") {
+        state.pugStatus.you_readied = true;
+        if (res.ready_count !== undefined) state.pugStatus.ready_count = res.ready_count;
+        if (res.ready_needed !== undefined) state.pugStatus.ready_needed = res.ready_needed;
+      }
+      renderHomeReadycheck();
+      renderPug();
+      const others = Math.max(0, (res.ready_needed ?? 0) - (res.ready_count ?? 0));
+      const s = document.getElementById(`readyup-status-${scope}`);
+      if (s)
+        s.innerHTML = `<span class="ok">Readied ✓${
+          others > 0 ? ` — waiting for ${others} more` : " — starting…"
+        }</span>`;
+    } else if (res.state === "no_readycheck") {
+      // The check-in already ended (passed, cancelled, or you weren't in one).
+      if (status) status.textContent = "No ready-up needed right now.";
+      void pollPugStatus(); // resync to the real current state
+    } else if (status) {
+      status.textContent = raw;
+    }
+  } catch (err) {
+    console.error("pug_ready failed:", err);
+    if (isPugTokenError(err)) {
+      handlePugTokenError();
+    } else if (status) {
+      // Most likely the bot hasn't deployed /launcher_ready yet, or a transient
+      // blip — let them retry (or fall back to readying up in Discord).
+      status.innerHTML = `<span class="warn">Couldn't ready up: ${escape(
+        String(err),
+      )}. Try again, or ready up in Discord.</span>`;
+      if (btn) btn.disabled = false;
+    }
+  }
+}
+
+// Native desktop notification when the ready-check starts — so a MINIMIZED
+// launcher still alerts the player (the direct replacement for the Discord ping
+// they'd normally get). Best-effort: asks for permission once; if denied, the
+// in-app banner alone carries it.
+async function notifyReadycheck(_st: PugStatus): Promise<void> {
+  try {
+    let granted = await isPermissionGranted();
+    if (!granted) granted = (await requestPermission()) === "granted";
+    if (!granted) return;
+    sendNotification({
+      title: "✅ PUG ready up!",
+      body: "Your PUG filled — open the launcher and ready up so the match can start.",
+    });
+  } catch (err) {
+    console.error("ready-up notification failed:", err);
+  }
+}
+
+// A short two-tone chime for the ready-up alert. WebAudio, no asset. Per
+// feedback_no_pickup_timers we use an audio cue for urgency, never a ticking
+// pickup-style countdown. Best-effort — silent if the browser blocks audio.
+function playReadyChime(): void {
+  try {
+    const Ctx =
+      window.AudioContext ??
+      (window as unknown as { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!Ctx) return;
+    const ctx = new Ctx();
+    const now = ctx.currentTime;
+    [880, 1320].forEach((freq, i) => {
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.type = "sine";
+      osc.frequency.value = freq;
+      const t = now + i * 0.16;
+      gain.gain.setValueAtTime(0.0001, t);
+      gain.gain.exponentialRampToValueAtTime(0.25, t + 0.02);
+      gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.15);
+      osc.connect(gain).connect(ctx.destination);
+      osc.start(t);
+      osc.stop(t + 0.16);
+    });
+    window.setTimeout(() => void ctx.close().catch(() => {}), 600);
+  } catch (err) {
+    console.error("ready chime failed:", err);
   }
 }
 
@@ -1973,6 +2152,7 @@ async function saveLauncherToken(token: string | null) {
     console.error("save_launcher_token failed:", err);
   }
   renderPug();
+  renderHomeReadycheck(); // clears the HOME banner when the token (and status) is dropped
   updateDiscordPresence();
   if (token) {
     void pollPugStatus();
@@ -1993,7 +2173,7 @@ let lastPresenceKey = "";
 // than one community at once: a live/starting game beats a different community's
 // queue, which beats idle.
 function pugStateRank(s: string | undefined): number {
-  return s === "live" ? 3 : s === "starting" ? 2 : s === "queued" ? 1 : 0;
+  return s === "live" ? 4 : s === "starting" ? 3 : s === "readycheck" ? 2 : s === "queued" ? 1 : 0;
 }
 
 function updateDiscordPresence(): void {
@@ -2031,6 +2211,15 @@ function updateDiscordPresence(): void {
     input = { kind: "live", mode: best.mode, detail: best.st.server ?? undefined, community: best.community };
   } else if (best && best.st.state === "starting") {
     input = { kind: "live", mode: best.mode, detail: "starting…", community: best.community };
+  } else if (best && best.st.state === "readycheck") {
+    // Ready-up in progress — show it as a queued state with the ready progress.
+    input = {
+      kind: "queued",
+      mode: best.mode,
+      players: best.st.ready_count ?? 0,
+      max_players: best.st.ready_needed ?? 10,
+      community: best.community,
+    };
   } else if (best && best.st.state === "queued") {
     input = {
       kind: "queued",
@@ -2072,6 +2261,15 @@ function renderPug() {
     return;
   }
   const st = state.pugStatus;
+  if (st && st.state === "readycheck") {
+    // PUG filled — the ready-up step is running. This is the Discord-outage
+    // backup: ready up here and the match starts without touching Discord.
+    pugControls.innerHTML = `<div id="pug-readycheck" class="readycheck-banner readycheck-inline"></div>`;
+    const rc = document.getElementById("pug-readycheck")!;
+    rc.innerHTML = readycheckInnerHtml(st, "community");
+    wireReadycheck(rc, "community");
+    return;
+  }
   if (st && st.state === "live" && st.server) {
     pugControls.innerHTML = `
       <p class="ok">🎮 Your iCTF PUG is live!</p>
@@ -3244,6 +3442,19 @@ function stopPugPolling() {
   }
 }
 
+// Whether two consecutive pug_status snapshots differ enough to re-render —
+// includes the readycheck sub-fields so a ready-count tick refreshes the banner.
+function pugStatusChanged(prev: PugStatus | null, next: PugStatus): boolean {
+  if (!prev) return true;
+  return (
+    prev.state !== next.state ||
+    prev.server !== next.server ||
+    prev.players !== next.players ||
+    prev.ready_count !== next.ready_count ||
+    prev.you_readied !== next.you_readied
+  );
+}
+
 async function pollPugStatus() {
   if (!state.launcherToken) return;
   try {
@@ -3251,10 +3462,18 @@ async function pollPugStatus() {
     const prev = state.pugStatus;
     state.pugStatus = next;
     updateDiscordPresence();
+    // Entering readycheck (the PUG just filled) is the alert moment — fire the
+    // desktop notification + chime once, on the transition, so a minimized
+    // launcher still grabs the player. The in-app banner then carries it.
+    if (next.state === "readycheck" && prev?.state !== "readycheck") {
+      void notifyReadycheck(next);
+      playReadyChime();
+    }
     // Re-render only on a meaningful change, so the 5 s poll doesn't clobber
     // the status line / token input.
-    if (!prev || prev.state !== next.state || prev.server !== next.server || prev.players !== next.players) {
+    if (pugStatusChanged(prev, next)) {
       renderPug();
+      renderHomeReadycheck();
     }
   } catch (err) {
     console.error("pug_status failed:", err);

@@ -439,6 +439,34 @@ pub async fn pug_status(token: String) -> Result<String, String> {
     .map_err(pug_error)
 }
 
+/// UT4IGBot launcher ready-up endpoint (HTTPS via the Apache reverse-proxy).
+const BOT_READY_URL: &str = "https://ut4stats.com/launcher/ready";
+
+/// Ready up for a filling PUG's check-in — the Discord-outage backup. When a PUG
+/// fills, players normally click Ready on the Discord check-in message; if
+/// Discord is down they can't, and the PUG cancels. This marks the player ready
+/// via the bot's FastAPI (independent of the Discord gateway), authenticated by
+/// the per-user launcher `token`. Returns the bot's JSON
+/// (`{state:"readied", pug_id, ready_count, ready_needed, you_readied,
+/// seconds_left}` or `{state:"no_readycheck"}`). A bot that hasn't deployed this
+/// endpoint yet 404s → surfaced as an error the caller can show.
+#[tauri::command]
+pub async fn pug_ready(token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err("no launcher token set".into());
+    }
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(
+        &client,
+        BOT_READY_URL,
+        &[("launcher-token", token.trim())],
+        "{}".to_string(),
+        64 * 1024,
+    )
+    .await
+    .map_err(pug_error)
+}
+
 /// UT4IGBot launcher spectate endpoint (HTTPS via the Apache reverse-proxy).
 const BOT_SPECTATE_URL: &str = "https://ut4stats.com/launcher/spectate";
 

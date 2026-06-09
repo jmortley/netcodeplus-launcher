@@ -77,6 +77,10 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
+        // Native desktop notification for the PUG ready-up prompt, so a minimized
+        // launcher still alerts the player when their PUG fills (the direct
+        // Discord-ping replacement during an outage). See src/main.ts.
+        .plugin(tauri_plugin_notification::init())
         .setup(|app| {
             // Register the `ncp` scheme at runtime — dev needs this; packaged
             // builds also get it from the installer. Non-fatal so a registry
@@ -108,6 +112,7 @@ pub fn run() {
             commands::open_external,
             commands::pug_action,
             commands::pug_status,
+            commands::pug_ready,
             commands::pug_spectate,
             commands::pug_live,
             commands::pug_queues,

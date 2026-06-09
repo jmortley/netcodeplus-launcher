@@ -1514,6 +1514,62 @@ body {
   display: none;
 }
 
+/* PUG ready-up banner (the Discord-outage backup). Reuses the live-pug-banner
+   flex layout, but a red/urgent accent + a pulsing glow so it's impossible to
+   miss — your PUG is waiting on you. */
+.readycheck-banner {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 0.85rem;
+  margin: 0.9rem 0 0;
+  padding: 0.9rem 1.1rem;
+  border: 1px solid rgba(239, 68, 68, 0.6);
+  border-left: 4px solid #ef4444;
+  border-radius: 12px;
+  background: linear-gradient(90deg, rgba(239, 68, 68, 0.2), rgba(239, 68, 68, 0.05));
+  animation: readycheck-glow 1.5s ease-in-out infinite;
+}
+
+/* When rendered inside the Community tab's pug-controls it doesn't need the top
+   margin (the section already spaces it). */
+.readycheck-inline {
+  margin-top: 0;
+}
+
+@keyframes readycheck-glow {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(239, 68, 68, 0);
+  }
+  50% {
+    box-shadow: 0 0 14px 1px rgba(239, 68, 68, 0.35);
+  }
+}
+
+.readycheck-bang {
+  flex: none;
+  font-size: 1.3rem;
+  line-height: 1;
+}
+
+/* The Ready-up button — bright green so the action reads instantly against the
+   red urgency of the banner. */
+.readyup-btn {
+  flex: none;
+  font-weight: 700;
+  background: linear-gradient(135deg, #22c55e, #16a34a);
+}
+
+.readyup-btn:hover {
+  background: linear-gradient(135deg, #34d36a, #1eaa4e);
+}
+
+.readyup-btn.readyup-done {
+  background: rgba(34, 197, 94, 0.25);
+  cursor: default;
+}
+
 /* =========================================================================
    Light-theme contrast pass — reused dark-card components that didn't fully
    flip to the light scheme (Stats search picks, roster, .NET note, the
