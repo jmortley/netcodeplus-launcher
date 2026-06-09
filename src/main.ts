@@ -274,9 +274,22 @@ function sourceText(source: DetectSource): string {
   }
 }
 
-function netcodeplusBadge(status: NetcodePlusStatus, root?: string): string {
+function netcodeplusBadge(
+  status: NetcodePlusStatus,
+  root?: string,
+  outdated = false,
+  availVer?: number | null,
+): string {
   switch (status) {
     case "installed":
+      // Update-aware: an installed-but-OUTDATED build must NOT show a reassuring
+      // green "✓ installed" — the version gate kicks an outdated client off current
+      // servers, so the hero has to say "update first" (with a one-click Update),
+      // not imply ready-to-play. Matches the "update available" card below it.
+      if (outdated) {
+        const v = availVer != null ? ` (build ${availVer})` : "";
+        return `<span class="warn">⬆&nbsp;NetcodePlus update available${escape(v)} — update before playing</span> <button id="hero-plugin-update" type="button" class="btn hero-update-btn">Update now</button>`;
+      }
       // With a root, the badge is a link that opens the plugin folder.
       return root
         ? `<button class="ncp-reveal" type="button" data-root="${escape(root)}" title="Open the NetcodePlus folder">✓ NetcodePlus installed</button>`
@@ -494,6 +507,11 @@ async function loadStatusData(): Promise<void> {
     console.error("game_installer_info failed:", err);
   }
   void renderDashStatus();
+  // Re-render the hero too: it renders once (green "installed") before this async
+  // status load finishes, so without this the badge never learns the build is
+  // outdated. statusCache.plugin is now populated, so the badge flips to the
+  // "update available" state.
+  renderHomeHero();
 }
 
 // The HOME dashboard: greeting, the play hero, and the at-a-glance cards. Every
@@ -558,12 +576,18 @@ function renderHomeHero() {
   }
   if (state.selInstall >= state.installs.length) state.selInstall = 0;
   const di = state.installs[state.selInstall];
+  // Is THIS install's plugin out of date? (statusCache.plugin loads async via
+  // loadStatusData, which re-calls renderHomeHero — so the badge flips to the
+  // update state once the status is known.)
+  const pluginInst = statusCache.plugin?.installs.find((i) => i.root === di.install.root);
+  const pluginOutdated = pluginInst?.action === "update";
+  const pluginAvail = statusCache.plugin?.available_version ?? null;
   homeHero.className = "";
   homeHero.innerHTML = `
     <div class="play-hero">
       <div class="play-hero-overlay">
         <div class="play-title">Unreal Tournament</div>
-        <div class="play-sub">${netcodeplusBadge(di.netcodeplus, di.install.root)}</div>
+        <div class="play-sub">${netcodeplusBadge(di.netcodeplus, di.install.root, pluginOutdated, pluginAvail)}</div>
         <div class="hero-cta">
           <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;PLAY</button>
           <span class="hero-meta">${escape(di.install.root)}</span>
@@ -576,6 +600,12 @@ function renderHomeHero() {
     "click",
     () => void launch(),
   );
+  // One-click update straight from the hero when the build is outdated.
+  const heroUpd = document.getElementById("hero-plugin-update") as HTMLButtonElement | null;
+  heroUpd?.addEventListener("click", () => {
+    heroUpd.disabled = true;
+    void doInstallPlugin();
+  });
   void renderAdminWarning();
 }
 

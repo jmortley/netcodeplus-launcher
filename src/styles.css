@@ -530,6 +530,24 @@ footer {
   font-size: 0.9rem;
 }
 
+/* Hero "Update now" CTA shown when the installed NetcodePlus build is outdated —
+   amber to match the "update available" warning text beside it. */
+.hero-update-btn {
+  margin-left: 0.5rem;
+  padding: 0.25rem 0.7rem;
+  font-weight: 600;
+  background: #f59e0b;
+  color: #1a1205;
+  border: none;
+  border-radius: 7px;
+}
+.hero-update-btn:hover {
+  background: #fbbf24;
+}
+.hero-update-btn:disabled {
+  opacity: 0.6;
+}
+
 .launch-primary {
   display: inline-block;
   min-width: 16rem;
