@@ -559,7 +559,8 @@ fn check_autopug_mode(mode: &str) -> Result<(), String> {
 pub async fn utpugs_action(action: String, mode: String, token: String) -> Result<String, String> {
     if token.trim().is_empty() {
         return Err(
-            "Set your UTPugs launcher token first (run /launchertoken in the UTPugs Discord).".into(),
+            "Set your UTPugs launcher token first (run /launchertoken in the UTPugs Discord)."
+                .into(),
         );
     }
     check_autopug_mode(&mode)?;

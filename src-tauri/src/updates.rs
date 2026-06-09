@@ -977,9 +977,7 @@ pub async fn download_and_apply_launcher_update(app: AppHandle) -> Result<(), St
         .arg(pid.to_string())
         .current_dir(&dir)
         .spawn()
-        .map_err(|e| {
-            format!("downloaded and verified the update, but couldn't start it: {e}")
-        })?;
+        .map_err(|e| format!("downloaded and verified the update, but couldn't start it: {e}"))?;
 
     app.exit(0);
     Ok(())

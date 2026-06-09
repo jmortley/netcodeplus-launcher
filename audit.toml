@@ -37,9 +37,13 @@ ignore = [
     # ---- proc-macro-error: unmaintained ----
     #
     # Deep transitive (via tauri-codegen's macro stack). Author
-    # archived the repo. Replacement (`proc-macro-error2`) exists
-    # but Tauri hasn't migrated yet.
-    "RUSTSEC-2024-0370",
+    # archived the repo. Tauri's macro stack later moved to the
+    # `proc-macro-error2` fork — which as of 2026 is *also* flagged
+    # unmaintained (RUSTSEC-2026-0173). Both are deep transitive via
+    # `tauri-codegen`, unmaintained-only (no vulnerability), and not
+    # something we can fix here; re-check when Tauri's macro deps move.
+    "RUSTSEC-2024-0370",  # proc-macro-error
+    "RUSTSEC-2026-0173",  # proc-macro-error2 (its "replacement")
 
     # ---- fxhash: unmaintained ----
     #
