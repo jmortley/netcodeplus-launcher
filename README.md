@@ -37,21 +37,34 @@ verifiable end to end** (no bundled secrets, no telemetry, source public), so
   in-game login window. Standard Epic-style OAuth.
 - **Detect your install and launch** with your preferred profile, process
   priority, and CPU affinity — one click.
+- **Don't have UT4 yet?** Pull the full community game installer straight from the
+  launcher — it downloads the ~10 GB package, **verifies it**, and unpacks it, so
+  a newcomer goes from nothing to in-game without hunting for files.
 - **Keeps NetcodePlus current** — checks a cryptographically signed manifest on
-  launch, updates the plugin across all your installs in one click (every
-  download verified against the manifest before it's written), and flags when a
-  newer launcher build is out. See [Security](#security).
+  launch and updates the plugin across all your installs in one click (every
+  download verified against the manifest before it's written). The launcher
+  **updates itself the same way** — downloads, verifies, and relaunches into the
+  new build — and **warns you to update before playing** if your install is on an
+  old build, since community servers require a matching version. See
+  [Security](#security).
 - **Server browser** — live hubs and matches grouped the way the in-game/site
   browser shows them, with one-click Join or Spectate.
-- **PUGs** — link your account once, then join/leave the iCTF PUG queue and jump
-  straight into the match from the launcher.
+- **PUGs (pick-up games)** — join/leave queues across communities (Instagib
+  Nation iCTF, UTPugs Wipeout/Elimination/Duel) and jump straight into the match.
+  Home flags when a queue is **filling up** so you can hop in, and you can
+  **watch a live PUG** to learn a mode with no sign-up. Link your account once
+  for the modes that need it (the in-app steps walk you through it).
+- **Discord Rich Presence** *(opt-in, off by default)* — show your current PUG
+  status on your Discord profile, with a button friends can click to grab the
+  launcher. Toggle it in Settings.
 - **Your stats** — link your ut4stats.com profile to see per-mode rating,
   K/D, per-weapon accuracy, and recent matches (with links back to ut4stats).
-- **Performance config** — optionally merge a competitive `Engine.ini` baseline
-  (FPS cap, gamma, render cvars, OpenAL, async-loading toggle). It **backs up
-  your ini first** and never touches your login/online settings; one-click
-  restore. Also silently repairs the master-server config that a known UT4 bug
-  occasionally wipes.
+- **Performance config + add-ons** — optionally merge a competitive `Engine.ini`
+  baseline (FPS cap, gamma, render cvars, OpenAL, async-loading toggle). It
+  **backs up your ini first** and never touches your login/online settings;
+  one-click restore. Also silently repairs the master-server config that a known
+  UT4 bug occasionally wipes, and points you to optional community add-ons
+  (UltiCross crosshairs, UT4-OpenAL) without ever installing them silently.
 - **News + Discord** — community announcements and one-click invites.
 
 ## Install & run
