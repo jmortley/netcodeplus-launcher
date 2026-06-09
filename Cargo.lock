@@ -2524,7 +2524,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-host"
-version = "1.4.1"
+version = "1.4.2"
 dependencies = [
  "dirs",
  "lnk",
@@ -2545,7 +2545,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-manifest"
-version = "1.4.1"
+version = "1.4.2"
 dependencies = [
  "chrono",
  "hex",
@@ -2560,7 +2560,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-net"
-version = "1.4.1"
+version = "1.4.2"
 dependencies = [
  "futures-util",
  "ncp-manifest",
@@ -2575,7 +2575,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-planner"
-version = "1.4.1"
+version = "1.4.2"
 dependencies = [
  "chrono",
  "ncp-manifest",
@@ -2611,7 +2611,7 @@ dependencies = [
 
 [[package]]
 name = "netcodeplus-launcher"
-version = "1.4.1"
+version = "1.4.2"
 dependencies = [
  "chrono",
  "discord-rich-presence",
