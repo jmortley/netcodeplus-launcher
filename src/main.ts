@@ -184,6 +184,22 @@ interface PugStatus {
   mode?: string;
 }
 
+// One pickup's fill from a bot's tokenless /queues endpoint.
+interface QueueRow {
+  mode: string;
+  players?: number;
+  max_players?: number;
+}
+type PugCommunity = "Instagib Nation" | "UTPugs";
+// A near-full queue surfaced on HOME (community-tagged, display label resolved).
+interface FillingQueue {
+  community: PugCommunity;
+  mode: string; // launcher mode key (ictf / wipe / elim / duel) for joining
+  label: string; // display label (iCTF / Wipeout / …)
+  players: number;
+  max: number;
+}
+
 interface Ut4Auth {
   logged_in: boolean;
   username: string | null;
@@ -227,6 +243,9 @@ const state = {
   // Live PUGs anyone can spectate (from the tokenless bot /live endpoint) —
   // drives the HOME "watch to learn" banner. Empty when nothing is live.
   livePugs: [] as SpectatePug[],
+  // Near-full PUG queues (from the tokenless bot /queues endpoints) — drives the
+  // HOME "queue filling — join" nudge. Empty when nothing is close to filling.
+  fillingQueues: [] as FillingQueue[],
   ut4: null as Ut4Auth | null,
   trendMode: "" as string,
   // Discord Rich Presence opt-in (default off; mirrors discord_presence_enabled).
@@ -627,6 +646,63 @@ async function watchLivePug(): Promise<void> {
         if (p) void spectatePug(p, status);
       });
     });
+  }
+}
+
+// HOME "queue filling — join" nudge. Surfaces a PUG queue that's close to full
+// (e.g. 7/10, 6/8) so people jump in to start it. Fed by the tokenless bot
+// /queues endpoints (state.fillingQueues). Renders nothing — and self-clears —
+// when nothing's near-full (or the endpoint isn't deployed), so it never gets in
+// the way. The fullest queue leads; the rest collapse into "+N more filling".
+function renderHomeQueuePug(): void {
+  const el = document.getElementById("home-queue-pug");
+  if (!el) return;
+  const qs = state.fillingQueues;
+  if (!qs.length) {
+    el.className = "";
+    el.innerHTML = "";
+    return;
+  }
+  // Fullest first: smallest gap to max, then most players.
+  const sorted = [...qs].sort((a, b) => a.max - a.players - (b.max - b.players) || b.players - a.players);
+  const q = sorted[0];
+  const toGo = q.max - q.players;
+  const more =
+    sorted.length > 1 ? ` <span class="live-pug-more">+${sorted.length - 1} more filling</span>` : "";
+  // Reuses the live-pug banner layout/box; a 🔥 (not the live dot) marks it as a
+  // filling queue rather than a live game.
+  el.className = "live-pug-banner queue-pug-banner";
+  el.innerHTML = `
+    <span class="queue-fire" aria-hidden="true">🔥</span>
+    <div class="live-pug-text">
+      <b>${escape(q.label)} PUG filling — ${q.players}/${q.max}</b>
+      <span class="live-pug-sub">${toGo} more to start · ${escape(q.community)}.${more}</span>
+    </div>
+    <button id="home-queue-join" type="button" class="btn live-pug-watch">Join</button>
+    <div id="home-queue-status" class="launch-status live-pug-status"></div>`;
+  document.getElementById("home-queue-join")?.addEventListener("click", () => void joinFillingQueue(q));
+}
+
+// Join a filling queue from HOME. Switches to the Community tab (where the full
+// PUG UI + status live) and fires the join through the existing per-community
+// path — which carries the token gate, the rate-limit, and proper status. With
+// no token it just lands on the link prompt there.
+async function joinFillingQueue(q: FillingQueue): Promise<void> {
+  switchView("community");
+  if (q.community === "UTPugs") {
+    if (!state.utpugsToken) {
+      renderUtpugs();
+      return;
+    }
+    state.utpugsMode = q.mode;
+    renderUtpugs(); // reflect the picked mode before joining
+    await utpugsPug("joinpug");
+  } else {
+    if (!state.launcherToken) {
+      renderPug();
+      return;
+    }
+    await pug("joinpug");
   }
 }
 
@@ -1657,8 +1733,9 @@ async function loadAll() {
     void loadStatusData();
     renderCommunityLinks();
     renderCommunityVideos();
-    // Tokenless live-PUG banner: always polled (no token needed to watch).
+    // Tokenless HOME nudges: live-PUG banner + "queue filling" (no token needed).
     void pollLivePugs();
+    void pollQueues();
     startLivePolling();
     if (state.launcherToken) {
       void pollPugStatus();
@@ -3164,10 +3241,14 @@ let livePollTimer: number | undefined;
 // banner when the set actually changes (and never clobbers an open picker).
 let lastLiveKey = "";
 
-// Always-on (token-independent) poll of the bot's tokenless /live endpoint.
+// Always-on (token-independent) poll of the bot's tokenless /live + /queues
+// endpoints — powers the HOME live banner and the "queue filling" nudge.
 function startLivePolling() {
   if (livePollTimer !== undefined) return;
-  livePollTimer = window.setInterval(() => void pollLivePugs(), 8000);
+  livePollTimer = window.setInterval(() => {
+    void pollLivePugs();
+    void pollQueues();
+  }, 8000);
 }
 
 // Refresh the live-PUG set for the HOME banner. Tokenless, read-only. A failure
@@ -3190,6 +3271,52 @@ async function pollLivePugs(): Promise<void> {
   if (key !== lastLiveKey) {
     lastLiveKey = key;
     renderHomeLivePug();
+  }
+}
+
+// ---- tokenless "queue filling" poll ---------------------------------------
+
+// Surface near-full queues (within this many of max) on HOME. 7/10, 8/10, 6/8,
+// 7/8, even 1/2 duel all qualify; 0/N and full queues don't.
+const NEAR_FULL_GAP = 3;
+let lastQueueKey = "";
+
+function pushIfFilling(acc: FillingQueue[], community: PugCommunity, label: string, r: QueueRow): void {
+  const players = r.players ?? 0;
+  const max = r.max_players ?? 0;
+  if (max > 0 && players > 0 && players < max && max - players <= NEAR_FULL_GAP) {
+    acc.push({ community, mode: r.mode, label, players, max });
+  }
+}
+
+// Poll both communities' tokenless /queues endpoints, keep only the near-full
+// ones, and refresh the HOME nudge. Read-only, no token. Each call is swallowed
+// on failure (endpoint not deployed / transient blip) so Home never breaks; if
+// neither returns a near-full queue the nudge self-clears.
+async function pollQueues(): Promise<void> {
+  const next: FillingQueue[] = [];
+  try {
+    const st = JSON.parse(await invoke<string>("pug_queues")) as { queues?: QueueRow[] };
+    for (const r of st.queues ?? []) pushIfFilling(next, "Instagib Nation", pugModeLabel(r.mode), r);
+  } catch (err) {
+    console.error("pug_queues failed:", err);
+  }
+  if (state.utpugsConfigured) {
+    try {
+      const st = JSON.parse(await invoke<string>("utpugs_queues")) as { queues?: QueueRow[] };
+      for (const r of st.queues ?? []) {
+        const key = normUtpugsMode(r.mode);
+        pushIfFilling(next, "UTPugs", utpugsModeLabel(key), { ...r, mode: key });
+      }
+    } catch (err) {
+      console.error("utpugs_queues failed:", err);
+    }
+  }
+  const key = next.map((q) => `${q.community}:${q.mode}:${q.players}/${q.max}`).join(",");
+  state.fillingQueues = next;
+  if (key !== lastQueueKey) {
+    lastQueueKey = key;
+    renderHomeQueuePug();
   }
 }
 

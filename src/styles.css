@@ -1418,6 +1418,20 @@ body {
   background: linear-gradient(90deg, rgba(34, 197, 94, 0.16), rgba(34, 197, 94, 0.04));
 }
 
+/* "Queue filling" nudge — amber accent so it reads distinctly from the green
+   "live now" banner above it. */
+.queue-pug-banner {
+  border-color: rgba(245, 158, 11, 0.5);
+  border-left-color: #f59e0b;
+  background: linear-gradient(90deg, rgba(245, 158, 11, 0.16), rgba(245, 158, 11, 0.04));
+}
+
+.queue-fire {
+  flex: none;
+  font-size: 1.15rem;
+  line-height: 1;
+}
+
 .live-dot {
   flex: none;
   width: 11px;

@@ -480,6 +480,22 @@ pub async fn pug_live() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
+/// UT4IGBot tokenless queue-counts endpoint (HTTPS via the Apache reverse-proxy).
+const BOT_QUEUES_URL: &str = "https://ut4stats.com/launcher/queues";
+
+/// Ask the bot for current PUG queue fill counts, WITHOUT a launcher token.
+/// Powers the HOME "queue filling" nudge so anyone sees a near-full queue and
+/// can jump in. Read-only; returns the bot's JSON
+/// (`{queues:[{mode, players, max_players}, …]}`). A bot that hasn't deployed
+/// this endpoint yet 404s → the caller swallows it and shows nothing.
+#[tauri::command]
+pub async fn pug_queues() -> Result<String, String> {
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(&client, BOT_QUEUES_URL, &[], "{}".to_string(), 64 * 1024)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 // ===================================================================
 // UTPugs (autopug) PUG API — a SECOND community, compiled in alongside
 // the IGBot/iCTF endpoints above. autopug implements the same launcher
@@ -603,6 +619,19 @@ pub async fn utpugs_spectate(token: String) -> Result<String, String> {
     )
     .await
     .map_err(pug_error)
+}
+
+/// Ask autopug for current UTPugs queue fill counts across modes, WITHOUT a
+/// token. Mirrors [`pug_queues`] for the second community. Returns autopug's
+/// JSON (`{queues:[{mode, players, max_players}, …]}`); the UI keeps only the
+/// near-full ones for the HOME nudge.
+#[tauri::command]
+pub async fn utpugs_queues() -> Result<String, String> {
+    let url = autopug_url("/queues")?;
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(&client, &url, &[], "{}".to_string(), 64 * 1024)
+        .await
+        .map_err(|e| e.to_string())
 }
 
 /// Launcher version (from `Cargo.toml`). Surfaced in the UI for bug reports.
