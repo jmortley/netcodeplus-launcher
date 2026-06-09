@@ -760,10 +760,23 @@ async function joinFillingQueue(q: FillingQueue): Promise<void> {
 // `readycheck` state (from pug_status) drives a prominent, impossible-to-miss
 // banner + a native notification (for a minimized launcher) + an audio cue.
 
-// Shared markup for the ready-up banner, used on both HOME and the Community
-// tab. `scope` keeps the button/status ids unique so both can be on screen.
-// All content is static text + integers (no remote strings) — no escaping needed.
-function readycheckInnerHtml(st: PugStatus, scope: "home" | "community"): string {
+// Which community a ready-up acts on — selects the token + the Tauri command.
+type PugReadyCommunity = "ictf" | "utpugs";
+
+// The community currently in a readycheck, if any (a player is only ever in one
+// at a time). iCTF wins a tie, but in practice only one is ever filling.
+function activeReadycheck(): { community: PugReadyCommunity; st: PugStatus } | null {
+  if (state.pugStatus?.state === "readycheck") return { community: "ictf", st: state.pugStatus };
+  if (state.utpugsConfigured && state.utpugsStatus?.state === "readycheck")
+    return { community: "utpugs", st: state.utpugsStatus };
+  return null;
+}
+
+// Shared markup for the ready-up banner, used on HOME and in both Community-tab
+// sections. `scope` (home | ictf | utpugs) keeps the button/status ids unique so
+// every surface can be on screen at once. All content is static text + integers
+// (no remote strings) — no escaping needed.
+function readycheckInnerHtml(st: PugStatus, scope: "home" | "ictf" | "utpugs"): string {
   const readied = st.you_readied === true;
   const count = st.ready_count ?? 0;
   const needed = st.ready_needed ?? 0;
@@ -788,41 +801,48 @@ function readycheckInnerHtml(st: PugStatus, scope: "home" | "community"): string
     <div id="readyup-status-${scope}" class="launch-status live-pug-status"></div>`;
 }
 
-function wireReadycheck(container: HTMLElement, scope: "home" | "community"): void {
+function wireReadycheck(
+  container: HTMLElement,
+  scope: "home" | "ictf" | "utpugs",
+  community: PugReadyCommunity,
+): void {
   container
     .querySelector<HTMLButtonElement>(`#readyup-btn-${scope}`)
-    ?.addEventListener("click", () => void pugReady(scope));
+    ?.addEventListener("click", () => void pugReady(scope, community));
 }
 
 // HOME ready-up banner — the headline of the whole feature, placed above the
 // live/queue banners because it's the most time-sensitive thing the launcher can
-// show. Renders only in the `readycheck` state; self-clears otherwise.
+// show. Renders whichever community is in a readycheck; self-clears otherwise.
 function renderHomeReadycheck(): void {
   const el = document.getElementById("home-readycheck");
   if (!el) return;
-  const st = state.pugStatus;
-  if (!st || st.state !== "readycheck") {
+  const rc = activeReadycheck();
+  if (!rc) {
     el.className = "";
     el.innerHTML = "";
     return;
   }
   el.className = "readycheck-banner";
-  el.innerHTML = readycheckInnerHtml(st, "home");
-  wireReadycheck(el, "home");
+  el.innerHTML = readycheckInnerHtml(rc.st, "home");
+  wireReadycheck(el, "home", rc.community);
 }
 
 // Ready up via the bot's FastAPI (Discord-independent). Marks the player ready
 // in the active check-in; once everyone's in, the bot resolves it and the PUG
 // proceeds without Discord. `scope` selects which banner's button/status to
-// drive (HOME vs Community — both can be on screen at once).
-async function pugReady(scope: "home" | "community"): Promise<void> {
-  if (!state.launcherToken?.trim()) return;
+// drive (home / ictf / utpugs — several can be on screen); `community` selects
+// the token + endpoint (iCTF's pug_ready vs UTPugs' utpugs_ready).
+async function pugReady(scope: "home" | "ictf" | "utpugs", community: PugReadyCommunity): Promise<void> {
+  const token = community === "utpugs" ? state.utpugsToken : state.launcherToken;
+  if (!token?.trim()) return;
+  const cmd = community === "utpugs" ? "utpugs_ready" : "pug_ready";
   const status = document.getElementById(`readyup-status-${scope}`);
   const btn = document.getElementById(`readyup-btn-${scope}`) as HTMLButtonElement | null;
   if (btn) btn.disabled = true;
   if (status) status.textContent = "Readying up…";
   try {
-    const raw = await invoke<string>("pug_ready", { token: state.launcherToken });
+    const raw = await invoke<string>(cmd, { token });
     // The /launcher_ready response: "readied" (+ ready counts) or "no_readycheck".
     const res = JSON.parse(raw) as {
       state: string;
@@ -831,14 +851,16 @@ async function pugReady(scope: "home" | "community"): Promise<void> {
     };
     if (res.state === "readied") {
       // Reflect immediately rather than waiting for the 5 s poll: mark
-      // you_readied and refresh both surfaces.
-      if (state.pugStatus && state.pugStatus.state === "readycheck") {
-        state.pugStatus.you_readied = true;
-        if (res.ready_count !== undefined) state.pugStatus.ready_count = res.ready_count;
-        if (res.ready_needed !== undefined) state.pugStatus.ready_needed = res.ready_needed;
+      // you_readied on the right community's status and refresh all surfaces.
+      const target = community === "utpugs" ? state.utpugsStatus : state.pugStatus;
+      if (target && target.state === "readycheck") {
+        target.you_readied = true;
+        if (res.ready_count !== undefined) target.ready_count = res.ready_count;
+        if (res.ready_needed !== undefined) target.ready_needed = res.ready_needed;
       }
       renderHomeReadycheck();
       renderPug();
+      renderUtpugs();
       const others = Math.max(0, (res.ready_needed ?? 0) - (res.ready_count ?? 0));
       const s = document.getElementById(`readyup-status-${scope}`);
       if (s)
@@ -848,14 +870,16 @@ async function pugReady(scope: "home" | "community"): Promise<void> {
     } else if (res.state === "no_readycheck") {
       // The check-in already ended (passed, cancelled, or you weren't in one).
       if (status) status.textContent = "No ready-up needed right now.";
-      void pollPugStatus(); // resync to the real current state
+      if (community === "utpugs") void pollUtpugsStatus();
+      else void pollPugStatus(); // resync to the real current state
     } else if (status) {
       status.textContent = raw;
     }
   } catch (err) {
     console.error("pug_ready failed:", err);
     if (isPugTokenError(err)) {
-      handlePugTokenError();
+      if (community === "utpugs") handleUtpugsTokenError();
+      else handlePugTokenError();
     } else if (status) {
       // Most likely the bot hasn't deployed /launcher_ready yet, or a transient
       // blip — let them retry (or fall back to readying up in Discord).
@@ -2266,8 +2290,8 @@ function renderPug() {
     // backup: ready up here and the match starts without touching Discord.
     pugControls.innerHTML = `<div id="pug-readycheck" class="readycheck-banner readycheck-inline"></div>`;
     const rc = document.getElementById("pug-readycheck")!;
-    rc.innerHTML = readycheckInnerHtml(st, "community");
-    wireReadycheck(rc, "community");
+    rc.innerHTML = readycheckInnerHtml(st, "ictf");
+    wireReadycheck(rc, "ictf", "ictf");
     return;
   }
   if (st && st.state === "live" && st.server) {
@@ -2659,6 +2683,7 @@ async function saveUtpugsToken(token: string | null) {
     console.error("save_utpugs_token failed:", err);
   }
   renderUtpugs();
+  renderHomeReadycheck(); // clears the HOME banner if it was showing a UTPugs readycheck
   updateDiscordPresence();
   if (token) {
     void pollUtpugsStatus();
@@ -2757,6 +2782,24 @@ function renderUtpugs(): void {
     </div>`;
 
   const st = state.utpugsStatus;
+  // Readycheck is global to the player (one pickup's check-in at a time) and
+  // carries its own mode, so show it regardless of the selected tab — the
+  // Discord-outage backup must never be hidden behind the Mode dropdown.
+  if (st && st.state === "readycheck") {
+    el.innerHTML = `${modeBar}<div id="utpugs-readycheck" class="readycheck-banner readycheck-inline"></div><div id="utpugs-status" class="launch-status"></div>`;
+    const rc = document.getElementById("utpugs-readycheck")!;
+    rc.innerHTML = readycheckInnerHtml(st, "utpugs");
+    wireReadycheck(rc, "utpugs", "utpugs");
+    const rcModeSel = document.getElementById("utpugs-mode") as HTMLSelectElement | null;
+    rcModeSel?.addEventListener("change", () => {
+      state.utpugsMode = rcModeSel.value;
+      renderUtpugs();
+    });
+    document
+      .getElementById("utpugs-token-clear")
+      ?.addEventListener("click", () => void saveUtpugsToken(null));
+    return;
+  }
   // `queued` is per-mode. If the bot tells us which pickup it's for (st.mode) and
   // that's NOT the selected mode, don't render it as this mode's queue — the user is
   // queued elsewhere. Older bots omit st.mode → fall back to assuming the selection.
@@ -2847,8 +2890,15 @@ async function pollUtpugsStatus() {
     const prev = state.utpugsStatus;
     state.utpugsStatus = next;
     updateDiscordPresence();
-    if (!prev || prev.state !== next.state || prev.server !== next.server || prev.players !== next.players) {
+    // Same alert-on-transition as iCTF: entering readycheck fires the desktop
+    // notification + chime once, so a minimized launcher still grabs the player.
+    if (next.state === "readycheck" && prev?.state !== "readycheck") {
+      void notifyReadycheck(next);
+      playReadyChime();
+    }
+    if (pugStatusChanged(prev, next)) {
       renderUtpugs();
+      renderHomeReadycheck();
     }
   } catch (err) {
     console.error("utpugs_status failed:", err);

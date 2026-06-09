@@ -119,6 +119,7 @@ pub fn run() {
             commands::utpugs_configured,
             commands::utpugs_action,
             commands::utpugs_status,
+            commands::utpugs_ready,
             commands::utpugs_spectate,
             commands::utpugs_queues,
             commands::save_launcher_token,

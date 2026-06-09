@@ -649,6 +649,28 @@ pub async fn utpugs_spectate(token: String) -> Result<String, String> {
     .map_err(pug_error)
 }
 
+/// Ready up for a filling UTPugs pickup's check-in (autopug's Discord-outage
+/// backup). Mirrors [`pug_ready`] for the second community. Mode-agnostic: a
+/// player is only ever in one pickup's check-in, which the bot resolves from the
+/// token. Returns autopug's JSON (`{state:"readied", …}` / `{state:"no_readycheck"}`).
+#[tauri::command]
+pub async fn utpugs_ready(token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err("no launcher token set".into());
+    }
+    let url = autopug_url("/ready")?;
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(
+        &client,
+        &url,
+        &[("launcher-token", token.trim())],
+        "{}".to_string(),
+        64 * 1024,
+    )
+    .await
+    .map_err(pug_error)
+}
+
 /// Ask autopug for current UTPugs queue fill counts across modes, WITHOUT a
 /// token. Mirrors [`pug_queues`] for the second community. Returns autopug's
 /// JSON (`{queues:[{mode, players, max_players}, …]}`); the UI keeps only the
