@@ -2202,8 +2202,21 @@ async function connectToPug(server: string, password: string) {
 // existing connect path. We append ?SpectatorOnly=1 ourselves — raw query options
 // are never passed through. See src-tauri/src/lib.rs for the scheme registration.
 let deepLinkWired = false;
+// De-dupe guard for deep links. A single cold-start link is frequently delivered
+// TWICE — once via getCurrent() and again via the onOpenUrl listener — and the
+// ut4stats bounce page both auto-fires ncp:// and offers a manual Connect button.
+// Without this, the duplicate runs a second connectTo and launches a second,
+// racing game instance that often isn't on the server (the "it opens the game but
+// not the server" report). Ignore a repeat of the same URL within a short window.
+let lastConnectUri = "";
+let lastConnectAt = 0;
 
 async function handleConnectUri(raw: string): Promise<void> {
+  const now = Date.now();
+  if (raw === lastConnectUri && now - lastConnectAt < 5000) return;
+  lastConnectUri = raw;
+  lastConnectAt = now;
+
   let u: URL;
   try {
     u = new URL(raw);
@@ -2229,19 +2242,23 @@ async function handleConnectUri(raw: string): Promise<void> {
     return;
   }
 
-  const ok = await confirm(`${spectate ? "Spectate" : "Connect to"} ${server}?`, {
-    title: "UT4 Community Launcher",
-    kind: "warning",
-  });
-  if (!ok) return;
-
-  // The link may have arrived while we were minimized — surface the window.
+  // Surface the window and the Community tab FIRST — the link often arrives while
+  // we're minimized after a prior launch, so the confirm must come up on a visible
+  // window, and connectTo's status/errors need a visible #pug-status to land in
+  // (otherwise a failure like "UT4 already running" or "no install" is silent).
   try {
     await getCurrentWindow().unminimize();
     await getCurrentWindow().setFocus();
   } catch {
     /* non-fatal */
   }
+  switchView("community");
+
+  const ok = await confirm(`${spectate ? "Spectate" : "Connect to"} ${server}?`, {
+    title: "UT4 Community Launcher",
+    kind: "warning",
+  });
+  if (!ok) return;
 
   const target = spectate ? `${server}?SpectatorOnly=1` : server;
   await connectTo(target, password, document.getElementById("pug-status"));
