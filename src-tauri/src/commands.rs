@@ -397,13 +397,21 @@ fn pug_error(e: ncp_net::NetError) -> String {
 /// the launcher sends NO `ut4_id` -- a token only ever queues its owner.
 /// Returns the bot's status message JSON for the UI to display.
 #[tauri::command]
-pub async fn pug_action(action: String, token: String) -> Result<String, String> {
+pub async fn pug_action(
+    action: String,
+    token: String,
+    build: Option<u32>,
+) -> Result<String, String> {
     if token.trim().is_empty() {
         return Err(
             "Set your launcher token first (run /launchertoken in the UTPugs Discord).".into(),
         );
     }
-    let body = serde_json::json!({ "action": action, "mode": "ictf" }).to_string();
+    // `plugin_version` (the player's installed NetcodePlus build) lets the bot
+    // reject a stale client from the queue before teams form. null = an older
+    // launcher; the server version gate still backstops those.
+    let body = serde_json::json!({ "action": action, "mode": "ictf", "plugin_version": build })
+        .to_string();
     let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
     ncp_net::post_json(
         &client,
@@ -584,7 +592,12 @@ fn check_autopug_mode(mode: &str) -> Result<(), String> {
 /// by the per-user UTPugs `token`. Mirrors [`pug_action`] but against autopug and
 /// with a real mode parameter (autopug runs several queues).
 #[tauri::command]
-pub async fn utpugs_action(action: String, mode: String, token: String) -> Result<String, String> {
+pub async fn utpugs_action(
+    action: String,
+    mode: String,
+    token: String,
+    build: Option<u32>,
+) -> Result<String, String> {
     if token.trim().is_empty() {
         return Err(
             "Set your UTPugs launcher token first (run /launchertoken in the UTPugs Discord).".into(),
@@ -592,7 +605,8 @@ pub async fn utpugs_action(action: String, mode: String, token: String) -> Resul
     }
     check_autopug_mode(&mode)?;
     let url = autopug_url("/pug_action")?;
-    let body = serde_json::json!({ "action": action, "mode": mode }).to_string();
+    let body = serde_json::json!({ "action": action, "mode": mode, "plugin_version": build })
+        .to_string();
     let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
     ncp_net::post_json(
         &client,

@@ -2129,6 +2129,35 @@ function pugToggleAllowed(key: string, action: string, status: HTMLElement | nul
   return true;
 }
 
+// NetcodePlus state for the install the player will launch from — drives both the
+// pre-join gate and the `build` we report to the bot.
+function selectedNcp(): { build: number | null; outdated: boolean; available: number | null } {
+  const di = state.installs[state.selInstall];
+  const inst = di ? statusCache.plugin?.installs.find((i) => i.root === di.install.root) : undefined;
+  return {
+    build: inst?.installed_version ?? null,
+    // "update" = behind the manifest, "install" = missing. Either one means the
+    // NetcodePlus server version gate would kick this client, so it can't PUG.
+    outdated: inst?.action === "update" || inst?.action === "install",
+    available: statusCache.plugin?.available_version ?? null,
+  };
+}
+
+// Pre-join enforcement: a stale/missing NetcodePlus can't queue — otherwise the
+// player joins, the server version gate kicks them ~10s in, and the PUG is a man
+// short. A Join on an outdated install kicks off the one-click update instead; the
+// player Joins again once it's current. Returns true when the join is BLOCKED.
+function ncpBlocksJoin(status: HTMLElement | null): boolean {
+  const ncp = selectedNcp();
+  if (!ncp.outdated) return false;
+  const want = ncp.available ? ` (build ${ncp.available})` : "";
+  if (status) {
+    status.innerHTML = `<span class="warn">NetcodePlus is out of date${escape(want)} — updating now; Join again once it finishes. Outdated clients get kicked from PUG servers.</span>`;
+  }
+  void doInstallPlugin(); // run the update; the re-Join proceeds when it's current
+  return true;
+}
+
 async function pug(action: "joinpug" | "leavepug" | "listpug") {
   // Defensive: never POST an empty token. renderPug already gates the buttons on
   // a token, but this stops a stale render from firing a guaranteed 401.
@@ -2138,6 +2167,8 @@ async function pug(action: "joinpug" | "leavepug" | "listpug") {
   }
   const status = document.getElementById("pug-status");
   if (!pugToggleAllowed("ictf", action, status)) return;
+  // Force-updated-to-PUG: a stale NetcodePlus can't queue — update first.
+  if (action === "joinpug" && ncpBlocksJoin(status)) return;
   const gate = pugToggleGate["ictf"];
   const toggle = action === "joinpug" || action === "leavepug";
   if (toggle) {
@@ -2146,7 +2177,11 @@ async function pug(action: "joinpug" | "leavepug" | "listpug") {
   }
   if (status) status.textContent = action === "listpug" ? "Checking queue…" : "Working…";
   try {
-    const raw = await invoke<string>("pug_action", { action, token: state.launcherToken ?? "" });
+    const raw = await invoke<string>("pug_action", {
+      action,
+      token: state.launcherToken ?? "",
+      build: selectedNcp().build,
+    });
     let msg = raw;
     try {
       msg = (JSON.parse(raw) as { message?: string }).message ?? raw;
@@ -2644,6 +2679,8 @@ async function utpugsPug(action: "joinpug" | "leavepug" | "listpug") {
   }
   const status = document.getElementById("utpugs-status");
   if (!pugToggleAllowed("utpugs", action, status)) return;
+  // Force-updated-to-PUG: a stale NetcodePlus can't queue — update first.
+  if (action === "joinpug" && ncpBlocksJoin(status)) return;
   const gate = pugToggleGate["utpugs"];
   const toggle = action === "joinpug" || action === "leavepug";
   if (toggle) {
@@ -2656,6 +2693,7 @@ async function utpugsPug(action: "joinpug" | "leavepug" | "listpug") {
       action,
       mode: state.utpugsMode,
       token: state.utpugsToken ?? "",
+      build: selectedNcp().build,
     });
     let msg = raw;
     try {
