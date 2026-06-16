@@ -1812,12 +1812,18 @@ async function renderTrends(mode: string): Promise<void> {
     return;
   }
   const acc = t.accuracy ?? [];
-  const lastVal = (vals: (number | null)[]): number | null =>
-    vals.reduce<number | null>((prev, v) => (v != null ? v : prev), null);
+  // Headline = mean hit% across the window's tracked games (each already past the
+  // server-side ≥10-shot floor), so it reads as "your accuracy over these matches"
+  // rather than just the latest game. The sparkline still shows the per-game trend.
+  const meanVal = (vals: (number | null)[]): number | null => {
+    const xs = vals.filter((v): v is number => v != null);
+    if (xs.length === 0) return null;
+    return Math.round((xs.reduce((a, b) => a + b, 0) / xs.length) * 10) / 10;
+  };
   // One accuracy row per weapon that actually has data in this mode (sniper/LG
   // in regular modes, IG in instagib/iCTF); empty weapons are hidden.
   const accRow = (label: string, vals: (number | null)[], color: string): string => {
-    const lv = lastVal(vals);
+    const lv = meanVal(vals);
     if (lv == null) return "";
     return `<div class="trend-row"><span class="trend-label">${label}</span>${sparkline(vals, color)}<span class="trend-val">${lv}%</span></div>`;
   };
