@@ -600,13 +600,14 @@ pub async fn utpugs_action(
 ) -> Result<String, String> {
     if token.trim().is_empty() {
         return Err(
-            "Set your UTPugs launcher token first (run /launchertoken in the UTPugs Discord).".into(),
+            "Set your UTPugs launcher token first (run /launchertoken in the UTPugs Discord)."
+                .into(),
         );
     }
     check_autopug_mode(&mode)?;
     let url = autopug_url("/pug_action")?;
-    let body = serde_json::json!({ "action": action, "mode": mode, "plugin_version": build })
-        .to_string();
+    let body =
+        serde_json::json!({ "action": action, "mode": mode, "plugin_version": build }).to_string();
     let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
     ncp_net::post_json(
         &client,
