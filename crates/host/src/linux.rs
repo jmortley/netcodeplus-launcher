@@ -81,6 +81,137 @@ pub fn plan_wine_launch(exe: &Path, args: &[String], wine_bin: Option<&str>) -> 
     })
 }
 
+// ── Lutris / Wine-prefix detection ──────────────────────────────────────────
+//
+// On Linux the UT4 install lives inside a Wine prefix, so the launcher can't use
+// the Windows registry/shortcut probes — it discovers the install from Lutris.
+// Lutris records each game in `~/.config/lutris/games/<slug>-<id>.yml` with the
+// Windows `exe` and the Wine `prefix` as Linux paths — the precise, high-
+// confidence signal. The YAML field extraction here is pure (string -> paths) so
+// it unit-tests on any host (Windows dev box + CI); the thin filesystem walk that
+// feeds it into `check_install` is the only `not(windows)` piece.
+
+/// A UT4 install located from a Lutris game config: the Windows `exe` and the
+/// Wine `prefix`, both as Linux paths. Either may be absent in a sparse config.
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
+pub struct LutrisGame {
+    /// `game.exe` — absolute Linux path to the Windows `.exe` inside `drive_c`.
+    pub exe: Option<PathBuf>,
+    /// `game.prefix` — the Wine prefix root (the dir that contains `drive_c`).
+    pub prefix: Option<PathBuf>,
+}
+
+/// Strip surrounding matched quotes + whitespace from a scalar YAML value;
+/// `None` if what remains is empty.
+fn clean_scalar(value: &str) -> Option<PathBuf> {
+    let v = value.trim();
+    let v = v
+        .strip_prefix('"')
+        .and_then(|inner| inner.strip_suffix('"'))
+        .or_else(|| {
+            v.strip_prefix('\'')
+                .and_then(|inner| inner.strip_suffix('\''))
+        })
+        .unwrap_or(v);
+    (!v.is_empty()).then(|| PathBuf::from(v))
+}
+
+/// Extract `game.exe` / `game.prefix` from the contents of a Lutris game `.yml`.
+///
+/// A deliberately small, dependency-free reader: Lutris writes these as plain
+/// `key: value` scalars (absolute paths, occasionally quoted) indented under a
+/// top-level `game:` block, so we track that block and pull the two keys. Keys in
+/// other top-level blocks (`system:`, `wine:`) are ignored. This covers the real-
+/// world configs; a malformed/exotic file just yields `None`s and the caller
+/// falls back to the manual folder-pick. (If we later need full YAML fidelity,
+/// swap this for `serde_yml` — kept dependency-free for now.)
+#[must_use]
+pub fn parse_lutris_game_yaml(contents: &str) -> LutrisGame {
+    let mut game = LutrisGame::default();
+    let mut in_game_block = false;
+    for line in contents.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        // A top-level key starts in column 0 (no leading space/tab).
+        let at_top_level = line.chars().next().is_some_and(|c| c != ' ' && c != '\t');
+        if at_top_level {
+            // Entering `game:`, or leaving it for another top-level block.
+            in_game_block = trimmed == "game:";
+            continue;
+        }
+        if !in_game_block {
+            continue;
+        }
+        if let Some(value) = trimmed.strip_prefix("exe:") {
+            game.exe = clean_scalar(value);
+        } else if let Some(value) = trimmed.strip_prefix("prefix:") {
+            game.prefix = clean_scalar(value);
+        }
+    }
+    game
+}
+
+/// The best single path to hand [`crate::install::check_install`] for a Lutris
+/// game: the `exe` (precise — `check_install` walks up to the install root), else
+/// the prefix's `drive_c` as a starting point. `None` if neither is known.
+#[must_use]
+pub fn lutris_install_probe(game: &LutrisGame) -> Option<PathBuf> {
+    match &game.exe {
+        Some(exe) => Some(exe.clone()),
+        None => game.prefix.as_ref().map(|prefix| prefix.join(DRIVE_C)),
+    }
+}
+
+/// Lutris's per-game config directory: `<home>/.config/lutris/games`.
+#[must_use]
+pub fn lutris_games_dir(home: &Path) -> PathBuf {
+    home.join(".config").join("lutris").join("games")
+}
+
+/// Discover UT4 install roots from Lutris game configs.
+///
+/// Reads every `*.yml` under [`lutris_games_dir`], extracts the exe/prefix, and
+/// resolves each to a real UT4 install root via [`crate::install::check_install`]
+/// (which validates the tree, so non-UT4 Lutris games are skipped). Deduped.
+/// Returns empty when Lutris isn't installed or nothing resolves — the UI then
+/// falls back to the manual folder-pick. `mod_paks_dir` is threaded into the
+/// resolved [`crate::install::UtInstall`] exactly as the Windows path does.
+///
+/// NOTE: a prefix-only config (no `exe`) can't be resolved here — `check_install`
+/// walks *up* from the probe, and the install sits *below* `drive_c`. Those fall
+/// to the manual pick; a downward prefix scan is a follow-up (roadmap step 2).
+#[cfg(not(windows))]
+#[must_use]
+pub fn detect_lutris_ut4_roots(mod_paks_dir: &Path) -> Vec<PathBuf> {
+    let Some(home) = dirs::home_dir() else {
+        return Vec::new();
+    };
+    let Ok(entries) = std::fs::read_dir(lutris_games_dir(&home)) else {
+        return Vec::new();
+    };
+    let mut roots: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|e| e.to_str()) != Some("yml") {
+            continue;
+        }
+        let Ok(contents) = std::fs::read_to_string(&path) else {
+            continue;
+        };
+        let Some(probe) = lutris_install_probe(&parse_lutris_game_yaml(&contents)) else {
+            continue;
+        };
+        if let Some(install) = crate::install::check_install(&probe, mod_paks_dir.to_path_buf()) {
+            if !roots.contains(&install.root) {
+                roots.push(install.root);
+            }
+        }
+    }
+    roots
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -139,5 +270,84 @@ mod tests {
     #[test]
     fn wine_plan_is_none_outside_a_prefix() {
         assert!(plan_wine_launch(Path::new("/home/x/foo.exe"), &[], None).is_none());
+    }
+
+    // ── Lutris detection ────────────────────────────────────────────────────
+
+    const SAMPLE_LUTRIS_YML: &str = "\
+game:
+  arch: win64
+  exe: /home/barry/Games/ut/drive_c/Program Files/UnrealTournament/UnrealTournament/Binaries/Win64/UnrealTournament.exe
+  prefix: /home/barry/Games/ut
+  working_dir: /home/barry/Games/ut/drive_c
+system:
+  env:
+    exe: /should/be/ignored
+wine:
+  version: lutris-GE-Proton8-26-x86_64
+";
+
+    #[test]
+    fn parses_exe_and_prefix_from_the_game_block() {
+        let g = parse_lutris_game_yaml(SAMPLE_LUTRIS_YML);
+        assert_eq!(
+            g.exe.as_deref(),
+            Some(Path::new(
+                "/home/barry/Games/ut/drive_c/Program Files/UnrealTournament/UnrealTournament/Binaries/Win64/UnrealTournament.exe"
+            ))
+        );
+        assert_eq!(g.prefix.as_deref(), Some(Path::new("/home/barry/Games/ut")));
+    }
+
+    #[test]
+    fn ignores_keys_outside_the_game_block() {
+        // The `exe:` nested under system.env must NOT be captured.
+        let g = parse_lutris_game_yaml(SAMPLE_LUTRIS_YML);
+        assert_ne!(g.exe.as_deref(), Some(Path::new("/should/be/ignored")));
+    }
+
+    #[test]
+    fn strips_matched_quotes_around_values() {
+        let yml = "game:\n  exe: \"/q/drive_c/UT/x.exe\"\n  prefix: '/q'\n";
+        let g = parse_lutris_game_yaml(yml);
+        assert_eq!(g.exe.as_deref(), Some(Path::new("/q/drive_c/UT/x.exe")));
+        assert_eq!(g.prefix.as_deref(), Some(Path::new("/q")));
+    }
+
+    #[test]
+    fn missing_game_fields_yield_default() {
+        let g = parse_lutris_game_yaml("game:\n  arch: win64\nsystem: {}\n");
+        assert_eq!(g, LutrisGame::default());
+    }
+
+    #[test]
+    fn probe_prefers_exe_then_falls_back_to_prefix_drive_c() {
+        let with_exe = LutrisGame {
+            exe: Some(PathBuf::from("/p/drive_c/UT/u.exe")),
+            prefix: Some(PathBuf::from("/p")),
+        };
+        assert_eq!(
+            lutris_install_probe(&with_exe),
+            Some(PathBuf::from("/p/drive_c/UT/u.exe"))
+        );
+
+        let prefix_only = LutrisGame {
+            exe: None,
+            prefix: Some(PathBuf::from("/p")),
+        };
+        assert_eq!(
+            lutris_install_probe(&prefix_only),
+            Some(PathBuf::from("/p/drive_c"))
+        );
+
+        assert_eq!(lutris_install_probe(&LutrisGame::default()), None);
+    }
+
+    #[test]
+    fn games_dir_is_under_config_lutris() {
+        assert_eq!(
+            lutris_games_dir(Path::new("/home/barry")),
+            PathBuf::from("/home/barry/.config/lutris/games")
+        );
     }
 }
