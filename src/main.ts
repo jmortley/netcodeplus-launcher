@@ -1976,6 +1976,10 @@ async function loadAll() {
     void pollLivePugs();
     void pollQueues();
     startLivePolling();
+    if (!visibilityWired) {
+      visibilityWired = true;
+      document.addEventListener("visibilitychange", onLauncherVisible);
+    }
     if (state.launcherToken) {
       void pollPugStatus();
       startPugPolling();
@@ -2911,11 +2915,68 @@ function renderUtpugs(): void {
   document.getElementById("utpugs-spectate")?.addEventListener("click", () => void utpugsSpectate());
 }
 
+// ── Adaptive poll cadence ────────────────────────────────────────────────────
+// The status pollers used to hit the bot every 5s forever (even idle/minimized),
+// and the live-banner + queue-nudge poll ran every 8s always-on — a lot of needless
+// traffic. Now a cheap 5s base tick wakes up but only HITS the network when the
+// per-state cadence is due: fast while engaged (queued/readycheck/starting) so a
+// minimized launcher still catches the ready-up; slow when idle; slowest when idle
+// AND hidden. The banner/nudge poll on their own slow cadence and pause while hidden.
+const POLL_TICK_MS = 5000; // base wakeup; no network unless a cadence is due
+const POLL_ACTIVE_MS = 10000; // queued / readycheck / starting (even when hidden)
+const POLL_IDLE_MS = 45000; // not in a queue, window visible
+const POLL_HIDDEN_IDLE_MS = 300000; // idle AND minimized
+const LIVE_POLL_MS = 180000; // HOME live-PUG banner
+const QUEUES_POLL_MS = 45000; // HOME "queue filling" nudge
+
+let pugLastFetch = 0;
+let utpugsLastFetch = 0;
+let liveLastFetch = 0;
+let queuesLastFetch = 0;
+let visibilityWired = false;
+
+// "Engaged" = in a queue or a ready-up is live — state can change fast and the
+// readycheck desktop notification must still fire when minimized, so we stay on
+// the fast cadence regardless of visibility.
+function pollEngaged(s: string | null | undefined): boolean {
+  return s === "queued" || s === "readycheck" || s === "starting";
+}
+
+function statusPollDue(lastFetch: number, engaged: boolean): boolean {
+  const cadence = engaged ? POLL_ACTIVE_MS : document.hidden ? POLL_HIDDEN_IDLE_MS : POLL_IDLE_MS;
+  return Date.now() - lastFetch >= cadence;
+}
+
+// Becoming visible again: refresh the visible surfaces immediately rather than
+// waiting out the idle/hidden cadence (reset the per-poll clocks to match).
+function onLauncherVisible(): void {
+  if (document.hidden) return;
+  const now = Date.now();
+  liveLastFetch = now;
+  queuesLastFetch = now;
+  void pollLivePugs();
+  void pollQueues();
+  if (state.launcherToken) {
+    pugLastFetch = now;
+    void pollPugStatus();
+  }
+  if (state.utpugsToken && state.utpugsConfigured) {
+    utpugsLastFetch = now;
+    void pollUtpugsStatus();
+  }
+}
+
 let utpugsPollTimer: number | undefined;
 
 function startUtpugsPolling() {
   if (utpugsPollTimer !== undefined) return;
-  utpugsPollTimer = window.setInterval(() => void pollUtpugsStatus(), 5000);
+  utpugsLastFetch = Date.now();
+  utpugsPollTimer = window.setInterval(() => {
+    if (statusPollDue(utpugsLastFetch, pollEngaged(state.utpugsStatus?.state))) {
+      utpugsLastFetch = Date.now();
+      void pollUtpugsStatus();
+    }
+  }, POLL_TICK_MS);
 }
 
 function stopUtpugsPolling() {
@@ -3543,7 +3604,13 @@ let pugPollTimer: number | undefined;
 
 function startPugPolling() {
   if (pugPollTimer !== undefined) return;
-  pugPollTimer = window.setInterval(() => void pollPugStatus(), 5000);
+  pugLastFetch = Date.now();
+  pugPollTimer = window.setInterval(() => {
+    if (statusPollDue(pugLastFetch, pollEngaged(state.pugStatus?.state))) {
+      pugLastFetch = Date.now();
+      void pollPugStatus();
+    }
+  }, POLL_TICK_MS);
 }
 
 function stopPugPolling() {
@@ -3605,10 +3672,20 @@ let lastLiveKey = "";
 // endpoints — powers the HOME live banner and the "queue filling" nudge.
 function startLivePolling() {
   if (livePollTimer !== undefined) return;
+  liveLastFetch = Date.now();
+  queuesLastFetch = Date.now();
   livePollTimer = window.setInterval(() => {
-    void pollLivePugs();
-    void pollQueues();
-  }, 8000);
+    if (document.hidden) return; // banner + nudge don't poll while minimized
+    const now = Date.now();
+    if (now - liveLastFetch >= LIVE_POLL_MS) {
+      liveLastFetch = now;
+      void pollLivePugs();
+    }
+    if (now - queuesLastFetch >= QUEUES_POLL_MS) {
+      queuesLastFetch = now;
+      void pollQueues();
+    }
+  }, POLL_TICK_MS);
 }
 
 // Refresh the live-PUG set for the HOME banner. Tokenless, read-only. A failure
