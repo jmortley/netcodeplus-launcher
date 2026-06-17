@@ -958,9 +958,12 @@ function renderDashStats(): void {
       <p class="src">Loading ${escape(state.linkedName ?? "your stats")}…</p>`;
     return;
   }
-  const chips = s.ratings.length
-    ? s.ratings
-        .slice(0, 4)
+  // Show modes the player has actually played (drops 0-game seeded ratings like
+  // AbsElim) rather than a flat top-4 by rating — otherwise a real but lower mode
+  // like iCTF gets pushed off the card. Cap at 6 so the row doesn't run away.
+  const rated = s.ratings.filter((r) => r.games > 0).slice(0, 6);
+  const chips = rated.length
+    ? rated
         .map((r) => `<span class="chip"><span class="lbl">${escape(r.mode)}</span><b>${r.rating}</b></span>`)
         .join("")
     : `<span class="src">No rated matches yet.</span>`;
