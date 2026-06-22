@@ -53,4 +53,14 @@ pub struct InstalledPlugin {
     /// `PluginEntry::sha256`). Compared against the manifest to decide whether
     /// an update is needed — a difference means new bytes are published.
     pub sha256: Sha256Digest,
+
+    /// Fingerprint of the load-bearing FILES the launcher wrote to disk for this
+    /// build (the `.uplugin` + everything under `Binaries/`). Set when the
+    /// launcher installs/adopts a build, so a later check can notice when the
+    /// on-disk plugin has been hand-swapped to a different build even though the
+    /// manifest hasn't changed (e.g. a user drops an older `Binaries` folder in).
+    /// `None` for records written before this field existed — drift can't be
+    /// checked for those, so they fall back to the ZIP-digest comparison.
+    #[serde(default)]
+    pub content_hash: Option<String>,
 }

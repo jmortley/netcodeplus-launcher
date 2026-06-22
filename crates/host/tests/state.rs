@@ -41,6 +41,7 @@ fn sample_state() -> LauncherState {
         InstalledPlugin {
             version: 324,
             sha256: Sha256Digest::from_bytes([3u8; 32]),
+            content_hash: Some("deadbeef".to_string()),
         },
     );
 

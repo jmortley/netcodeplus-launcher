@@ -409,6 +409,70 @@ fn has_extra_load_bearing_file(
     Ok(false)
 }
 
+/// A stable fingerprint of the load-bearing files on disk for the NetcodePlus
+/// plugin under `root`: the `.uplugin` plus every file under `Binaries/`, each
+/// SHA-256'd and combined in sorted relative-path order.
+///
+/// Recorded when the launcher installs/adopts a build (a clean install lays the
+/// folder out as exactly the manifest ZIP). Re-hashing later equals the recorded
+/// value iff the bytes are untouched — so a hand-swap of the plugin to a
+/// different build (an older `Binaries/` dropped in while the manifest is
+/// unchanged) is detectable even though the recorded ZIP digest still "matches"
+/// the manifest. `None` when the plugin folder is absent or unreadable.
+#[must_use]
+pub fn plugin_content_hash(root: &Path) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    let dir = netcodeplus_dir(root);
+    if !dir.is_dir() {
+        return None;
+    }
+    let mut files: Vec<(String, PathBuf)> = Vec::new();
+    let uplugin = dir.join("NetcodePlus.uplugin");
+    if uplugin.is_file() {
+        files.push((norm_plugin_rel("NetcodePlus.uplugin"), uplugin));
+    }
+    collect_files_under(&dir.join("Binaries"), &dir, &mut files);
+    if files.is_empty() {
+        return None;
+    }
+    files.sort_by(|a, b| a.0.cmp(&b.0));
+    let mut hasher = Sha256::new();
+    for (rel, path) in &files {
+        let fh = file_sha256_hex(path).ok()?;
+        hasher.update(rel.as_bytes());
+        hasher.update([0u8]);
+        hasher.update(fh.as_bytes());
+        hasher.update([b'\n']);
+    }
+    Some(
+        hasher
+            .finalize()
+            .iter()
+            .map(|b| format!("{b:02x}"))
+            .collect(),
+    )
+}
+
+/// Recursively collect `(normalised-relpath, path)` for every FILE under `dir`,
+/// relative to `base`. Best-effort: an unreadable subdir is skipped.
+fn collect_files_under(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) {
+    let Ok(rd) = fs::read_dir(dir) else {
+        return;
+    };
+    for entry in rd.flatten() {
+        let path = entry.path();
+        match entry.file_type() {
+            Ok(ft) if ft.is_dir() => collect_files_under(&path, base, out),
+            Ok(ft) if ft.is_file() => {
+                if let Ok(rel) = path.strip_prefix(base) {
+                    out.push((norm_plugin_rel(&rel.to_string_lossy()), path));
+                }
+            }
+            _ => {}
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

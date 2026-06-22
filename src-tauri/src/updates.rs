@@ -363,7 +363,20 @@ fn decide_for_install(
     let recorded = state
         .installed_plugins
         .get(&root.to_string_lossy().to_string());
-    ncp_planner::plan_plugin(manifest_plugin, folder_present, recorded)
+    // Fingerprint the on-disk plugin only when there's a record to validate and
+    // the folder is present — so a hand-swapped build is caught (its bytes no
+    // longer match what we installed) without hashing files on a fresh install.
+    let on_disk_hash = if folder_present && recorded.is_some() {
+        ncp_host::plugin_content_hash(root)
+    } else {
+        None
+    };
+    ncp_planner::plan_plugin(
+        manifest_plugin,
+        folder_present,
+        recorded,
+        on_disk_hash.as_deref(),
+    )
 }
 
 /// Report the NetcodePlus plugin status for every detected install, by
@@ -520,6 +533,9 @@ pub async fn install_plugin(
                             ncp_planner::InstalledPlugin {
                                 version: entry.version,
                                 sha256: entry.sha256,
+                                // Fingerprint the just-installed bytes so a later
+                                // hand-swap to a different build is detectable.
+                                content_hash: ncp_host::plugin_content_hash(&root),
                             },
                         );
                         state_dirty = true;
@@ -577,6 +593,7 @@ pub async fn install_plugin(
                         ncp_planner::InstalledPlugin {
                             version: entry.version,
                             sha256: entry.sha256,
+                            content_hash: ncp_host::plugin_content_hash(root),
                         },
                     );
                     state_dirty = true;
@@ -708,6 +725,9 @@ pub async fn verify_plugin(
                     ncp_planner::InstalledPlugin {
                         version: entry.version,
                         sha256: entry.sha256,
+                        // Record the adopted build's on-disk fingerprint so a
+                        // later swap away from it is caught.
+                        content_hash: ncp_host::plugin_content_hash(&root),
                     },
                 );
                 state_dirty = true;
