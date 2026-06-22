@@ -530,24 +530,6 @@ footer {
   font-size: 0.9rem;
 }
 
-/* Hero "Update now" CTA shown when the installed NetcodePlus build is outdated —
-   amber to match the "update available" warning text beside it. */
-.hero-update-btn {
-  margin-left: 0.5rem;
-  padding: 0.25rem 0.7rem;
-  font-weight: 600;
-  background: #f59e0b;
-  color: #1a1205;
-  border: none;
-  border-radius: 7px;
-}
-.hero-update-btn:hover {
-  background: #fbbf24;
-}
-.hero-update-btn:disabled {
-  opacity: 0.6;
-}
-
 .launch-primary {
   display: inline-block;
   min-width: 16rem;
@@ -566,6 +548,25 @@ footer {
 
 .launch-primary:active {
   transform: translateY(1px);
+}
+
+/* Outdated build: the primary button becomes UPDATE (amber, not the blue PLAY)
+   so an out-of-date player updates instead of launching into a version-gate
+   kick. Defined after .launch-primary so the modifier wins. */
+.launch-update {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  box-shadow: 0 4px 18px rgba(217, 119, 6, 0.5);
+}
+
+.launch-update:hover {
+  background: linear-gradient(135deg, #fbbf24, #ea7a0c);
+  box-shadow: 0 6px 28px rgba(217, 119, 6, 0.75);
+}
+
+/* The hero update button while its one-click update runs ("Updating…"). */
+.launch-update:disabled {
+  opacity: 0.6;
+  cursor: default;
 }
 
 /* Reserve space at the bottom of the card so its last content clears the fixed

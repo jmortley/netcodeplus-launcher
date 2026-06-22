@@ -39,6 +39,10 @@ interface PluginInstallStatus {
   action: PluginAction;
   installed_version: number | null;
   available_version: number | null;
+  // Whether a well-formed NetcodePlus folder is on disk. Distinguishes a manual
+  // (present-but-unrecorded → action "install") plugin from a missing one, so the
+  // launcher verifies the bytes instead of nagging "not installed".
+  present: boolean;
 }
 interface PluginStatusResult {
   plugin_offered: boolean;
@@ -49,6 +53,12 @@ interface PluginStatusResult {
 interface PluginInstallOutcome {
   root: string;
   result: "installed" | "skipped" | "failed";
+  detail: string;
+}
+// Per-install result of `verify_plugin` (adopt a hand-installed current build).
+interface PluginVerifyOutcome {
+  root: string;
+  result: "adopted" | "differs" | "skipped" | "failed";
   detail: string;
 }
 
@@ -248,6 +258,10 @@ const state = {
   linkedName: null as string | null,
   launcherToken: null as string | null,
   pugStatus: null as PugStatus | null,
+  // Which Instagib Nation (UT4IGBot) queue the player is acting on — iCTF
+  // (default) or Elim. The token is shared across the community's modes; the
+  // selector just scopes join/leave/status to one queue.
+  igMode: "ictf" as "ictf" | "elim",
   // UTPugs (autopug) — a second community with its own per-user token, its own
   // status, and several modes (the user picks one). `utpugsConfigured` mirrors
   // the Rust `utpugs_configured()` (false hides the whole UTPugs section).
@@ -302,8 +316,10 @@ function netcodeplusBadge(
       // servers, so the hero has to say "update first" (with a one-click Update),
       // not imply ready-to-play. Matches the "update available" card below it.
       if (outdated) {
+        // The big primary button below is now the UPDATE action (see
+        // renderHomeHero), so the badge is just the reason — no separate button.
         const v = availVer != null ? ` (build ${availVer})` : "";
-        return `<span class="warn">⬆&nbsp;NetcodePlus update available${escape(v)} — update before playing</span> <button id="hero-plugin-update" type="button" class="btn hero-update-btn">Update now</button>`;
+        return `<span class="warn">⬆&nbsp;NetcodePlus update required${escape(v)} — update before you can play</span>`;
       }
       // With a root, the badge is a link that opens the plugin folder.
       return root
@@ -498,6 +514,41 @@ const statusCache: {
   dotnetOk: boolean;
 } = { plugin: null, launcher: null, dotnetAvailable: false, dotnetOk: true };
 
+// Roots already run through verify_plugin this session (match or not) — a
+// present-but-unrecorded manual install is checked once, never re-downloaded on
+// every status refresh.
+const verifiedManualRoots = new Set<string>();
+
+// Recognise a hand-installed plugin (present on disk but with no launcher record,
+// so it plans as "install") that is actually the current build, and adopt it —
+// otherwise the dash card nags "NetcodePlus is not installed" and the PUG gate
+// blocks a player whose plugin is in fact up to date. Verifies the on-disk bytes
+// against the signed manifest's SHA-pinned ZIP (verify_plugin); a match records
+// it as current. No-op (and no download) unless such an install exists. Mutates
+// statusCache.plugin in place on success so the very next render is correct.
+async function adoptVerifiedManualInstalls(): Promise<void> {
+  const p = statusCache.plugin;
+  if (!p) return;
+  const roots = p.installs
+    .filter((i) => i.action === "install" && i.present && i.installed_version == null)
+    .map((i) => i.root)
+    .filter((r) => !verifiedManualRoots.has(r));
+  if (roots.length === 0) return;
+  roots.forEach((r) => verifiedManualRoots.add(r)); // dedupe concurrent passes
+  try {
+    await invoke<PluginVerifyOutcome[]>("verify_plugin", { roots });
+    statusCache.plugin = await invoke<PluginStatusResult>("plugin_status", {
+      roots: state.installs.map((d) => d.install.root),
+    });
+  } catch (err) {
+    // A transient failure (e.g. the verify download dropped) must NOT burn the
+    // one-shot guard — nothing was verified, so let a later refresh retry these
+    // roots rather than leaving a current manual install stuck as "not installed".
+    roots.forEach((r) => verifiedManualRoots.delete(r));
+    console.error("verify_plugin failed:", err);
+  }
+}
+
 // Fetch the manifest-backed statuses once, cache them, then refresh the status
 // card. Called at startup and after a plugin update. Each source is independent:
 // one failing doesn't block the others (the card just omits that line).
@@ -509,6 +560,10 @@ async function loadStatusData(): Promise<void> {
   } catch (err) {
     console.error("plugin_status failed:", err);
   }
+  // Before rendering, adopt any hand-installed current build so it doesn't show
+  // the false "not installed / update needed" (it has no launcher record). This
+  // updates statusCache.plugin in place when it adopts.
+  await adoptVerifiedManualInstalls();
   try {
     statusCache.launcher = await invoke<LauncherUpdateResult>("launcher_update_status");
   } catch (err) {
@@ -598,6 +653,13 @@ function renderHomeHero() {
   const pluginInst = statusCache.plugin?.installs.find((i) => i.root === di.install.root);
   const pluginOutdated = pluginInst?.action === "update";
   const pluginAvail = statusCache.plugin?.available_version ?? null;
+  // When the build is outdated the big primary button BECOMES the update — not a
+  // PLAY that drops the player onto a server the version gate kicks them off of.
+  // (Community ask: outdated players ignored a separate "update" notice and hit
+  // PLAY anyway, so PLAY itself turns into UPDATE until they're current.)
+  const primaryBtn = pluginOutdated
+    ? `<button id="hero-update-btn" type="button" class="launch-primary launch-update">⬆&nbsp;&nbsp;UPDATE NETCODEPLUS</button>`
+    : `<button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;PLAY</button>`;
   homeHero.className = "";
   homeHero.innerHTML = `
     <div class="play-hero">
@@ -605,31 +667,45 @@ function renderHomeHero() {
         <div class="play-title">Unreal Tournament</div>
         <div class="play-sub">${netcodeplusBadge(di.netcodeplus, di.install.root, pluginOutdated, pluginAvail)}</div>
         <div class="hero-cta">
-          <button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;PLAY</button>
+          ${primaryBtn}
           <span class="hero-meta">${escape(di.install.root)}</span>
         </div>
       </div>
     </div>
     <div id="admin-warn-panel"></div>
     <div id="launch-status" class="launch-status"></div>`;
-  (document.getElementById("launch-btn") as HTMLButtonElement | null)?.addEventListener(
-    "click",
-    () => void launch(),
-  );
-  // One-click update straight from the hero when the build is outdated.
-  const heroUpd = document.getElementById("hero-plugin-update") as HTMLButtonElement | null;
-  heroUpd?.addEventListener("click", () => {
-    heroUpd.disabled = true;
-    void doInstallPlugin();
-  });
+  if (pluginOutdated) {
+    const upd = document.getElementById("hero-update-btn") as HTMLButtonElement | null;
+    upd?.addEventListener("click", () => {
+      upd.disabled = true;
+      upd.textContent = "Updating…";
+      void doInstallPlugin();
+    });
+  } else {
+    (document.getElementById("launch-btn") as HTMLButtonElement | null)?.addEventListener(
+      "click",
+      () => void launch(),
+    );
+  }
   void renderAdminWarning();
 }
 
 // A bot mode name -> display label (e.g. "ictf" -> "iCTF").
 function pugModeLabel(mode?: string): string {
   if (!mode) return "PUG";
-  return mode.toLowerCase() === "ictf" ? "iCTF" : mode;
+  const m = mode.toLowerCase();
+  if (m === "ictf") return "iCTF";
+  if (m === "elim") return "Elim";
+  return mode;
 }
+
+// The Instagib Nation (UT4IGBot) PUG modes the launcher offers — the `mode` key
+// sent on join/leave/status, matched against the bot's `modes` table. Mirrors
+// the Rust IGBOT_MODES allowlist; keep the two in sync.
+const IGBOT_MODES: { key: "ictf" | "elim"; label: string }[] = [
+  { key: "ictf", label: "iCTF" },
+  { key: "elim", label: "Elim" },
+];
 
 // HOME "live PUG — watch it" banner. Tokenless spectate-to-learn: shows any
 // live PUG (from the bot's /live endpoint, polled into state.livePugs) so a
@@ -748,6 +824,10 @@ async function joinFillingQueue(q: FillingQueue): Promise<void> {
       renderPug();
       return;
     }
+    // Target the mode the nudge surfaced, not whatever's selected (pug() sends
+    // state.igMode) — mirrors the UTPugs branch above.
+    state.igMode = q.mode === "elim" ? "elim" : "ictf";
+    renderPug();
     await pug("joinpug");
   }
 }
@@ -1133,12 +1213,15 @@ function renderDashCommunity(): void {
   const st = state.pugStatus;
   let pugLine = "";
   if (state.launcherToken && st) {
+    // Label by the actual mode (the bot reports it on queued; fall back to the
+    // selected mode) so an Elim PUG isn't mislabelled "iCTF" on the dashboard.
+    const lbl = `${escape(pugModeLabel(st.mode ?? state.igMode))} PUG`;
     if (st.state === "live" && st.server) {
-      pugLine = `<div class="drow"><span class="grow"><b>iCTF PUG</b><span class="map"> · live now</span></span><button id="dash-pug-connect" type="button" class="btn btn-sm pug-connect">▶ Connect</button></div>`;
+      pugLine = `<div class="drow"><span class="grow"><b>${lbl}</b><span class="map"> · live now</span></span><button id="dash-pug-connect" type="button" class="btn btn-sm pug-connect">▶ Connect</button></div>`;
     } else if (st.state === "starting") {
-      pugLine = `<div class="drow"><span class="grow"><b>iCTF PUG</b><span class="map"> · starting…</span></span></div>`;
+      pugLine = `<div class="drow"><span class="grow"><b>${lbl}</b><span class="map"> · starting…</span></span></div>`;
     } else if (st.state === "queued") {
-      pugLine = `<div class="drow"><span class="grow"><b>iCTF PUG</b><span class="map"> · in queue</span></span><span class="pop">${
+      pugLine = `<div class="drow"><span class="grow"><b>${lbl}</b><span class="map"> · in queue</span></span><span class="pop">${
         st.players ?? 0
       }/${st.max_players ?? 10}</span></div>`;
     }
@@ -2192,6 +2275,7 @@ async function pug(action: "joinpug" | "leavepug" | "listpug") {
   try {
     const raw = await invoke<string>("pug_action", {
       action,
+      mode: state.igMode,
       token: state.launcherToken ?? "",
       build: selectedNcp().build,
     });
@@ -2255,7 +2339,10 @@ function updateDiscordPresence(): void {
   // state so the profile reflects whichever PUG actually matters right now.
   const candidates: { community: string; mode: string; st: PugStatus }[] = [];
   if (state.launcherToken && state.pugStatus) {
-    candidates.push({ community: "Instagib Nation", mode: "ictf", st: state.pugStatus });
+    // Instagib Nation is multi-mode now — reflect the actual queue (the bot
+    // reports st.mode when queued; else the selected mode), not a hardcoded iCTF.
+    const igMode = (state.pugStatus.mode ?? state.igMode).toLowerCase();
+    candidates.push({ community: "Instagib Nation", mode: igMode, st: state.pugStatus });
   }
   if (state.utpugsConfigured && state.utpugsToken && state.utpugsStatus) {
     // Reflect the mode the bot says we're actually queued in (st.mode), not the
@@ -2319,7 +2406,7 @@ function renderPug() {
           ? `<p class="warn">Your launcher token wasn't recognized — it may not be linked yet, or it was reset. Re-link it below.</p>`
           : ""
       }
-      <p>To queue iCTF PUGs here, run <code>/launchertoken</code> in the Instagib Nation Discord and paste the token it DMs you:</p>
+      <p>To queue iCTF or Elim PUGs here, run <code>/launchertoken</code> in the Instagib Nation Discord and paste the token it DMs you:</p>
       <div class="controls">
         <label>Launcher token
           <input id="pug-token" type="password" placeholder="paste your /launchertoken value" spellcheck="false" autocomplete="off" />
@@ -2332,62 +2419,93 @@ function renderPug() {
     });
     return;
   }
+  // Instagib Nation runs more than one queue (iCTF + Elim), so the player picks
+  // which to act on. The token is shared across the community's modes; the
+  // selector just scopes join/leave/status. Shown in every post-token branch.
+  const modeLabel = pugModeLabel(state.igMode);
+  const modeOpts = IGBOT_MODES.map(
+    (m) =>
+      `<option value="${m.key}"${m.key === state.igMode ? " selected" : ""}>${escape(m.label)}</option>`,
+  ).join("");
+  const modeBar = `
+    <div class="utpugs-modebar">
+      <label>Mode <select id="pug-mode">${modeOpts}</select></label>
+      <button id="pug-token-clear" type="button" class="link-btn">change token</button>
+    </div>`;
+
   const st = state.pugStatus;
+  // Readycheck / live / starting are global to the player (resolved by the bot
+  // from the token, not the selected mode), so they show under whichever mode is
+  // selected — the Discord-outage backup and an active game must never hide
+  // behind the dropdown.
   if (st && st.state === "readycheck") {
     // PUG filled — the ready-up step is running. This is the Discord-outage
     // backup: ready up here and the match starts without touching Discord.
-    pugControls.innerHTML = `<div id="pug-readycheck" class="readycheck-banner readycheck-inline"></div>`;
+    pugControls.innerHTML = `${modeBar}<div id="pug-readycheck" class="readycheck-banner readycheck-inline"></div><div id="pug-status" class="launch-status"></div>`;
     const rc = document.getElementById("pug-readycheck")!;
     rc.innerHTML = readycheckInnerHtml(st, "ictf");
     wireReadycheck(rc, "ictf", "ictf");
+    wirePugModeBar();
     return;
   }
+  let block: string;
   if (st && st.state === "live" && st.server) {
-    pugControls.innerHTML = `
-      <p class="ok">🎮 Your iCTF PUG is live!</p>
+    block = `
+      <p class="ok">🎮 Your ${escape(modeLabel)} PUG is live!</p>
       <p class="src">Server <code>${escape(st.server)}</code>${
         st.password ? ` · password <code>${escape(st.password)}</code>` : ""
       }</p>
-      <button id="pug-connect" type="button" class="launch-primary pug-connect">▶&nbsp;&nbsp;Connect to PUG</button>
-      <button id="pug-token-clear" type="button" class="link-btn">change token</button>
-      <div id="pug-status" class="launch-status"></div>`;
-    document
-      .getElementById("pug-connect")
-      ?.addEventListener("click", () => void connectToPug(st.server ?? "", st.password ?? ""));
-    document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
-    return;
-  }
-  if (st && st.state === "starting") {
+      <button id="pug-connect" type="button" class="launch-primary pug-connect">▶&nbsp;&nbsp;Connect to PUG</button>`;
+  } else if (st && st.state === "starting") {
     // PUG is live but the game server is still spinning up (NYC ~90s). Show a
     // disabled button; the 5 s poll re-renders the moment it flips to "live",
     // so the user can't launch into a server that isn't listening yet.
-    pugControls.innerHTML = `
-      <p class="ok">🛰️ Your iCTF PUG is starting…</p>
+    block = `
+      <p class="ok">🛰️ Your ${escape(modeLabel)} PUG is starting…</p>
       <p class="src">Server spinning up — Connect unlocks the moment it's ready (~90s).</p>
-      <button type="button" class="launch-primary pug-connect" disabled>▶&nbsp;&nbsp;Starting…</button>
-      <button id="pug-token-clear" type="button" class="link-btn">change token</button>
-      <div id="pug-status" class="launch-status"></div>`;
-    document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
-    return;
+      <button type="button" class="launch-primary pug-connect" disabled>▶&nbsp;&nbsp;Starting…</button>`;
+  } else {
+    const queueLine =
+      st && st.state === "queued"
+        ? `In queue — ${st.players ?? 0}/${st.max_players ?? 10}`
+        : `Queue for ${escape(modeLabel)}`;
+    block = `
+      <p>${queueLine}</p>
+      <div class="discord-btns">
+        <button id="pug-join" type="button">Join ${escape(modeLabel)} PUG</button>
+        <button id="pug-leave" type="button">Leave</button>
+        <button id="pug-refresh" type="button">Queue status</button>
+        <button id="pug-spectate" type="button">Spectate live game</button>
+      </div>`;
   }
 
-  const queueLine =
-    st && st.state === "queued"
-      ? `In queue — ${st.players ?? 0}/${st.max_players ?? 10}`
-      : "Queue for iCTF";
-  pugControls.innerHTML = `
-    <p>${queueLine} <button id="pug-token-clear" type="button" class="link-btn">change token</button></p>
-    <div class="discord-btns">
-      <button id="pug-join" type="button">Join iCTF PUG</button>
-      <button id="pug-leave" type="button">Leave</button>
-      <button id="pug-refresh" type="button">Queue status</button>
-      <button id="pug-spectate" type="button">Spectate live game</button>
-    </div>
-    <div id="pug-status" class="launch-status"></div>`;
+  pugControls.innerHTML = `${modeBar}${block}<div id="pug-status" class="launch-status"></div>`;
+  wirePugModeBar();
+  if (st && st.state === "live" && st.server) {
+    const server = st.server;
+    const password = st.password ?? "";
+    document
+      .getElementById("pug-connect")
+      ?.addEventListener("click", () => void connectToPug(server, password));
+  }
   document.getElementById("pug-join")?.addEventListener("click", () => void pug("joinpug"));
   document.getElementById("pug-leave")?.addEventListener("click", () => void pug("leavepug"));
   document.getElementById("pug-refresh")?.addEventListener("click", () => void pug("listpug"));
   document.getElementById("pug-spectate")?.addEventListener("click", () => void spectate());
+}
+
+// Wire the Instagib Nation mode dropdown + the change-token link (shared by every
+// post-token render branch). Switching mode clears the old mode's status so the
+// UI doesn't show a stale queue while the first poll for the new mode lands.
+function wirePugModeBar(): void {
+  const sel = document.getElementById("pug-mode") as HTMLSelectElement | null;
+  sel?.addEventListener("change", () => {
+    state.igMode = sel.value === "elim" ? "elim" : "ictf";
+    state.pugStatus = null;
+    renderPug();
+    pugLastFetch = Date.now(); // claim this poll so the interval doesn't double-fire
+    void pollPugStatus();
+  });
   document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
 }
 
@@ -3639,7 +3757,9 @@ function pugStatusChanged(prev: PugStatus | null, next: PugStatus): boolean {
 async function pollPugStatus() {
   if (!state.launcherToken) return;
   try {
-    const next = JSON.parse(await invoke<string>("pug_status", { token: state.launcherToken })) as PugStatus;
+    const next = JSON.parse(
+      await invoke<string>("pug_status", { mode: state.igMode, token: state.launcherToken }),
+    ) as PugStatus;
     const prev = state.pugStatus;
     state.pugStatus = next;
     updateDiscordPresence();

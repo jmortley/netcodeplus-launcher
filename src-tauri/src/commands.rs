@@ -378,6 +378,22 @@ pub fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
 /// reverse-proxy to the bot's FastAPI app; the proxied path is TLS-terminated).
 const BOT_PUG_URL: &str = "https://ut4stats.com/launcher/pug_action";
 
+/// The PUG modes the Instagib Nation bot (UT4IGBot) offers via the launcher.
+/// `mode` is forwarded verbatim into the bot's JSON body (it resolves it against
+/// its `modes` table), so the launcher only ever relays a value the bot
+/// advertises. iCTF is the long-standing default; `elim` was added alongside it.
+const IGBOT_MODES: &[&str] = &["ictf", "elim"];
+
+/// Reject any Instagib Nation `mode` the bot doesn't advertise, before it's
+/// relayed. Mirrors [`check_autopug_mode`] for the iCTF community.
+fn check_igbot_mode(mode: &str) -> Result<(), String> {
+    if IGBOT_MODES.contains(&mode) {
+        Ok(())
+    } else {
+        Err(format!("unknown Instagib Nation mode '{mode}'"))
+    }
+}
+
 /// Map a bot PUG-call error to a user-facing message, turning an HTTP 401 (a
 /// missing / unrecognized / revoked launcher token) into clear guidance rather
 /// than a raw status. The "/launchertoken" phrasing is also what the frontend
@@ -399,19 +415,22 @@ fn pug_error(e: ncp_net::NetError) -> String {
 #[tauri::command]
 pub async fn pug_action(
     action: String,
+    mode: String,
     token: String,
     build: Option<u32>,
 ) -> Result<String, String> {
     if token.trim().is_empty() {
         return Err(
-            "Set your launcher token first (run /launchertoken in the UTPugs Discord).".into(),
+            "Set your launcher token first (run /launchertoken in the Instagib Nation Discord)."
+                .into(),
         );
     }
+    check_igbot_mode(&mode)?;
     // `plugin_version` (the player's installed NetcodePlus build) lets the bot
     // reject a stale client from the queue before teams form. null = an older
     // launcher; the server version gate still backstops those.
-    let body = serde_json::json!({ "action": action, "mode": "ictf", "plugin_version": build })
-        .to_string();
+    let body =
+        serde_json::json!({ "action": action, "mode": mode, "plugin_version": build }).to_string();
     let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
     ncp_net::post_json(
         &client,
@@ -428,19 +447,22 @@ pub async fn pug_action(
 const BOT_STATUS_URL: &str = "https://ut4stats.com/launcher/pug_status";
 
 /// Poll the player's PUG status (queued / live + the live server's connect
-/// info), authenticated by the per-user launcher `token`. Returns the bot's
-/// status JSON so the UI can show a one-click CONNECT when the PUG starts.
+/// info) for `mode`, authenticated by the per-user launcher `token`. Returns the
+/// bot's status JSON so the UI can show a one-click CONNECT when the PUG starts.
+/// `mode` scopes the queue branch (the bot reports the right queue's fill); the
+/// readycheck/live branches are mode-agnostic (resolved by the player).
 #[tauri::command]
-pub async fn pug_status(token: String) -> Result<String, String> {
+pub async fn pug_status(mode: String, token: String) -> Result<String, String> {
     if token.trim().is_empty() {
         return Err("no launcher token set".into());
     }
+    check_igbot_mode(&mode)?;
     let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
     ncp_net::post_json(
         &client,
         BOT_STATUS_URL,
         &[("launcher-token", token.trim())],
-        "{}".to_string(),
+        serde_json::json!({ "mode": mode }).to_string(),
         64 * 1024,
     )
     .await

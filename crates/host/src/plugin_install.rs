@@ -150,6 +150,19 @@ fn file_sha256_hex(path: &Path) -> io::Result<String> {
         .collect())
 }
 
+/// Lowercase hex SHA-256 of everything an arbitrary reader yields (e.g. a ZIP
+/// entry stream), streamed so a large file is not fully buffered.
+fn reader_sha256_hex<R: io::Read>(mut reader: R) -> io::Result<String> {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    io::copy(&mut reader, &mut hasher)?;
+    Ok(hasher
+        .finalize()
+        .iter()
+        .map(|b| format!("{b:02x}"))
+        .collect())
+}
+
 /// Re-verify the ZIP's SHA-256 against `expected_sha256_hex`, then install it
 /// into `root`. This is what the **elevated** install child calls: it does NOT
 /// trust that the (unelevated) parent already verified the bytes — it re-hashes
@@ -282,6 +295,120 @@ fn extract_into(zip_path: &Path, staging: &Path) -> Result<()> {
     Ok(())
 }
 
+/// Whether the NetcodePlus plugin currently on disk under `root` is the current
+/// build — i.e. every FILE entry in the verified ZIP at `zip_path` exists under
+/// `<root>/UnrealTournament/Plugins/NetcodePlus/` with an identical SHA-256, AND
+/// the install carries no EXTRA load-bearing files this build doesn't ship.
+///
+/// This is how the launcher recognises a plugin the user installed BY HAND (no
+/// recorded version) as already-current, without a destructive reinstall: the
+/// manifest pins the ZIP's hash, so a content match proves the on-disk bytes are
+/// this build. A single missing or differing tracked file → `Ok(false)` (a
+/// different / older build → genuinely needs an update).
+///
+/// Extra on-disk files OFF the load path (a user's `notes.txt`, leftover content)
+/// are tolerated. But an extra file under `Binaries/`, or a stray `.uplugin` /
+/// `.dll` / `.modules` / `.pdb` anywhere, fails the match: adopt asserts "this
+/// install IS this build", and such a file means the engine could load bytes this
+/// build doesn't ship (e.g. an official build hand-overlaid on top of an
+/// older/dev one). Unlike [`install_plugin_zip`] — which extracts into a fresh
+/// dir and atomically swaps, guaranteeing exact contents — adopt inspects a
+/// folder it didn't place, so it checks for stray load-bearing files explicitly.
+///
+/// The ZIP bytes are assumed already SHA-256-verified against the signed manifest
+/// by the caller ([`ncp_net::download`]). The same zip-slip guard as extraction
+/// maps each entry to a path strictly within the plugin dir.
+///
+/// # Errors
+/// An unsafe archive entry, or a ZIP/IO read error. A *missing* on-disk file is
+/// NOT an error — it is simply a non-match (`Ok(false)`).
+pub fn plugin_matches_zip(zip_path: &Path, root: &Path) -> Result<bool> {
+    use std::collections::HashSet;
+
+    let dest = netcodeplus_dir(root); // <root>/UnrealTournament/Plugins/NetcodePlus
+    let file = fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+
+    // The build's file set as plugin-root-relative lowercase '/'-paths, so the
+    // extra-file walk below can tell shipped files from strays.
+    let mut shipped: HashSet<String> = HashSet::new();
+
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i)?;
+        let name = entry.name().to_string();
+
+        // Directory entries carry no content to compare.
+        if entry.is_dir() || name.ends_with('/') || name.ends_with('\\') {
+            continue;
+        }
+        if !is_safe_entry(&name) {
+            return Err(PluginInstallError::UnsafeEntry(name));
+        }
+        let Some(on_disk) = joined_is_within(&dest, &name) else {
+            return Err(PluginInstallError::UnsafeEntry(name));
+        };
+
+        // A file this build ships that isn't on disk → not this build.
+        if !on_disk.is_file() {
+            return Ok(false);
+        }
+        let want = reader_sha256_hex(&mut entry)?;
+        let got = file_sha256_hex(&on_disk)?;
+        if !want.eq_ignore_ascii_case(&got) {
+            return Ok(false);
+        }
+        shipped.insert(norm_plugin_rel(&name));
+    }
+
+    // An install that carries extra load-bearing files this build doesn't ship
+    // isn't purely this build → don't adopt it.
+    if has_extra_load_bearing_file(&dest, &dest, &shipped)? {
+        return Ok(false);
+    }
+    Ok(true)
+}
+
+/// Normalise a plugin-relative path to lowercase forward-slash form so ZIP entry
+/// names and on-disk paths compare equal across separators and case.
+fn norm_plugin_rel(rel: &str) -> String {
+    rel.replace('\\', "/").to_ascii_lowercase()
+}
+
+/// Recursively: does `dir` (under plugin root `base`) hold any FILE not in
+/// `shipped` that is load-bearing — under `Binaries/`, or a `.uplugin` / `.dll` /
+/// `.modules` / `.pdb` anywhere? Such a file means the on-disk install is not
+/// purely the shipped build.
+fn has_extra_load_bearing_file(
+    base: &Path,
+    dir: &Path,
+    shipped: &std::collections::HashSet<String>,
+) -> Result<bool> {
+    for entry in fs::read_dir(dir)? {
+        let entry = entry?;
+        let path = entry.path();
+        if entry.file_type()?.is_dir() {
+            if has_extra_load_bearing_file(base, &path, shipped)? {
+                return Ok(true);
+            }
+            continue;
+        }
+        let rel_path = path.strip_prefix(base).unwrap_or(&path);
+        let rel = norm_plugin_rel(&rel_path.to_string_lossy());
+        if shipped.contains(&rel) {
+            continue;
+        }
+        let load_bearing = rel.starts_with("binaries/")
+            || rel.ends_with(".uplugin")
+            || rel.ends_with(".dll")
+            || rel.ends_with(".modules")
+            || rel.ends_with(".pdb");
+        if load_bearing {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -299,5 +426,63 @@ mod tests {
             io::ErrorKind::NotFound
         )));
         assert!(!is_transient_lock(&io::Error::from_raw_os_error(2)));
+    }
+
+    /// Build a minimal well-formed plugin ZIP (`.uplugin` + a `Binaries/` file),
+    /// STORED so the test has no compression-method dependency.
+    fn make_plugin_zip(path: &Path, uplugin: &[u8], dll: &[u8]) {
+        use std::io::Write;
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            let mut w = zip::ZipWriter::new(io::Cursor::new(&mut buf));
+            w.start_file("NetcodePlus.uplugin", opts).unwrap();
+            w.write_all(uplugin).unwrap();
+            w.add_directory("Binaries/Win64/", opts).unwrap();
+            w.start_file("Binaries/Win64/UE4-NetcodePlus.dll", opts)
+                .unwrap();
+            w.write_all(dll).unwrap();
+            w.finish().unwrap();
+        }
+        fs::write(path, &buf).unwrap();
+    }
+
+    #[test]
+    fn plugin_matches_zip_detects_a_manual_install_of_the_same_build() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let zip_path = tmp.path().join("NetcodePlus.zip");
+        make_plugin_zip(&zip_path, br#"{"VersionName":"2.0"}"#, b"DLL-bytes-v327");
+
+        // Simulate a hand-extracted install: the same bytes, but no launcher record.
+        let root = tmp.path().join("game");
+        install_plugin_zip(&zip_path, &root).unwrap();
+        assert!(plugin_matches_zip(&zip_path, &root).unwrap());
+
+        // A tampered/older tracked file → not a match.
+        let dll = netcodeplus_dir(&root).join("Binaries/Win64/UE4-NetcodePlus.dll");
+        fs::write(&dll, b"DLL-bytes-v326").unwrap();
+        assert!(!plugin_matches_zip(&zip_path, &root).unwrap());
+
+        // A missing tracked file → not a match (and not an error).
+        fs::remove_file(&dll).unwrap();
+        assert!(!plugin_matches_zip(&zip_path, &root).unwrap());
+
+        // An extra file OFF the load path does not break a match.
+        install_plugin_zip(&zip_path, &root).unwrap();
+        fs::write(netcodeplus_dir(&root).join("notes.txt"), b"unrelated").unwrap();
+        assert!(plugin_matches_zip(&zip_path, &root).unwrap());
+
+        // But an extra LOAD-BEARING file (a stray DLL under Binaries/, or a second
+        // .uplugin) DOES break it — adopt must not bless a build overlaid on a
+        // leftover one.
+        let stray = netcodeplus_dir(&root).join("Binaries/Win64/UE4-Old.dll");
+        fs::write(&stray, b"stale").unwrap();
+        assert!(!plugin_matches_zip(&zip_path, &root).unwrap());
+        fs::remove_file(&stray).unwrap();
+        assert!(plugin_matches_zip(&zip_path, &root).unwrap());
+        fs::write(netcodeplus_dir(&root).join("Old.uplugin"), b"{}").unwrap();
+        assert!(!plugin_matches_zip(&zip_path, &root).unwrap());
     }
 }

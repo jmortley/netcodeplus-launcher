@@ -43,7 +43,7 @@ pub use crate::launch::{
     affinity_presets, launch, logical_cpus, parse_mask_hex, AffinityPreset, LaunchOptions, Priority,
 };
 pub use crate::plugin_install::{
-    install_plugin_zip, install_plugin_zip_verified, PluginInstallError,
+    install_plugin_zip, install_plugin_zip_verified, plugin_matches_zip, PluginInstallError,
 };
 pub use crate::shortcut::{
     create_desktop_shortcut, desktop_shortcut_is_stale, detect_outdated_launcher, is_stale_pending,

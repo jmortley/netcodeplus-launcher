@@ -156,6 +156,7 @@ pub fn run() {
             updates::compute_plan,
             updates::plugin_status,
             updates::install_plugin,
+            updates::verify_plugin,
             updates::scan_strays,
             updates::remove_stray_plugin,
             updates::launcher_update_status,

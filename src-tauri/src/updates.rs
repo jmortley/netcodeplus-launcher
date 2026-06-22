@@ -284,6 +284,11 @@ pub struct PluginInstallStatus {
     pub installed_version: Option<u32>,
     /// Build number the manifest offers (None when the channel has no plugin).
     pub available_version: Option<u32>,
+    /// Whether a well-formed `Plugins/NetcodePlus/` folder is on disk right now.
+    /// Lets the UI tell a hand-installed (present but unrecorded → `action ==
+    /// "install"`) plugin apart from a genuinely missing one, so it can verify
+    /// the on-disk bytes instead of nagging "not installed". See `verify_plugin`.
+    pub present: bool,
 }
 
 /// Overall plugin status across all installs, for the UI's plugin card.
@@ -382,11 +387,16 @@ pub async fn plugin_status(
                 .installed_plugins
                 .get(&root.to_string_lossy().to_string())
                 .map(|p| p.version);
+            let present = matches!(
+                ncp_host::netcodeplus_status(&root),
+                ncp_host::NetcodePlusStatus::Installed
+            );
             PluginInstallStatus {
                 root: root.to_string_lossy().into_owned(),
                 action: plugin_action_str(&action),
                 installed_version,
                 available_version,
+                present,
             }
         })
         .collect();
@@ -596,6 +606,135 @@ pub async fn install_plugin(
         ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
     }
 
+    Ok(outcomes)
+}
+
+/// Result of a [`verify_plugin`] run, per install.
+#[derive(Debug, Serialize)]
+pub struct PluginVerifyOutcome {
+    /// Install root acted on.
+    pub root: String,
+    /// `"adopted"` (on-disk bytes match the current build → now recorded up to
+    /// date), `"differs"` (present but a different/older build → a real update is
+    /// needed), `"skipped"` (nothing to verify here), or `"failed"`.
+    pub result: &'static str,
+    /// Human-readable detail.
+    pub detail: String,
+}
+
+/// Verify a hand-installed NetcodePlus against the signed manifest's plugin ZIP
+/// and ADOPT it when the bytes match — so a player who installed the plugin
+/// manually (which the launcher has no record of) isn't told to "update" a build
+/// that is already current.
+///
+/// For each present install whose recorded state doesn't already match the
+/// manifest, downloads the manifest-pinned ZIP (streaming SHA-256 + size
+/// verified — the same trust path as install) ONCE and compares it byte-for-byte
+/// against the on-disk plugin via [`ncp_host::plugin_matches_zip`]. A match
+/// records `{version, sha256}` for that root (so it reads as up to date
+/// everywhere — hero, card, and the PUG gate); a mismatch is left untouched for
+/// the normal Update path. The installed FILES are never modified — only the
+/// launcher's version record. Installs already recorded as current, or with no
+/// folder on disk, are skipped (no download is performed for them).
+#[tauri::command]
+pub async fn verify_plugin(
+    app: AppHandle,
+    roots: Option<Vec<String>>,
+) -> Result<Vec<PluginVerifyOutcome>, String> {
+    let (manifest, mut state, _, _) = fetch_verify(&app).await?;
+    let channel = manifest.channels.get(&state.channel);
+    let Some(entry) = channel.and_then(|c| c.plugin.as_ref()).cloned() else {
+        return Ok(Vec::new()); // channel offers no plugin → nothing to verify
+    };
+
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    let zip_path = std::env::temp_dir().join(format!("ncp-verify-{}.zip", std::process::id()));
+
+    let mut outcomes: Vec<PluginVerifyOutcome> = Vec::new();
+    let mut downloaded = false;
+    let mut state_dirty = false;
+
+    for root in resolve_roots(roots) {
+        let root_key = root.to_string_lossy().to_string();
+
+        // Only a present, well-formed folder can be verified; a missing one is a
+        // genuine install (don't download just to "verify" nothing).
+        if !matches!(
+            ncp_host::netcodeplus_status(&root),
+            ncp_host::NetcodePlusStatus::Installed
+        ) {
+            outcomes.push(PluginVerifyOutcome {
+                root: root_key,
+                result: "skipped",
+                detail: "no NetcodePlus folder on disk".into(),
+            });
+            continue;
+        }
+        // Already recorded as the current build → nothing to prove.
+        if state
+            .installed_plugins
+            .get(&root_key)
+            .is_some_and(|rec| rec.sha256 == entry.sha256)
+        {
+            outcomes.push(PluginVerifyOutcome {
+                root: root_key,
+                result: "skipped",
+                detail: "already recorded up to date".into(),
+            });
+            continue;
+        }
+
+        // Download the verified ZIP lazily, once, on the first root that needs it.
+        if !downloaded {
+            if let Err(e) = ncp_net::download(
+                &client,
+                &entry.url,
+                entry.sha256,
+                entry.size_bytes,
+                &zip_path,
+            )
+            .await
+            {
+                let _ = std::fs::remove_file(&zip_path);
+                return Err(format!("plugin download/verify failed: {e}"));
+            }
+            downloaded = true;
+        }
+
+        match ncp_host::plugin_matches_zip(&zip_path, &root) {
+            Ok(true) => {
+                state.installed_plugins.insert(
+                    root_key.clone(),
+                    ncp_planner::InstalledPlugin {
+                        version: entry.version,
+                        sha256: entry.sha256,
+                    },
+                );
+                state_dirty = true;
+                outcomes.push(PluginVerifyOutcome {
+                    root: root_key,
+                    result: "adopted",
+                    detail: format!("on-disk plugin matches build {}", entry.version),
+                });
+            }
+            Ok(false) => outcomes.push(PluginVerifyOutcome {
+                root: root_key,
+                result: "differs",
+                detail: format!("on-disk plugin is not build {}", entry.version),
+            }),
+            Err(e) => outcomes.push(PluginVerifyOutcome {
+                root: root_key,
+                result: "failed",
+                detail: e.to_string(),
+            }),
+        }
+    }
+
+    let _ = std::fs::remove_file(&zip_path);
+    if state_dirty {
+        let path = state_path(&app)?;
+        ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+    }
     Ok(outcomes)
 }
 
