@@ -430,7 +430,7 @@ pub fn plugin_content_hash(root: &Path) -> Option<String> {
     if uplugin.is_file() {
         files.push((norm_plugin_rel("NetcodePlus.uplugin"), uplugin));
     }
-    collect_files_under(&dir.join("Binaries"), &dir, &mut files);
+    collect_files_under(&dir.join("Binaries"), &dir, &mut files).ok()?;
     let mut parts: Vec<(String, String)> = Vec::with_capacity(files.len());
     for (rel, path) in files {
         parts.push((rel, file_sha256_hex(&path).ok()?));
@@ -491,23 +491,35 @@ fn combine_fingerprint(mut parts: Vec<(String, String)>) -> Option<String> {
 }
 
 /// Recursively collect `(normalised-relpath, path)` for every FILE under `dir`,
-/// relative to `base`. Best-effort: an unreadable subdir is skipped.
-fn collect_files_under(dir: &Path, base: &Path, out: &mut Vec<(String, PathBuf)>) {
-    let Ok(rd) = fs::read_dir(dir) else {
-        return;
+/// relative to `base`.
+///
+/// A missing `dir` (e.g. no `Binaries/`) is fine — nothing to add. Any OTHER read
+/// error PROPAGATES, so a partially-unreadable tree makes [`plugin_content_hash`]
+/// return `None` (fail-safe: fall back to the recorded ZIP digest) rather than
+/// fingerprint a partial file set and report a false "outdated".
+fn collect_files_under(
+    dir: &Path,
+    base: &Path,
+    out: &mut Vec<(String, PathBuf)>,
+) -> io::Result<()> {
+    let rd = match fs::read_dir(dir) {
+        Ok(rd) => rd,
+        Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(e) => return Err(e),
     };
-    for entry in rd.flatten() {
+    for entry in rd {
+        let entry = entry?;
         let path = entry.path();
-        match entry.file_type() {
-            Ok(ft) if ft.is_dir() => collect_files_under(&path, base, out),
-            Ok(ft) if ft.is_file() => {
-                if let Ok(rel) = path.strip_prefix(base) {
-                    out.push((norm_plugin_rel(&rel.to_string_lossy()), path));
-                }
+        let ft = entry.file_type()?;
+        if ft.is_dir() {
+            collect_files_under(&path, base, out)?;
+        } else if ft.is_file() {
+            if let Ok(rel) = path.strip_prefix(base) {
+                out.push((norm_plugin_rel(&rel.to_string_lossy()), path));
             }
-            _ => {}
         }
     }
+    Ok(())
 }
 
 #[cfg(test)]

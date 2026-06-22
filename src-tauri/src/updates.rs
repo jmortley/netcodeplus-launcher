@@ -647,6 +647,38 @@ pub struct PluginVerifyOutcome {
     pub detail: String,
 }
 
+/// The build number to record when baselining a present install: the manifest
+/// build when the on-disk bytes match it, otherwise any prior recorded build — so
+/// a genuinely-newer local build isn't clobbered down (which would defeat
+/// [`ncp_planner::PluginAction::DowngradeBlocked`]) and we never assert an
+/// unverified build downstream (e.g. the PUG bot's reported client build).
+fn baseline_version(matches: bool, manifest_version: u32, prior_version: Option<u32>) -> u32 {
+    if matches {
+        manifest_version
+    } else {
+        prior_version.unwrap_or(manifest_version)
+    }
+}
+
+#[cfg(test)]
+mod baseline_version_tests {
+    use super::baseline_version;
+
+    #[test]
+    fn keeps_a_newer_local_build_and_doesnt_fabricate() {
+        // On-disk bytes ARE the manifest build → record it.
+        assert_eq!(baseline_version(true, 327, Some(325)), 327);
+        assert_eq!(baseline_version(true, 327, None), 327);
+        // Mismatch → keep a prior version, incl. a NEWER local build (so
+        // DowngradeBlocked survives) and an older one stays honestly old.
+        assert_eq!(baseline_version(false, 327, Some(328)), 328);
+        assert_eq!(baseline_version(false, 327, Some(325)), 325);
+        // Mismatch, no prior (a fresh hand-install) → the manifest build is the
+        // only number we have; plan_plugin reports it as an update anyway.
+        assert_eq!(baseline_version(false, 327, None), 327);
+    }
+}
+
 /// Establish a content-fingerprint baseline for a present NetcodePlus install the
 /// launcher can't yet vouch for — one it never installed (no record), or one
 /// recorded before fingerprints existed (a legacy record). Without this, a build
@@ -735,17 +767,38 @@ pub async fn verify_plugin(
             expected_hash = ncp_host::plugin_zip_content_hash(&zip_path);
         }
 
+        // We need the build's expected fingerprint to baseline. If the ZIP
+        // couldn't be fingerprinted (shouldn't happen for a signed, verified
+        // plugin ZIP), DON'T record a content_hash:None baseline — that would
+        // read as "up to date" without ever proving content. Skip and leave the
+        // install unbaselined so a later run retries.
+        let Some(expected) = expected_hash.clone() else {
+            outcomes.push(PluginVerifyOutcome {
+                root: root_key,
+                result: "failed",
+                detail: "could not read the plugin ZIP fingerprint".into(),
+            });
+            continue;
+        };
+
         // Record the build's EXPECTED fingerprint as this install's baseline.
         // plan_plugin reports up to date iff the on-disk bytes match it, so an
         // install hand-swapped to an older build (recorded ZIP digest still
         // "matches" the manifest) now reads as outdated rather than up to date.
         let matches = ncp_host::plugin_matches_zip(&zip_path, &root).unwrap_or(false);
+        // Record the manifest build number ONLY when the on-disk bytes are it.
+        // Otherwise keep any prior recorded version: don't assert a build for bytes
+        // we've proven are NOT it (a fabricated build would be forwarded to the PUG
+        // bot), and don't clobber a genuinely-newer local build down to the
+        // manifest's (which would silently defeat the DowngradeBlocked guard).
+        let prior_version = state.installed_plugins.get(&root_key).map(|r| r.version);
+        let version = baseline_version(matches, entry.version, prior_version);
         state.installed_plugins.insert(
             root_key.clone(),
             ncp_planner::InstalledPlugin {
-                version: entry.version,
+                version,
                 sha256: entry.sha256,
-                content_hash: expected_hash.clone(),
+                content_hash: Some(expected),
             },
         );
         state_dirty = true;

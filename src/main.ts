@@ -358,7 +358,14 @@ async function refetchInstallsPreservingManual(): Promise<void> {
   if (state.selInstall >= state.installs.length) state.selInstall = 0;
 }
 
+// Single-flight: the dash, hero, AND top-bar UPDATE buttons all funnel here, but
+// only the dash button self-disables — so without this guard a stray double-click
+// (e.g. the top-bar UPDATE) fires two concurrent install_plugin runs that race on
+// the same-PID temp download/staging paths, not just waste a download.
+let installInFlight = false;
 async function doInstallPlugin(force = false): Promise<void> {
+  if (installInFlight) return;
+  installInFlight = true;
   const btn = (document.getElementById("plugin-update-btn") ??
     document.getElementById("plugin-reinstall-btn")) as HTMLButtonElement | null;
   const status = document.getElementById("plugin-status");
@@ -410,6 +417,8 @@ async function doInstallPlugin(force = false): Promise<void> {
     if (status) status.innerHTML = `<span class="warn">Update failed: ${escape(String(err))}</span>`;
     if (btn) btn.disabled = false;
     console.error("install_plugin failed:", err);
+  } finally {
+    installInFlight = false;
   }
 }
 
@@ -583,10 +592,24 @@ async function invokeWithRetry<T>(
   throw lastErr;
 }
 
+let statusLoading = false;
+// Single-flight wrapper: focus re-checks (onLauncherVisible) can otherwise stack
+// overlapping version checks — most visibly on a never-succeeded cold start, where
+// every focus re-fires the retry chain. Concurrent callers are coalesced into one.
+async function loadStatusData(): Promise<void> {
+  if (statusLoading) return;
+  statusLoading = true;
+  try {
+    await loadStatusDataInner();
+  } finally {
+    statusLoading = false;
+  }
+}
+
 // Fetch the manifest-backed statuses once, cache them, then refresh the status
 // card. Called at startup and after a plugin update. Each source is independent:
 // one failing doesn't block the others (the card just omits that line).
-async function loadStatusData(): Promise<void> {
+async function loadStatusDataInner(): Promise<void> {
   try {
     statusCache.plugin = await invokeWithRetry<PluginStatusResult>("plugin_status", {
       roots: state.installs.map((d) => d.install.root),
