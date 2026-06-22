@@ -553,25 +553,56 @@ async function baselineUnverifiedInstalls(): Promise<void> {
   }
 }
 
+// Re-check the manifest-backed version status (plugin + launcher) on focus at most
+// this often — enough that a freshly published release shows without a restart,
+// infrequent enough not to hammer the manifest.
+const STATUS_REFRESH_MS = 5 * 60 * 1000;
+// Timestamp of the last SUCCESSFUL plugin_status. A flaky startup check (network
+// not ready yet) leaves this 0, so the focus handler keeps retrying until it lands.
+let statusLastOk = 0;
+
+// invoke with a couple of backoff retries — for the manifest-backed startup calls,
+// so a cold-start network hiccup self-heals instead of leaving the update prompt
+// blank until the user restarts the launcher (the reported "relaunch makes it
+// show" symptom). Succeeds on the first try in the normal case (no added latency).
+async function invokeWithRetry<T>(
+  cmd: string,
+  args?: Record<string, unknown>,
+  tries = 3,
+): Promise<T> {
+  let lastErr: unknown;
+  for (let i = 0; i < tries; i++) {
+    if (i > 0) await new Promise((r) => setTimeout(r, 800 * 2 ** (i - 1)));
+    try {
+      return await invoke<T>(cmd, args);
+    } catch (err) {
+      lastErr = err;
+      console.error(`${cmd} attempt ${i + 1}/${tries} failed:`, err);
+    }
+  }
+  throw lastErr;
+}
+
 // Fetch the manifest-backed statuses once, cache them, then refresh the status
 // card. Called at startup and after a plugin update. Each source is independent:
 // one failing doesn't block the others (the card just omits that line).
 async function loadStatusData(): Promise<void> {
   try {
-    statusCache.plugin = await invoke<PluginStatusResult>("plugin_status", {
+    statusCache.plugin = await invokeWithRetry<PluginStatusResult>("plugin_status", {
       roots: state.installs.map((d) => d.install.root),
     });
+    statusLastOk = Date.now();
   } catch (err) {
-    console.error("plugin_status failed:", err);
+    console.error("plugin_status failed after retries:", err);
   }
   // Before rendering, baseline any present install we can't yet vouch for, so it
   // reads correctly (up to date / outdated) instead of a false "not installed" or
   // a stale "up to date". Updates statusCache.plugin in place.
   await baselineUnverifiedInstalls();
   try {
-    statusCache.launcher = await invoke<LauncherUpdateResult>("launcher_update_status");
+    statusCache.launcher = await invokeWithRetry<LauncherUpdateResult>("launcher_update_status");
   } catch (err) {
-    console.error("launcher_update_status failed:", err);
+    console.error("launcher_update_status failed after retries:", err);
   }
   try {
     const gi = await invoke<GameInstallerInfo>("game_installer_info");
@@ -3112,6 +3143,14 @@ function onLauncherVisible(): void {
   if (state.utpugsToken && state.utpugsConfigured) {
     utpugsLastFetch = now;
     void pollUtpugsStatus();
+  }
+  // Re-check the plugin/launcher version on focus when the startup check never
+  // landed (flaky cold start → statusCache.plugin still null) or it's gone stale —
+  // so a freshly published release shows without a full restart, and a failed
+  // first check self-heals. Rate-limited via statusLastOk so refocusing the window
+  // doesn't re-hit the manifest each time.
+  if (statusCache.plugin === null || now - statusLastOk >= STATUS_REFRESH_MS) {
+    void loadStatusData();
   }
 }
 
