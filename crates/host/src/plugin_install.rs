@@ -421,7 +421,6 @@ fn has_extra_load_bearing_file(
 /// the manifest. `None` when the plugin folder is absent or unreadable.
 #[must_use]
 pub fn plugin_content_hash(root: &Path) -> Option<String> {
-    use sha2::{Digest, Sha256};
     let dir = netcodeplus_dir(root);
     if !dir.is_dir() {
         return None;
@@ -432,13 +431,51 @@ pub fn plugin_content_hash(root: &Path) -> Option<String> {
         files.push((norm_plugin_rel("NetcodePlus.uplugin"), uplugin));
     }
     collect_files_under(&dir.join("Binaries"), &dir, &mut files);
-    if files.is_empty() {
+    let mut parts: Vec<(String, String)> = Vec::with_capacity(files.len());
+    for (rel, path) in files {
+        parts.push((rel, file_sha256_hex(&path).ok()?));
+    }
+    combine_fingerprint(parts)
+}
+
+/// The build's EXPECTED [`plugin_content_hash`], computed from its verified ZIP
+/// (the `.uplugin` + every `Binaries/` entry) instead of an on-disk folder.
+///
+/// Equals `plugin_content_hash` of a clean install of the same ZIP — the
+/// installer extracts exactly these entries — so the launcher can baseline an
+/// install it didn't place (a hand-install, or a record written before
+/// fingerprints existed) against the manifest build, then detect drift locally.
+/// `None` if the ZIP can't be read or carries no plugin files.
+#[must_use]
+pub fn plugin_zip_content_hash(zip_path: &Path) -> Option<String> {
+    let file = fs::File::open(zip_path).ok()?;
+    let mut archive = zip::ZipArchive::new(file).ok()?;
+    let mut parts: Vec<(String, String)> = Vec::new();
+    for i in 0..archive.len() {
+        let mut entry = archive.by_index(i).ok()?;
+        let name = entry.name().to_string();
+        if entry.is_dir() || name.ends_with('/') || name.ends_with('\\') {
+            continue;
+        }
+        let rel = norm_plugin_rel(&name);
+        if rel == "netcodeplus.uplugin" || rel.starts_with("binaries/") {
+            let fh = reader_sha256_hex(&mut entry).ok()?;
+            parts.push((rel, fh));
+        }
+    }
+    combine_fingerprint(parts)
+}
+
+/// Combine `(relative-path, file-SHA-256-hex)` pairs into one stable fingerprint,
+/// independent of input order. `None` for an empty set (no plugin files found).
+fn combine_fingerprint(mut parts: Vec<(String, String)>) -> Option<String> {
+    use sha2::{Digest, Sha256};
+    if parts.is_empty() {
         return None;
     }
-    files.sort_by(|a, b| a.0.cmp(&b.0));
+    parts.sort_by(|a, b| a.0.cmp(&b.0));
     let mut hasher = Sha256::new();
-    for (rel, path) in &files {
-        let fh = file_sha256_hex(path).ok()?;
+    for (rel, fh) in &parts {
         hasher.update(rel.as_bytes());
         hasher.update([0u8]);
         hasher.update(fh.as_bytes());
@@ -548,5 +585,35 @@ mod tests {
         assert!(plugin_matches_zip(&zip_path, &root).unwrap());
         fs::write(netcodeplus_dir(&root).join("Old.uplugin"), b"{}").unwrap();
         assert!(!plugin_matches_zip(&zip_path, &root).unwrap());
+    }
+
+    #[test]
+    fn zip_and_folder_fingerprints_match_for_a_clean_install() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let zip_path = tmp.path().join("NetcodePlus.zip");
+        make_plugin_zip(&zip_path, br#"{"VersionName":"2.0"}"#, b"DLL-v327");
+        let root = tmp.path().join("game");
+        install_plugin_zip(&zip_path, &root).unwrap();
+
+        // The whole migration relies on these being equal: the launcher baselines
+        // a hand-installed plugin against the ZIP-derived fingerprint, then checks
+        // the folder fingerprint against it.
+        let from_zip = plugin_zip_content_hash(&zip_path);
+        assert!(from_zip.is_some());
+        assert_eq!(
+            from_zip,
+            plugin_content_hash(&root),
+            "a clean install's folder fingerprint must equal the ZIP's"
+        );
+
+        // Swapping a tracked binary moves the on-disk fingerprint away from it.
+        let dll = netcodeplus_dir(&root).join("Binaries/Win64/UE4-NetcodePlus.dll");
+        fs::write(&dll, b"DLL-v326").unwrap();
+        assert_ne!(
+            plugin_content_hash(&root),
+            from_zip,
+            "a swapped build must not match the ZIP fingerprint"
+        );
     }
 }

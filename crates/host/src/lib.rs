@@ -44,7 +44,7 @@ pub use crate::launch::{
 };
 pub use crate::plugin_install::{
     install_plugin_zip, install_plugin_zip_verified, plugin_content_hash, plugin_matches_zip,
-    PluginInstallError,
+    plugin_zip_content_hash, PluginInstallError,
 };
 pub use crate::shortcut::{
     create_desktop_shortcut, desktop_shortcut_is_stale, detect_outdated_launcher, is_stale_pending,

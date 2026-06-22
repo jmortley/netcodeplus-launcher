@@ -289,6 +289,11 @@ pub struct PluginInstallStatus {
     /// "install"`) plugin apart from a genuinely missing one, so it can verify
     /// the on-disk bytes instead of nagging "not installed". See `verify_plugin`.
     pub present: bool,
+    /// Whether this install has a content-fingerprint baseline recorded (so drift
+    /// can be checked locally). `false` for a hand-install (no record) or a record
+    /// written before fingerprints existed — the UI runs `verify_plugin` once for
+    /// a present-but-unbaselined install to establish ground truth.
+    pub baselined: bool,
 }
 
 /// Overall plugin status across all installs, for the UI's plugin card.
@@ -396,10 +401,11 @@ pub async fn plugin_status(
         .into_iter()
         .map(|root| {
             let action = decide_for_install(channel, &root, &state);
-            let installed_version = state
+            let recorded = state
                 .installed_plugins
-                .get(&root.to_string_lossy().to_string())
-                .map(|p| p.version);
+                .get(&root.to_string_lossy().to_string());
+            let installed_version = recorded.map(|p| p.version);
+            let baselined = recorded.is_some_and(|p| p.content_hash.is_some());
             let present = matches!(
                 ncp_host::netcodeplus_status(&root),
                 ncp_host::NetcodePlusStatus::Installed
@@ -410,6 +416,7 @@ pub async fn plugin_status(
                 installed_version,
                 available_version,
                 present,
+                baselined,
             }
         })
         .collect();
@@ -631,28 +638,32 @@ pub async fn install_plugin(
 pub struct PluginVerifyOutcome {
     /// Install root acted on.
     pub root: String,
-    /// `"adopted"` (on-disk bytes match the current build → now recorded up to
-    /// date), `"differs"` (present but a different/older build → a real update is
-    /// needed), `"skipped"` (nothing to verify here), or `"failed"`.
+    /// `"current"` (on-disk bytes are the manifest build), `"outdated"` (present
+    /// but a different/older build → an update is needed), `"skipped"` (already
+    /// verified, or nothing on disk), or `"failed"`. Either way a fingerprint
+    /// baseline is recorded so subsequent checks are local (no download).
     pub result: &'static str,
     /// Human-readable detail.
     pub detail: String,
 }
 
-/// Verify a hand-installed NetcodePlus against the signed manifest's plugin ZIP
-/// and ADOPT it when the bytes match — so a player who installed the plugin
-/// manually (which the launcher has no record of) isn't told to "update" a build
-/// that is already current.
+/// Establish a content-fingerprint baseline for a present NetcodePlus install the
+/// launcher can't yet vouch for — one it never installed (no record), or one
+/// recorded before fingerprints existed (a legacy record). Without this, a build
+/// hand-swapped to an OLDER one whose recorded ZIP digest still "matches" the
+/// manifest reads as falsely up to date, and a hand-installed CURRENT build reads
+/// as falsely "not installed".
 ///
-/// For each present install whose recorded state doesn't already match the
-/// manifest, downloads the manifest-pinned ZIP (streaming SHA-256 + size
-/// verified — the same trust path as install) ONCE and compares it byte-for-byte
-/// against the on-disk plugin via [`ncp_host::plugin_matches_zip`]. A match
-/// records `{version, sha256}` for that root (so it reads as up to date
-/// everywhere — hero, card, and the PUG gate); a mismatch is left untouched for
-/// the normal Update path. The installed FILES are never modified — only the
-/// launcher's version record. Installs already recorded as current, or with no
-/// folder on disk, are skipped (no download is performed for them).
+/// Downloads the manifest-pinned ZIP ONCE (streaming SHA-256 + size verified —
+/// the same trust path as install), derives the build's EXPECTED on-disk
+/// fingerprint from it ([`ncp_host::plugin_zip_content_hash`]), and records that
+/// as each install's baseline `{version, sha256, content_hash = expected}`.
+/// [`ncp_planner::plan_plugin`] then reports up to date when the on-disk bytes
+/// match the baseline and "update" when they don't — so an outdated swap shows as
+/// outdated and a current manual install as current, both on first launch with no
+/// reinstall. The installed FILES are never touched, only the launcher's record.
+/// Installs already baselined to the current build, or with no folder on disk, are
+/// skipped (no download for them).
 #[tauri::command]
 pub async fn verify_plugin(
     app: AppHandle,
@@ -669,6 +680,8 @@ pub async fn verify_plugin(
 
     let mut outcomes: Vec<PluginVerifyOutcome> = Vec::new();
     let mut downloaded = false;
+    // The build's expected on-disk fingerprint, derived from the verified ZIP once.
+    let mut expected_hash: Option<String> = None;
     let mut state_dirty = false;
 
     for root in resolve_roots(roots) {
@@ -687,21 +700,24 @@ pub async fn verify_plugin(
             });
             continue;
         }
-        // Already recorded as the current build → nothing to prove.
+        // Already baselined to the current build → nothing to prove. It has a
+        // fingerprint AND that build is the manifest's, so plan_plugin tracks any
+        // later drift locally from here, no download.
         if state
             .installed_plugins
             .get(&root_key)
-            .is_some_and(|rec| rec.sha256 == entry.sha256)
+            .is_some_and(|rec| rec.sha256 == entry.sha256 && rec.content_hash.is_some())
         {
             outcomes.push(PluginVerifyOutcome {
                 root: root_key,
                 result: "skipped",
-                detail: "already recorded up to date".into(),
+                detail: "already verified".into(),
             });
             continue;
         }
 
-        // Download the verified ZIP lazily, once, on the first root that needs it.
+        // Download the verified ZIP lazily, once, and derive the build's EXPECTED
+        // on-disk fingerprint from it.
         if !downloaded {
             if let Err(e) = ncp_net::download(
                 &client,
@@ -716,38 +732,35 @@ pub async fn verify_plugin(
                 return Err(format!("plugin download/verify failed: {e}"));
             }
             downloaded = true;
+            expected_hash = ncp_host::plugin_zip_content_hash(&zip_path);
         }
 
-        match ncp_host::plugin_matches_zip(&zip_path, &root) {
-            Ok(true) => {
-                state.installed_plugins.insert(
-                    root_key.clone(),
-                    ncp_planner::InstalledPlugin {
-                        version: entry.version,
-                        sha256: entry.sha256,
-                        // Record the adopted build's on-disk fingerprint so a
-                        // later swap away from it is caught.
-                        content_hash: ncp_host::plugin_content_hash(&root),
-                    },
-                );
-                state_dirty = true;
-                outcomes.push(PluginVerifyOutcome {
-                    root: root_key,
-                    result: "adopted",
-                    detail: format!("on-disk plugin matches build {}", entry.version),
-                });
-            }
-            Ok(false) => outcomes.push(PluginVerifyOutcome {
-                root: root_key,
-                result: "differs",
-                detail: format!("on-disk plugin is not build {}", entry.version),
-            }),
-            Err(e) => outcomes.push(PluginVerifyOutcome {
-                root: root_key,
-                result: "failed",
-                detail: e.to_string(),
-            }),
-        }
+        // Record the build's EXPECTED fingerprint as this install's baseline.
+        // plan_plugin reports up to date iff the on-disk bytes match it, so an
+        // install hand-swapped to an older build (recorded ZIP digest still
+        // "matches" the manifest) now reads as outdated rather than up to date.
+        let matches = ncp_host::plugin_matches_zip(&zip_path, &root).unwrap_or(false);
+        state.installed_plugins.insert(
+            root_key.clone(),
+            ncp_planner::InstalledPlugin {
+                version: entry.version,
+                sha256: entry.sha256,
+                content_hash: expected_hash.clone(),
+            },
+        );
+        state_dirty = true;
+        outcomes.push(PluginVerifyOutcome {
+            root: root_key,
+            result: if matches { "current" } else { "outdated" },
+            detail: if matches {
+                format!("on-disk plugin is build {}", entry.version)
+            } else {
+                format!(
+                    "on-disk plugin is not build {} — update needed",
+                    entry.version
+                )
+            },
+        });
     }
 
     let _ = std::fs::remove_file(&zip_path);

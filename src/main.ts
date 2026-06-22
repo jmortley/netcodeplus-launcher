@@ -43,6 +43,10 @@ interface PluginInstallStatus {
   // (present-but-unrecorded → action "install") plugin from a missing one, so the
   // launcher verifies the bytes instead of nagging "not installed".
   present: boolean;
+  // Whether this install has a content-fingerprint baseline (drift is checkable
+  // locally). false for a hand-install or a pre-fingerprint record → the launcher
+  // runs verify_plugin once to establish ground truth.
+  baselined: boolean;
 }
 interface PluginStatusResult {
   plugin_offered: boolean;
@@ -55,10 +59,10 @@ interface PluginInstallOutcome {
   result: "installed" | "skipped" | "failed";
   detail: string;
 }
-// Per-install result of `verify_plugin` (adopt a hand-installed current build).
+// Per-install result of `verify_plugin` (baseline a present-but-unverified install).
 interface PluginVerifyOutcome {
   root: string;
-  result: "adopted" | "differs" | "skipped" | "failed";
+  result: "current" | "outdated" | "skipped" | "failed";
   detail: string;
 }
 
@@ -514,27 +518,27 @@ const statusCache: {
   dotnetOk: boolean;
 } = { plugin: null, launcher: null, dotnetAvailable: false, dotnetOk: true };
 
-// Roots already run through verify_plugin this session (match or not) — a
-// present-but-unrecorded manual install is checked once, never re-downloaded on
-// every status refresh.
-const verifiedManualRoots = new Set<string>();
+// Roots already run through verify_plugin this session — a present-but-unbaselined
+// install is checked once, never re-downloaded on every status refresh.
+const verifiedRoots = new Set<string>();
 
-// Recognise a hand-installed plugin (present on disk but with no launcher record,
-// so it plans as "install") that is actually the current build, and adopt it —
-// otherwise the dash card nags "NetcodePlus is not installed" and the PUG gate
-// blocks a player whose plugin is in fact up to date. Verifies the on-disk bytes
-// against the signed manifest's SHA-pinned ZIP (verify_plugin); a match records
-// it as current. No-op (and no download) unless such an install exists. Mutates
-// statusCache.plugin in place on success so the very next render is correct.
-async function adoptVerifiedManualInstalls(): Promise<void> {
+// Establish a fingerprint baseline for any present install the launcher can't yet
+// vouch for: a hand-install (no record), or a record written before fingerprints
+// existed. verify_plugin downloads the pinned ZIP once and records the build's
+// expected fingerprint, so the very next status read reads the install correctly —
+// up to date when the bytes match, outdated when they've been hand-swapped to a
+// different build — instead of a false "not installed" / false "up to date". No-op
+// (and no download) unless such an install exists. Mutates statusCache.plugin in
+// place so the next render is right.
+async function baselineUnverifiedInstalls(): Promise<void> {
   const p = statusCache.plugin;
   if (!p) return;
   const roots = p.installs
-    .filter((i) => i.action === "install" && i.present && i.installed_version == null)
+    .filter((i) => i.present && !i.baselined)
     .map((i) => i.root)
-    .filter((r) => !verifiedManualRoots.has(r));
+    .filter((r) => !verifiedRoots.has(r));
   if (roots.length === 0) return;
-  roots.forEach((r) => verifiedManualRoots.add(r)); // dedupe concurrent passes
+  roots.forEach((r) => verifiedRoots.add(r)); // dedupe concurrent passes
   try {
     await invoke<PluginVerifyOutcome[]>("verify_plugin", { roots });
     statusCache.plugin = await invoke<PluginStatusResult>("plugin_status", {
@@ -542,9 +546,9 @@ async function adoptVerifiedManualInstalls(): Promise<void> {
     });
   } catch (err) {
     // A transient failure (e.g. the verify download dropped) must NOT burn the
-    // one-shot guard — nothing was verified, so let a later refresh retry these
-    // roots rather than leaving a current manual install stuck as "not installed".
-    roots.forEach((r) => verifiedManualRoots.delete(r));
+    // one-shot guard — nothing was recorded, so let a later refresh retry these
+    // roots rather than leaving an install stuck mis-reported.
+    roots.forEach((r) => verifiedRoots.delete(r));
     console.error("verify_plugin failed:", err);
   }
 }
@@ -560,10 +564,10 @@ async function loadStatusData(): Promise<void> {
   } catch (err) {
     console.error("plugin_status failed:", err);
   }
-  // Before rendering, adopt any hand-installed current build so it doesn't show
-  // the false "not installed / update needed" (it has no launcher record). This
-  // updates statusCache.plugin in place when it adopts.
-  await adoptVerifiedManualInstalls();
+  // Before rendering, baseline any present install we can't yet vouch for, so it
+  // reads correctly (up to date / outdated) instead of a false "not installed" or
+  // a stale "up to date". Updates statusCache.plugin in place.
+  await baselineUnverifiedInstalls();
   try {
     statusCache.launcher = await invoke<LauncherUpdateResult>("launcher_update_status");
   } catch (err) {
