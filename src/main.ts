@@ -632,7 +632,31 @@ function renderHome() {
 // The hero: game art + NetcodePlus badge + the big PLAY, or onboarding when no
 // install is detected. The launch-status line and admin-warning slot live
 // directly beneath it.
+// Whether the selected install's NetcodePlus is outdated (the version gate would
+// kick it). Drives both the hero and the top-bar PLAY→UPDATE gating.
+function selectedPluginOutdated(): boolean {
+  const di = state.installs[state.selInstall];
+  if (!di) return false;
+  return (
+    statusCache.plugin?.installs.find((i) => i.root === di.install.root)?.action === "update"
+  );
+}
+
+// Keep the always-visible top-bar quick-launch in sync with the hero: a plain
+// PLAY when current, an amber UPDATE when the selected install is outdated — so it
+// can't be a second way to launch into a version-gate kick.
+function renderTopbarPlay(): void {
+  const btn = document.getElementById("topbar-play");
+  if (!btn) return;
+  const outdated = selectedPluginOutdated();
+  btn.classList.toggle("topbar-update", outdated);
+  btn.innerHTML = outdated
+    ? `<svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M12 4l7 7h-4v9h-6v-9H5z" fill="currentColor" /></svg>UPDATE`
+    : `<svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>PLAY`;
+}
+
 function renderHomeHero() {
+  renderTopbarPlay();
   if (state.installs.length === 0) {
     homeHero.className = "";
     homeHero.innerHTML = `
@@ -4590,6 +4614,12 @@ function renderTopbarAuth(): void {
 // launch with the current settings. With no install yet, Home shows onboarding.
 document.getElementById("topbar-play")?.addEventListener("click", () => {
   switchView("home");
+  // Outdated → run the update (same as the hero's UPDATE), never launch into a
+  // version-gate kick. Checked at click time so it's right even mid-render.
+  if (selectedPluginOutdated()) {
+    void doInstallPlugin();
+    return;
+  }
   if (state.installs.length > 0) void launch();
 });
 // Top-bar Sign In: open Home and focus the account form (where sign-in lives).

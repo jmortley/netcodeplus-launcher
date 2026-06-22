@@ -939,6 +939,15 @@ body {
 .topbar-play:hover {
   background: var(--accent-hi);
 }
+/* Outdated build: the top-bar quick-launch becomes an amber UPDATE, mirroring the
+   hero, so it can't be a second way to launch into a version-gate kick. */
+.topbar-play.topbar-update {
+  background: linear-gradient(135deg, #f59e0b, #d97706);
+  color: #1a1205;
+}
+.topbar-play.topbar-update:hover {
+  background: linear-gradient(135deg, #fbbf24, #ea7a0c);
+}
 .topbar-signin {
   padding: 0.5rem 1.2rem;
   background: var(--orange);
