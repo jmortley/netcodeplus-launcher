@@ -279,46 +279,65 @@ pub struct PakStatusResult {
 }
 
 /// Reconcile the recorded local install against what's actually in the paks dir
-/// before planning, in **both** directions:
+/// before planning, using a cheap size+mtime **stamp** (never a re-hash, so a
+/// OneDrive cloud-only placeholder is left un-hydrated):
 ///
-/// 1. **Drop** any recorded pak whose file is no longer on disk (the user
-///    deleted it, or a cleanup removed it) — a cheap existence check, never a
-///    hash, so a OneDrive cloud-only placeholder is not hydrated. The pak then
-///    re-plans as Missing and is re-downloaded, instead of the stale record
-///    falsely reporting it "up to date".
+/// 1. **Forget** any recorded pak whose file is gone (deleted) OR whose size /
+///    mtime no longer matches the stamp recorded at install — i.e. a third party
+///    (a server's redirect) overwrote it in place with a different version. The
+///    pak then re-plans as Missing and is restored to the manifest's version,
+///    instead of the stale record falsely reporting "up to date". A record with
+///    no stamp (legacy) falls back to an existence check and is stamped in step 2.
 /// 2. **Adopt** any manifest pak already present whose bytes match the signed
 ///    sha256 but isn't recorded yet (a server pushed it into the same
-///    DownloadedPaks dir, or a prior install) — so the user isn't asked to
-///    re-download a pak they already have. The pak analogue of the plugin's
-///    verify/adopt; a pak is one file, so the manifest sha256 IS the expected
-///    hash (no download needed to learn it, unlike the plugin ZIP).
+///    DownloadedPaks dir, or a prior install), and **stamp** any recorded pak
+///    that lacks one — so future in-place overwrites are caught. The adopt hash
+///    is the only disk read here, and only for a present-but-unrecorded pak; a
+///    pak already recorded current is checked by stat alone.
 ///
-/// Returns `true` if the recorded state changed (caller persists). Cheap after
-/// the first pass: present recorded paks cost one existence check each, and a
-/// pak already recorded as current skips the adopt hash — so steady-state status
-/// checks do no disk hashing.
+/// Returns `true` if the recorded state changed (caller persists).
 fn reconcile_paks_with_disk(
     channel: &ncp_manifest::Channel,
     mod_paks_dir: &std::path::Path,
-    local: &mut ncp_planner::LocalInstall,
+    state: &mut ncp_host::LauncherState,
 ) -> bool {
     let mut dirty = false;
-    // 1. Forget paks whose file has gone missing (existence only — no hashing,
-    //    so a OneDrive cloud-only placeholder is left un-hydrated).
-    let before = local.paks.len();
-    local
+
+    // 1. Forget gone / overwritten-in-place paks (metadata stat only).
+    let forget: Vec<String> = state
+        .local_install
         .paks
-        .retain(|_id, rec| mod_paks_dir.join(&rec.pak_filename).exists());
-    if local.paks.len() != before {
+        .iter()
+        .filter_map(|(id, rec)| {
+            match ncp_host::pak_file_stamp(mod_paks_dir, &rec.pak_filename) {
+                None => Some(id.clone()), // file gone
+                Some((size, mtime_ms)) => match state.pak_stamps.get(id) {
+                    // A stamped record whose file no longer matches it changed
+                    // underneath us (a server pushed a different version).
+                    Some(s) if s.size_bytes != size || s.mtime_ms != mtime_ms => Some(id.clone()),
+                    _ => None, // matches, or legacy unstamped (kept, stamped below)
+                },
+            }
+        })
+        .collect();
+    for id in forget {
+        state.local_install.paks.remove(&id);
+        state.pak_stamps.remove(&id);
         dirty = true;
     }
-    // 2. Adopt present-matching-but-unrecorded paks.
+
+    // 2. Adopt present-matching-but-unrecorded paks, then stamp every recorded
+    //    pak that still lacks a stamp (a fresh adoption, or a legacy record).
     for (id, pak) in &channel.paks {
-        if local.paks.get(id).is_some_and(|l| l.sha256 == pak.sha256) {
-            continue; // already recorded as the current build — no need to hash
-        }
-        if ncp_host::pak_on_disk_digest(mod_paks_dir, &pak.pak_filename) == Some(pak.sha256) {
-            local.paks.insert(
+        let recorded_current = state
+            .local_install
+            .paks
+            .get(id)
+            .is_some_and(|l| l.sha256 == pak.sha256);
+        if !recorded_current
+            && ncp_host::pak_on_disk_digest(mod_paks_dir, &pak.pak_filename) == Some(pak.sha256)
+        {
+            state.local_install.paks.insert(
                 id.clone(),
                 ncp_planner::LocalPak {
                     pak_filename: pak.pak_filename.clone(),
@@ -327,6 +346,20 @@ fn reconcile_paks_with_disk(
                 },
             );
             dirty = true;
+        }
+        if state.local_install.paks.contains_key(id) && !state.pak_stamps.contains_key(id) {
+            if let Some((size, mtime_ms)) =
+                ncp_host::pak_file_stamp(mod_paks_dir, &pak.pak_filename)
+            {
+                state.pak_stamps.insert(
+                    id.clone(),
+                    ncp_host::PakStamp {
+                        size_bytes: size,
+                        mtime_ms,
+                    },
+                );
+                dirty = true;
+            }
         }
     }
     dirty
@@ -353,7 +386,7 @@ pub async fn pak_status(app: AppHandle) -> Result<PakStatusResult, String> {
         manifest.channels.get(&channel),
         ncp_host::default_mod_paks_dir(),
     ) {
-        if reconcile_paks_with_disk(ch, &dir, &mut state.local_install) {
+        if reconcile_paks_with_disk(ch, &dir, &mut state) {
             let path = state_path(&app)?;
             ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
         }
@@ -524,11 +557,11 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
     };
 
     let mut state_dirty = false;
-    // Reconcile with disk first: forget deleted paks (so they re-download) and
-    // adopt already-present matching ones (so a cold install doesn't re-pull a
-    // pak the user already has).
+    // Reconcile with disk first: forget deleted / overwritten paks (so they
+    // re-download) and adopt already-present matching ones (so a cold install
+    // doesn't re-pull a pak the user already has).
     if let Some(ch) = manifest.channels.get(&channel) {
-        if reconcile_paks_with_disk(ch, &mod_paks_dir, &mut state.local_install) {
+        if reconcile_paks_with_disk(ch, &mod_paks_dir, &mut state) {
             state_dirty = true;
         }
     }
@@ -588,6 +621,19 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
                         sha256: pak.sha256,
                     },
                 );
+                // Stamp the just-written file (size + mtime) so a later in-place
+                // overwrite by a server redirect is caught without re-hashing.
+                if let Some((size, mtime_ms)) =
+                    ncp_host::pak_file_stamp(&mod_paks_dir, &pak.pak_filename)
+                {
+                    state.pak_stamps.insert(
+                        action.id.clone(),
+                        ncp_host::PakStamp {
+                            size_bytes: size,
+                            mtime_ms,
+                        },
+                    );
+                }
                 state_dirty = true;
                 outcomes.push(PakInstallOutcome {
                     id: action.id.clone(),
@@ -611,6 +657,7 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
         match ncp_host::remove_pak(&mod_paks_dir, &action.local_pak.pak_filename) {
             Ok(()) => {
                 state.local_install.paks.remove(&action.id);
+                state.pak_stamps.remove(&action.id);
                 state_dirty = true;
                 outcomes.push(PakInstallOutcome {
                     id: action.id.clone(),

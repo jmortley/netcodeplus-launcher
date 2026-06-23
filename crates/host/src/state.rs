@@ -48,6 +48,13 @@ pub struct LauncherState {
     #[serde(default)]
     pub local_install: LocalInstall,
 
+    /// Per-pak install fingerprints (size + mtime), keyed by pak id and paired
+    /// with [`Self::local_install`]. Lets a status check notice an installed pak
+    /// that was overwritten in place (a server redirect pushing a different
+    /// version) without re-hashing it — see [`PakStamp`].
+    #[serde(default)]
+    pub pak_stamps: HashMap<String, PakStamp>,
+
     /// Optional pak ids the user has opted out of.
     #[serde(default)]
     pub opted_out: HashSet<String>,
@@ -164,6 +171,22 @@ pub struct LauncherState {
     pub pending_old_launcher_path: Option<String>,
 }
 
+/// Cheap install fingerprint of one pak: its size + mtime at the moment the
+/// launcher installed or adopted it.
+///
+/// Compared — never re-hashed — on each status check to notice an installed pak
+/// that was overwritten in place (a server's redirect pushing a different
+/// version), so the launcher can restore the manifest's version. A metadata stat
+/// is used rather than a content hash specifically so a OneDrive cloud-only
+/// placeholder is not hydrated (which a full re-hash would force).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PakStamp {
+    /// File size in bytes at install/adopt time.
+    pub size_bytes: u64,
+    /// File mtime as whole milliseconds since the Unix epoch at install/adopt.
+    pub mtime_ms: u64,
+}
+
 fn default_channel() -> String {
     DEFAULT_CHANNEL.to_string()
 }
@@ -178,6 +201,7 @@ impl Default for LauncherState {
             install_path: None,
             channel: default_channel(),
             local_install: LocalInstall::default(),
+            pak_stamps: HashMap::new(),
             opted_out: HashSet::new(),
             launch_profile_label: None,
             launch_priority: Priority::default(),

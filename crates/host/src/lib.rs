@@ -44,7 +44,9 @@ pub use crate::install::{
 pub use crate::launch::{
     affinity_presets, launch, logical_cpus, parse_mask_hex, AffinityPreset, LaunchOptions, Priority,
 };
-pub use crate::pak_install::{install_pak, pak_on_disk_digest, remove_pak, rename_pak};
+pub use crate::pak_install::{
+    install_pak, pak_file_stamp, pak_on_disk_digest, remove_pak, rename_pak,
+};
 pub use crate::plugin_install::{
     install_plugin_zip, install_plugin_zip_verified, plugin_content_hash, plugin_matches_zip,
     plugin_zip_content_hash, PluginInstallError,
@@ -53,5 +55,5 @@ pub use crate::shortcut::{
     create_desktop_shortcut, desktop_shortcut_is_stale, detect_outdated_launcher, is_stale_pending,
     schedule_delete_on_reboot, ShortcutError, LAUNCHER_SHORTCUT_NAME,
 };
-pub use crate::state::{LauncherState, DEFAULT_CHANNEL};
+pub use crate::state::{LauncherState, PakStamp, DEFAULT_CHANNEL};
 pub use crate::stray::{remove_stray, scan_strays, StrayKind, StrayPlugin, StrayRemoveError};

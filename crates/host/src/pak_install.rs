@@ -115,6 +115,28 @@ pub fn pak_on_disk_digest(dir: &Path, pak_filename: &str) -> Option<Sha256Digest
     Some(Sha256Digest::from_bytes(hasher.finalize().into()))
 }
 
+/// Cheap `(size_bytes, mtime_ms)` fingerprint of the pak `pak_filename` in `dir`,
+/// or `None` if it's absent / its mtime can't be read.
+///
+/// A metadata stat ONLY — it never reads the file, so a OneDrive cloud-only
+/// placeholder stays dehydrated (unlike [`pak_on_disk_digest`], which would
+/// force a download). `mtime` is whole milliseconds since the Unix epoch. Paired
+/// with the recorded stamp, a size/mtime change flags a pak overwritten in place
+/// (a server redirect pushing a different version) without re-hashing.
+#[must_use]
+pub fn pak_file_stamp(dir: &Path, pak_filename: &str) -> Option<(u64, u64)> {
+    let meta = fs::metadata(dir.join(pak_filename)).ok()?;
+    let mtime_ms = u64::try_from(
+        meta.modified()
+            .ok()?
+            .duration_since(std::time::UNIX_EPOCH)
+            .ok()?
+            .as_millis(),
+    )
+    .ok()?;
+    Some((meta.len(), mtime_ms))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
