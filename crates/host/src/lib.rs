@@ -21,8 +21,10 @@ pub mod dotnet;
 pub mod elevate;
 mod error;
 pub mod extract;
+mod fs_util;
 pub mod install;
 pub mod launch;
+pub mod pak_install;
 pub mod plugin_install;
 pub mod shortcut;
 pub mod state;
@@ -42,6 +44,7 @@ pub use crate::install::{
 pub use crate::launch::{
     affinity_presets, launch, logical_cpus, parse_mask_hex, AffinityPreset, LaunchOptions, Priority,
 };
+pub use crate::pak_install::{install_pak, remove_pak, rename_pak};
 pub use crate::plugin_install::{
     install_plugin_zip, install_plugin_zip_verified, plugin_content_hash, plugin_matches_zip,
     plugin_zip_content_hash, PluginInstallError,

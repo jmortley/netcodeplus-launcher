@@ -172,6 +172,15 @@ pub fn is_game_running(executable: String) -> bool {
         .any(|p| p.name().to_ascii_lowercase().trim_end_matches(".exe") == target)
 }
 
+/// Whether any UT4 shipping client (`UE4-Win64-Shipping.exe`) is currently
+/// running. Pak install/removal must refuse while it is, because the engine
+/// holds an open handle on every mounted pak — replacing one then fails with a
+/// sharing violation. The image name is identical across installs, so a single
+/// fixed-name check covers them all.
+pub(crate) fn shipping_client_running() -> bool {
+    is_game_running("UE4-Win64-Shipping.exe".to_string())
+}
+
 /// Path to the persistent launcher state file in the per-app config dir.
 pub(crate) fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;

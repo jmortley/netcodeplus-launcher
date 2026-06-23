@@ -229,43 +229,299 @@ pub async fn compute_plan(app: AppHandle) -> Result<PlanResult, String> {
     let plan = ncp_planner::plan(&manifest, &channel, &state.local_install, &state.opted_out)
         .map_err(|e| e.to_string())?;
 
-    let to_download = plan
-        .to_download
-        .iter()
-        .map(|a| PlanDownload {
-            id: a.id.clone(),
-            filename: a.manifest_pak.pak_filename.clone(),
-            version: a.manifest_pak.version.to_string(),
-            size_bytes: a.manifest_pak.size_bytes,
-            reason: match a.reason {
-                ncp_planner::DownloadReason::Missing => "missing",
-                ncp_planner::DownloadReason::HashMismatch => "hash_mismatch",
-            },
-            required: a.manifest_pak.required,
-        })
-        .collect();
-
-    let to_remove = plan
-        .to_remove
-        .iter()
-        .map(|a| PlanRemove {
-            id: a.id.clone(),
-            filename: a.local_pak.pak_filename.clone(),
-            reason: match a.reason {
-                ncp_planner::RemoveReason::NotInChannel => "not_in_channel",
-                ncp_planner::RemoveReason::OptedOut => "opted_out",
-            },
-        })
-        .collect();
-
     Ok(PlanResult {
         channel,
         up_to_date: plan.is_no_op(),
-        to_download,
-        to_remove,
+        to_download: plan.to_download.iter().map(plan_download).collect(),
+        to_remove: plan.to_remove.iter().map(plan_remove).collect(),
         keep_count: plan.to_keep.len(),
         total_download_bytes: plan.total_download_bytes(),
     })
+}
+
+// ===================================================================
+// Pak maintainer (NetcodePlus content paks) — keeps the client's mod
+// paks current in the per-user DownloadedPaks dir, so a player has the
+// content (sounds etc.) regardless of whether a server pushes it.
+//
+// Paks live in ONE global per-user directory
+// (`ncp_host::default_mod_paks_dir`), not per UT4 install, so unlike the
+// plugin these commands take no `roots`. The plan is hash-based against
+// the signed manifest; the apply step refuses while UT4 is running (a
+// mounted pak is locked) and writes each pak under its canonical engine
+// filename so it coincides with — rather than duplicates — a server push.
+// ===================================================================
+
+/// Pak status for the current channel, summarised for the UI's Play-gate.
+///
+/// Drives which prompt the launcher shows on PLAY: when nothing is installed
+/// yet (`installed_count == 0`) it's a first-time "get the paks" prompt; when
+/// some are installed but `to_download` is non-empty it's an "out of date"
+/// prompt. `up_to_date` short-circuits both.
+#[derive(Debug, Serialize)]
+pub struct PakStatusResult {
+    /// Channel the status was computed for.
+    pub channel: String,
+    /// `true` when the channel advertises at least one pak.
+    pub paks_offered: bool,
+    /// `true` when no downloads and no removals are needed.
+    pub up_to_date: bool,
+    /// How many paks are currently recorded as installed (0 ⇒ first-time user).
+    pub installed_count: usize,
+    /// Paks to download (with reason + size), reusing the plan summary shape.
+    pub to_download: Vec<PlanDownload>,
+    /// Paks to remove (gone from the channel, or opted out).
+    pub to_remove: Vec<PlanRemove>,
+    /// Count already at the desired version + hash.
+    pub keep_count: usize,
+    /// Total bytes to download across `to_download`.
+    pub total_download_bytes: u64,
+}
+
+/// Report the NetcodePlus pak status for the current channel by re-verifying the
+/// manifest and diffing the channel's paks against the recorded local install.
+/// Read-only (no download, no write).
+#[tauri::command]
+pub async fn pak_status(app: AppHandle) -> Result<PakStatusResult, String> {
+    let (manifest, state, _, _) = fetch_verify(&app).await?;
+    let channel = state.channel.clone();
+    let paks_offered = manifest
+        .channels
+        .get(&channel)
+        .is_some_and(|c| !c.paks.is_empty());
+
+    let plan = ncp_planner::plan(&manifest, &channel, &state.local_install, &state.opted_out)
+        .map_err(|e| e.to_string())?;
+
+    Ok(PakStatusResult {
+        channel,
+        paks_offered,
+        up_to_date: plan.is_no_op(),
+        installed_count: state.local_install.paks.len(),
+        to_download: plan.to_download.iter().map(plan_download).collect(),
+        to_remove: plan.to_remove.iter().map(plan_remove).collect(),
+        keep_count: plan.to_keep.len(),
+        total_download_bytes: plan.total_download_bytes(),
+    })
+}
+
+/// Map a planner [`ncp_planner::DownloadAction`] to the UI summary.
+fn plan_download(a: &ncp_planner::DownloadAction) -> PlanDownload {
+    PlanDownload {
+        id: a.id.clone(),
+        filename: a.manifest_pak.pak_filename.clone(),
+        version: a.manifest_pak.version.to_string(),
+        size_bytes: a.manifest_pak.size_bytes,
+        reason: match a.reason {
+            ncp_planner::DownloadReason::Missing => "missing",
+            ncp_planner::DownloadReason::HashMismatch => "hash_mismatch",
+        },
+        required: a.manifest_pak.required,
+    }
+}
+
+/// Map a planner [`ncp_planner::RemoveAction`] to the UI summary.
+fn plan_remove(a: &ncp_planner::RemoveAction) -> PlanRemove {
+    PlanRemove {
+        id: a.id.clone(),
+        filename: a.local_pak.pak_filename.clone(),
+        reason: match a.reason {
+            ncp_planner::RemoveReason::NotInChannel => "not_in_channel",
+            ncp_planner::RemoveReason::OptedOut => "opted_out",
+        },
+    }
+}
+
+/// Per-pak outcome of an [`install_paks`] run.
+#[derive(Debug, Serialize)]
+pub struct PakInstallOutcome {
+    /// Stable pak id.
+    pub id: String,
+    /// Filename acted on.
+    pub filename: String,
+    /// `"installed"` | `"removed"` | `"renamed"` | `"failed"`.
+    pub result: &'static str,
+    /// Human-readable detail (version installed, or the error).
+    pub detail: String,
+}
+
+/// `pak-install-progress` event payload — coarse, per-pak progress so the UI can
+/// show "Installing paks… (2 of 6: WipeoutMutator)". `done` counts paks finished
+/// (downloaded + placed) before `filename` started.
+#[derive(Clone, Serialize)]
+struct PakInstallProgress {
+    done: usize,
+    total: usize,
+    filename: String,
+}
+
+fn emit_pak_progress(app: &AppHandle, done: usize, total: usize, filename: &str) {
+    use tauri::Emitter;
+    let _ = app.emit(
+        "pak-install-progress",
+        PakInstallProgress {
+            done,
+            total,
+            filename: filename.to_string(),
+        },
+    );
+}
+
+/// Bring the local NetcodePlus paks into agreement with the signed manifest:
+/// download + install everything `plan` says is missing or stale, rename a pak
+/// the manifest renamed, and remove paks no longer in the channel (or opted
+/// out). Records each change in the persisted local-install snapshot.
+///
+/// **Refuses while UT4 is running** — the engine holds an open handle on every
+/// mounted pak, so a replace would fail with a sharing violation. The PLAY-gate
+/// calls this with the game closed (it runs *before* launch), and we re-check in
+/// Rust so a stale frontend can't drive a doomed write.
+///
+/// Each pak is independent: a failure on one (download/verify or filesystem)
+/// records a `"failed"` outcome and does not abort the rest, and the successful
+/// changes are still persisted — so a Play-gate "Install & Play" proceeds with
+/// whatever installed, and the failed one simply retries next time.
+#[tauri::command]
+pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, String> {
+    let (manifest, mut state, _, _) = fetch_verify(&app).await?;
+    let channel = state.channel.clone();
+
+    // A mounted pak is locked — refuse rather than fight the file lock.
+    if crate::commands::shipping_client_running() {
+        return Err(
+            "Close Unreal Tournament first — its content paks can't be updated while it's running."
+                .into(),
+        );
+    }
+
+    let Some(mod_paks_dir) = ncp_host::default_mod_paks_dir() else {
+        return Err("Couldn't locate your Documents folder to install paks into.".into());
+    };
+
+    let plan = ncp_planner::plan(&manifest, &channel, &state.local_install, &state.opted_out)
+        .map_err(|e| e.to_string())?;
+
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    let mut outcomes: Vec<PakInstallOutcome> = Vec::new();
+    let mut state_dirty = false;
+
+    // 1. Renames — the planner's "same content, new filename" keep case. Cheap
+    //    (no download): rename in place and fix the recorded filename.
+    for keep in &plan.to_keep {
+        if keep.local_pak.pak_filename == keep.manifest_pak.pak_filename {
+            continue;
+        }
+        match ncp_host::rename_pak(
+            &mod_paks_dir,
+            &keep.local_pak.pak_filename,
+            &keep.manifest_pak.pak_filename,
+        ) {
+            Ok(()) => {
+                if let Some(rec) = state.local_install.paks.get_mut(&keep.id) {
+                    rec.pak_filename = keep.manifest_pak.pak_filename.clone();
+                }
+                state_dirty = true;
+                outcomes.push(PakInstallOutcome {
+                    id: keep.id.clone(),
+                    filename: keep.manifest_pak.pak_filename.clone(),
+                    result: "renamed",
+                    detail: format!("renamed from {}", keep.local_pak.pak_filename),
+                });
+            }
+            Err(e) => outcomes.push(PakInstallOutcome {
+                id: keep.id.clone(),
+                filename: keep.manifest_pak.pak_filename.clone(),
+                result: "failed",
+                detail: format!("rename failed: {e}"),
+            }),
+        }
+    }
+
+    // 2. Downloads — verify against the signed sha256 + size, then place the
+    //    verified file under its canonical name.
+    let total = plan.to_download.len();
+    for (i, action) in plan.to_download.iter().enumerate() {
+        let pak = &action.manifest_pak;
+        emit_pak_progress(&app, i, total, &pak.pak_filename);
+
+        // Stage as a sibling in the paks dir so the final rename is same-fs.
+        let staged = mod_paks_dir.join(format!(
+            ".{}.incoming.{}",
+            pak.pak_filename,
+            std::process::id()
+        ));
+        let downloaded =
+            ncp_net::download(&client, &pak.url, pak.sha256, pak.size_bytes, &staged).await;
+        match downloaded {
+            Ok(_) => match ncp_host::install_pak(&staged, &mod_paks_dir, &pak.pak_filename) {
+                Ok(()) => {
+                    state.local_install.paks.insert(
+                        action.id.clone(),
+                        ncp_planner::LocalPak {
+                            pak_filename: pak.pak_filename.clone(),
+                            version: pak.version.clone(),
+                            sha256: pak.sha256,
+                        },
+                    );
+                    state_dirty = true;
+                    outcomes.push(PakInstallOutcome {
+                        id: action.id.clone(),
+                        filename: pak.pak_filename.clone(),
+                        result: "installed",
+                        detail: format!("v{}", pak.version),
+                    });
+                }
+                Err(e) => {
+                    let _ = std::fs::remove_file(&staged);
+                    outcomes.push(PakInstallOutcome {
+                        id: action.id.clone(),
+                        filename: pak.pak_filename.clone(),
+                        result: "failed",
+                        detail: format!("install failed: {e}"),
+                    });
+                }
+            },
+            Err(e) => {
+                let _ = std::fs::remove_file(&staged);
+                outcomes.push(PakInstallOutcome {
+                    id: action.id.clone(),
+                    filename: pak.pak_filename.clone(),
+                    result: "failed",
+                    detail: format!("download/verify failed: {e}"),
+                });
+            }
+        }
+    }
+    emit_pak_progress(&app, total, total, "");
+
+    // 3. Removes — paks gone from the channel or opted out.
+    for action in &plan.to_remove {
+        match ncp_host::remove_pak(&mod_paks_dir, &action.local_pak.pak_filename) {
+            Ok(()) => {
+                state.local_install.paks.remove(&action.id);
+                state_dirty = true;
+                outcomes.push(PakInstallOutcome {
+                    id: action.id.clone(),
+                    filename: action.local_pak.pak_filename.clone(),
+                    result: "removed",
+                    detail: "no longer in channel".into(),
+                });
+            }
+            Err(e) => outcomes.push(PakInstallOutcome {
+                id: action.id.clone(),
+                filename: action.local_pak.pak_filename.clone(),
+                result: "failed",
+                detail: format!("remove failed: {e}"),
+            }),
+        }
+    }
+
+    if state_dirty {
+        let path = state_path(&app)?;
+        ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+    }
+
+    Ok(outcomes)
 }
 
 // ===================================================================

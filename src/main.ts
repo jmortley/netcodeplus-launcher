@@ -66,6 +66,40 @@ interface PluginVerifyOutcome {
   detail: string;
 }
 
+// One pak the plan would download/remove — mirrors Rust PlanDownload / PlanRemove.
+interface PlanDownload {
+  id: string;
+  filename: string;
+  version: string;
+  size_bytes: number;
+  reason: "missing" | "hash_mismatch";
+  required: boolean;
+}
+interface PlanRemove {
+  id: string;
+  filename: string;
+  reason: "not_in_channel" | "opted_out";
+}
+// NetcodePlus content-pak status from `pak_status` — drives the dash row and the
+// pre-play gate. `installed_count === 0` distinguishes a first-time user (the
+// "get the paks" prompt) from one with out-of-date paks (the "update" prompt).
+interface PakStatusResult {
+  channel: string;
+  paks_offered: boolean;
+  up_to_date: boolean;
+  installed_count: number;
+  to_download: PlanDownload[];
+  to_remove: PlanRemove[];
+  keep_count: number;
+  total_download_bytes: number;
+}
+interface PakInstallOutcome {
+  id: string;
+  filename: string;
+  result: "installed" | "removed" | "renamed" | "failed";
+  detail: string;
+}
+
 // Launcher self-update status from `launcher_update_status`. When
 // `can_auto_update` is true the manifest carries a signed SHA-256 + size, so the
 // launcher can download + verify + relaunch the new exe itself; otherwise it's
@@ -422,6 +456,108 @@ async function doInstallPlugin(force = false): Promise<void> {
   }
 }
 
+// Once the user chooses to play without updating paks, don't re-prompt on every
+// PLAY for the rest of the session (paks aren't required to launch).
+let pakGateSkippedThisSession = false;
+// Single-flight: the dash button and the Play-gate both call doInstallPaks;
+// concurrent runs would race on the same-PID staging files in the paks dir.
+let pakInstallInFlight = false;
+
+// Download + install/update the NetcodePlus content paks via `install_paks`,
+// reporting coarse per-pak progress into `sink` as `pak-install-progress` events
+// arrive. Returns true when nothing failed. Refreshes the cached pak status +
+// dash card so the row flips to "up to date". The Rust side refuses while UT4 is
+// running (a mounted pak is locked) — that surfaces here as a failure string.
+async function doInstallPaks(sink: HTMLElement | null): Promise<boolean> {
+  if (pakInstallInFlight) return false;
+  pakInstallInFlight = true;
+  if (sink) sink.textContent = "Preparing…";
+  let unlisten: UnlistenFn | null = null;
+  try {
+    unlisten = await listen<{ done: number; total: number; filename: string }>(
+      "pak-install-progress",
+      (e) => {
+        const { done, total, filename } = e.payload;
+        if (!sink) return;
+        sink.textContent = filename
+          ? `Downloading paks… (${done + 1} of ${total}: ${filename})`
+          : `Finishing up…`;
+      },
+    );
+    const outcomes = await invoke<PakInstallOutcome[]>("install_paks");
+    const failed = outcomes.filter((o) => o.result === "failed");
+    const changed = outcomes.filter((o) => o.result !== "failed").length;
+    if (sink) {
+      if (failed.length) {
+        sink.innerHTML = `<span class="warn">Some paks failed: ${escape(
+          failed.map((f) => `${f.filename} (${f.detail})`).join("; "),
+        )}</span>`;
+      } else if (changed > 0) {
+        sink.innerHTML = `<span class="ok">✓ NetcodePlus content paks installed.</span>`;
+      } else {
+        sink.innerHTML = `<span class="ok">✓ Content paks already up to date.</span>`;
+      }
+    }
+    // Refresh cached status + the dash card so the row reflects the new state.
+    try {
+      statusCache.paks = await invoke<PakStatusResult>("pak_status");
+    } catch (err) {
+      console.error("pak_status refresh failed:", err);
+    }
+    void renderDashStatus();
+    return failed.length === 0;
+  } catch (err) {
+    if (sink) sink.innerHTML = `<span class="warn">Pak update failed: ${escape(String(err))}</span>`;
+    console.error("install_paks failed:", err);
+    return false;
+  } finally {
+    if (unlisten) unlisten();
+    pakInstallInFlight = false;
+  }
+}
+
+// A small 3-choice pre-play modal (the app has no generic modal system). Resolves
+// to the chosen action; Esc or a backdrop click counts as cancel. The two cases
+// (paks missing vs. out of date) differ only in the caller-supplied copy.
+function pakPlayGate(o: {
+  title: string;
+  body: string;
+  primaryLabel: string;
+  secondaryLabel: string;
+}): Promise<"primary" | "secondary" | "cancel"> {
+  return new Promise((resolve) => {
+    const back = document.createElement("div");
+    back.className = "pak-modal-back";
+    back.innerHTML = `
+      <div class="pak-modal" role="dialog" aria-modal="true" aria-labelledby="pak-modal-title">
+        <h3 id="pak-modal-title">${escape(o.title)}</h3>
+        <p>${escape(o.body)}</p>
+        <div class="pak-modal-actions">
+          <button type="button" class="btn" data-act="primary">${escape(o.primaryLabel)}</button>
+          <button type="button" class="link-btn" data-act="secondary">${escape(o.secondaryLabel)}</button>
+          <button type="button" class="link-btn" data-act="cancel">Cancel</button>
+        </div>
+      </div>`;
+    const finish = (r: "primary" | "secondary" | "cancel") => {
+      document.removeEventListener("keydown", onKey);
+      back.remove();
+      resolve(r);
+    };
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") finish("cancel");
+    };
+    back.addEventListener("click", (e) => {
+      const target = e.target as HTMLElement;
+      if (target === back) return finish("cancel");
+      const act = target.closest("[data-act]")?.getAttribute("data-act");
+      if (act === "primary" || act === "secondary" || act === "cancel") finish(act);
+    });
+    document.addEventListener("keydown", onKey);
+    document.body.appendChild(back);
+    (back.querySelector('[data-act="primary"]') as HTMLButtonElement | null)?.focus();
+  });
+}
+
 // Warn about stray / misplaced NetcodePlus copies (e.g. a hand-install dropped
 // into Engine/Plugins, which double-loads). Renders prominent warnings into
 // #stray-panel with a confirm-gated "Fix this" that removes the stray. Silent
@@ -523,9 +659,10 @@ let lastSummary: PlayerSummary | null = null;
 const statusCache: {
   plugin: PluginStatusResult | null;
   launcher: LauncherUpdateResult | null;
+  paks: PakStatusResult | null;
   dotnetAvailable: boolean;
   dotnetOk: boolean;
-} = { plugin: null, launcher: null, dotnetAvailable: false, dotnetOk: true };
+} = { plugin: null, launcher: null, paks: null, dotnetAvailable: false, dotnetOk: true };
 
 // Roots already run through verify_plugin this session — a present-but-unbaselined
 // install is checked once, never re-downloaded on every status refresh.
@@ -626,6 +763,13 @@ async function loadStatusDataInner(): Promise<void> {
     statusCache.launcher = await invokeWithRetry<LauncherUpdateResult>("launcher_update_status");
   } catch (err) {
     console.error("launcher_update_status failed after retries:", err);
+  }
+  // Content paks live in one per-user dir (no per-install roots), so this needs
+  // no args. Powers the dash row and the pre-play gate.
+  try {
+    statusCache.paks = await invokeWithRetry<PakStatusResult>("pak_status");
+  } catch (err) {
+    console.error("pak_status failed after retries:", err);
   }
   try {
     const gi = await invoke<GameInstallerInfo>("game_installer_info");
@@ -1199,6 +1343,7 @@ async function renderDashStatus(): Promise<void> {
   const lines: string[] = [];
   let pluginUpdate = false;
   let pluginUpToDate = false;
+  let paksUpdate = false;
   const p = statusCache.plugin;
   if (p && p.plugin_offered) {
     const ver = p.available_version != null ? ` (build ${p.available_version})` : "";
@@ -1229,6 +1374,27 @@ async function renderDashStatus(): Promise<void> {
         `<div class="statline"><span class="ok">✓</span><span>NetcodePlus up to date${escape(ver)}.</span></div>
         <button id="plugin-reinstall-btn" type="button" class="link-btn">Reinstall</button>
         <div id="plugin-status" class="launch-status"></div>`,
+      );
+    }
+  }
+  const pk = statusCache.paks;
+  if (pk && pk.paks_offered) {
+    if (pk.up_to_date) {
+      lines.push(
+        `<div class="statline"><span class="ok">✓</span><span>NetcodePlus content paks up to date.</span></div>`,
+      );
+    } else {
+      paksUpdate = true;
+      const missing = pk.installed_count === 0;
+      const mb = Math.round(pk.total_download_bytes / (1024 * 1024));
+      const n = pk.to_download.length;
+      const msg = missing
+        ? `NetcodePlus content paks not installed — get them (~${mb} MB) so you always have the right sounds and content.`
+        : `${n} NetcodePlus pak${n === 1 ? "" : "s"} out of date (~${mb} MB).`;
+      lines.push(
+        `<div class="statline"><span class="warn">↑</span><span>${escape(msg)}</span></div>
+        <button id="pak-update-btn" type="button" class="btn btn-sm">${missing ? "Install paks" : "Update paks"}</button>
+        <div id="pak-status" class="launch-status"></div>`,
       );
     }
   }
@@ -1282,6 +1448,11 @@ async function renderDashStatus(): Promise<void> {
         );
         if (ok) await doInstallPlugin(true);
       })();
+    });
+  }
+  if (paksUpdate) {
+    document.getElementById("pak-update-btn")?.addEventListener("click", () => {
+      void doInstallPaks(document.getElementById("pak-status"));
     });
   }
 }
@@ -1519,6 +1690,41 @@ async function launch() {
     if (doUpdate) {
       void doInstallPlugin();
       return;
+    }
+  }
+  // Pre-play NetcodePlus PAK check (the content paks — sounds etc.). Surfaced on
+  // PLAY with case-specific copy: a first-time "get them" prompt when none are
+  // installed, an "out of date" prompt otherwise. Soft gate — Play-anyway is
+  // always allowed (paks aren't required to launch), and choosing it once
+  // suppresses the prompt for the rest of the session. "& Play" installs first
+  // (the game is closed now, so the paks aren't locked) then falls through to
+  // launch, regardless of a partial failure.
+  const paks = statusCache.paks;
+  if (paks && paks.paks_offered && !paks.up_to_date && !pakGateSkippedThisSession) {
+    const missing = paks.installed_count === 0;
+    const mb = Math.round(paks.total_download_bytes / (1024 * 1024));
+    const n = paks.to_download.length;
+    const choice = await pakPlayGate(
+      missing
+        ? {
+            title: "Get the NetcodePlus paks",
+            body: `You don't have the NetcodePlus content paks yet (about ${mb} MB). Installing them means you'll always have the right sounds and content, even when a server doesn't send them.`,
+            primaryLabel: "Install & Play",
+            secondaryLabel: "Play without",
+          }
+        : {
+            title: "NetcodePlus paks out of date",
+            body: `${n} of your NetcodePlus pak${n === 1 ? " is" : "s are"} out of date (about ${mb} MB). Updating keeps your sounds and content in sync with servers.`,
+            primaryLabel: "Update & Play",
+            secondaryLabel: "Play anyway",
+          },
+    );
+    if (choice === "cancel") return;
+    if (choice === "secondary") pakGateSkippedThisSession = true;
+    if (choice === "primary") {
+      // Install into the hero's launch-status line, then fall through to launch
+      // even on a partial failure — paks aren't required to play.
+      await doInstallPaks(document.getElementById("launch-status"));
     }
   }
   const profile =
