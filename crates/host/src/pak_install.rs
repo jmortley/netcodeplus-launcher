@@ -23,6 +23,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use ncp_manifest::Sha256Digest;
+use sha2::{Digest, Sha256};
+
 use crate::fs_util::{annotate, clear_readonly, rename_with_retry};
 
 /// Final on-disk path for `pak_filename` inside `dest_dir`.
@@ -93,6 +96,23 @@ pub fn rename_pak(dest_dir: &Path, from_filename: &str, to_filename: &str) -> io
     let to = pak_path(dest_dir, to_filename);
     let _ = clear_readonly(&to);
     rename_with_retry(&from, &to).map_err(|e| annotate(e, "rename pak", &to))
+}
+
+/// Streaming SHA-256 of the pak named `pak_filename` in `dir`, or `None` if it
+/// isn't present / can't be read.
+///
+/// Lets the launcher recognise a pak *already on disk* (e.g. one a server pushed
+/// into the same DownloadedPaks dir, or a prior install) whose bytes match the
+/// manifest, so it can be adopted as installed rather than re-downloaded. A pak
+/// is a single file, so this on-disk digest is directly comparable to the
+/// manifest's pinned [`Sha256Digest`] — no download needed to learn the expected
+/// value (unlike the plugin, whose expected fingerprint comes from its ZIP).
+#[must_use]
+pub fn pak_on_disk_digest(dir: &Path, pak_filename: &str) -> Option<Sha256Digest> {
+    let mut file = fs::File::open(dir.join(pak_filename)).ok()?;
+    let mut hasher = Sha256::new();
+    io::copy(&mut file, &mut hasher).ok()?;
+    Some(Sha256Digest::from_bytes(hasher.finalize().into()))
 }
 
 #[cfg(test)]
@@ -175,5 +195,22 @@ mod tests {
         rename_pak(&paks, "old-name.pak", "new-name.pak").unwrap();
         assert!(!paks.join("old-name.pak").exists());
         assert_eq!(fs::read(paks.join("new-name.pak")).unwrap(), b"content");
+    }
+
+    #[test]
+    fn pak_on_disk_digest_present_absent_and_distinguishes_bytes() {
+        let tmp = TempDir::new().unwrap();
+        let dir = tmp.path();
+        // Absent → None (so the caller treats it as "not installed").
+        assert!(pak_on_disk_digest(dir, "ghost.pak").is_none());
+        // Present → Some; equal for identical bytes, different for different.
+        fs::write(dir.join("a.pak"), b"hello-pak").unwrap();
+        fs::write(dir.join("b.pak"), b"hello-pak").unwrap();
+        fs::write(dir.join("c.pak"), b"different").unwrap();
+        let a = pak_on_disk_digest(dir, "a.pak").unwrap();
+        let b = pak_on_disk_digest(dir, "b.pak").unwrap();
+        let c = pak_on_disk_digest(dir, "c.pak").unwrap();
+        assert_eq!(a, b);
+        assert_ne!(a, c);
     }
 }

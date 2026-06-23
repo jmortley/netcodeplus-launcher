@@ -278,17 +278,67 @@ pub struct PakStatusResult {
     pub total_download_bytes: u64,
 }
 
+/// Adopt any manifest pak already present on disk whose bytes match the signed
+/// sha256 into the recorded local install — so a pak the user already has (a
+/// server pushed it into the same DownloadedPaks dir, or a prior install) reads
+/// as installed rather than getting needlessly re-downloaded. The pak analogue
+/// of the plugin's verify/adopt: a pak is one file, so the manifest sha256 IS
+/// the expected hash (no download needed to learn it, unlike the plugin ZIP).
+///
+/// Returns `true` if the recorded state changed (caller persists). Cheap after
+/// the first pass — a pak already recorded as the current build short-circuits
+/// before hashing, so steady-state status checks do no disk hashing.
+fn adopt_present_paks(
+    channel: &ncp_manifest::Channel,
+    mod_paks_dir: &std::path::Path,
+    local: &mut ncp_planner::LocalInstall,
+) -> bool {
+    let mut dirty = false;
+    for (id, pak) in &channel.paks {
+        if local.paks.get(id).is_some_and(|l| l.sha256 == pak.sha256) {
+            continue; // already recorded as the current build — no need to hash
+        }
+        if ncp_host::pak_on_disk_digest(mod_paks_dir, &pak.pak_filename) == Some(pak.sha256) {
+            local.paks.insert(
+                id.clone(),
+                ncp_planner::LocalPak {
+                    pak_filename: pak.pak_filename.clone(),
+                    version: pak.version.clone(),
+                    sha256: pak.sha256,
+                },
+            );
+            dirty = true;
+        }
+    }
+    dirty
+}
+
 /// Report the NetcodePlus pak status for the current channel by re-verifying the
-/// manifest and diffing the channel's paks against the recorded local install.
-/// Read-only (no download, no write).
+/// manifest, reconciling the recorded install against what's actually on disk
+/// (so an already-present matching pak isn't re-offered), then diffing against
+/// the channel's paks. Adopting a present pak persists the record; otherwise no
+/// write.
 #[tauri::command]
 pub async fn pak_status(app: AppHandle) -> Result<PakStatusResult, String> {
-    let (manifest, state, _, _) = fetch_verify(&app).await?;
+    let (manifest, mut state, _, _) = fetch_verify(&app).await?;
     let channel = state.channel.clone();
     let paks_offered = manifest
         .channels
         .get(&channel)
         .is_some_and(|c| !c.paks.is_empty());
+
+    // Reflect what's actually on disk before planning: adopt any present pak
+    // whose bytes already match the manifest, so the user isn't asked to
+    // re-download paks they already have. Persist only when adoption changed.
+    if let (Some(ch), Some(dir)) = (
+        manifest.channels.get(&channel),
+        ncp_host::default_mod_paks_dir(),
+    ) {
+        if adopt_present_paks(ch, &dir, &mut state.local_install) {
+            let path = state_path(&app)?;
+            ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+        }
+    }
 
     let plan = ncp_planner::plan(&manifest, &channel, &state.local_install, &state.opted_out)
         .map_err(|e| e.to_string())?;
@@ -398,12 +448,20 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
         return Err("Couldn't locate your Documents folder to install paks into.".into());
     };
 
+    let mut state_dirty = false;
+    // Adopt already-present matching paks first, so a cold install never
+    // re-downloads a pak the user already has on disk.
+    if let Some(ch) = manifest.channels.get(&channel) {
+        if adopt_present_paks(ch, &mod_paks_dir, &mut state.local_install) {
+            state_dirty = true;
+        }
+    }
+
     let plan = ncp_planner::plan(&manifest, &channel, &state.local_install, &state.opted_out)
         .map_err(|e| e.to_string())?;
 
     let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
     let mut outcomes: Vec<PakInstallOutcome> = Vec::new();
-    let mut state_dirty = false;
 
     // 1. Renames — the planner's "same content, new filename" keep case. Cheap
     //    (no download): rename in place and fix the recorded filename.
