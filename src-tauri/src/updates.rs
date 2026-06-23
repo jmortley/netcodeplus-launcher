@@ -278,22 +278,41 @@ pub struct PakStatusResult {
     pub total_download_bytes: u64,
 }
 
-/// Adopt any manifest pak already present on disk whose bytes match the signed
-/// sha256 into the recorded local install — so a pak the user already has (a
-/// server pushed it into the same DownloadedPaks dir, or a prior install) reads
-/// as installed rather than getting needlessly re-downloaded. The pak analogue
-/// of the plugin's verify/adopt: a pak is one file, so the manifest sha256 IS
-/// the expected hash (no download needed to learn it, unlike the plugin ZIP).
+/// Reconcile the recorded local install against what's actually in the paks dir
+/// before planning, in **both** directions:
+///
+/// 1. **Drop** any recorded pak whose file is no longer on disk (the user
+///    deleted it, or a cleanup removed it) — a cheap existence check, never a
+///    hash, so a OneDrive cloud-only placeholder is not hydrated. The pak then
+///    re-plans as Missing and is re-downloaded, instead of the stale record
+///    falsely reporting it "up to date".
+/// 2. **Adopt** any manifest pak already present whose bytes match the signed
+///    sha256 but isn't recorded yet (a server pushed it into the same
+///    DownloadedPaks dir, or a prior install) — so the user isn't asked to
+///    re-download a pak they already have. The pak analogue of the plugin's
+///    verify/adopt; a pak is one file, so the manifest sha256 IS the expected
+///    hash (no download needed to learn it, unlike the plugin ZIP).
 ///
 /// Returns `true` if the recorded state changed (caller persists). Cheap after
-/// the first pass — a pak already recorded as the current build short-circuits
-/// before hashing, so steady-state status checks do no disk hashing.
-fn adopt_present_paks(
+/// the first pass: present recorded paks cost one existence check each, and a
+/// pak already recorded as current skips the adopt hash — so steady-state status
+/// checks do no disk hashing.
+fn reconcile_paks_with_disk(
     channel: &ncp_manifest::Channel,
     mod_paks_dir: &std::path::Path,
     local: &mut ncp_planner::LocalInstall,
 ) -> bool {
     let mut dirty = false;
+    // 1. Forget paks whose file has gone missing (existence only — no hashing,
+    //    so a OneDrive cloud-only placeholder is left un-hydrated).
+    let before = local.paks.len();
+    local
+        .paks
+        .retain(|_id, rec| mod_paks_dir.join(&rec.pak_filename).exists());
+    if local.paks.len() != before {
+        dirty = true;
+    }
+    // 2. Adopt present-matching-but-unrecorded paks.
     for (id, pak) in &channel.paks {
         if local.paks.get(id).is_some_and(|l| l.sha256 == pak.sha256) {
             continue; // already recorded as the current build — no need to hash
@@ -327,14 +346,14 @@ pub async fn pak_status(app: AppHandle) -> Result<PakStatusResult, String> {
         .get(&channel)
         .is_some_and(|c| !c.paks.is_empty());
 
-    // Reflect what's actually on disk before planning: adopt any present pak
-    // whose bytes already match the manifest, so the user isn't asked to
-    // re-download paks they already have. Persist only when adoption changed.
+    // Reflect what's actually on disk before planning: forget paks whose file
+    // was deleted (so they re-offer) and adopt any present pak that already
+    // matches the manifest (so they're not re-downloaded). Persist only on change.
     if let (Some(ch), Some(dir)) = (
         manifest.channels.get(&channel),
         ncp_host::default_mod_paks_dir(),
     ) {
-        if adopt_present_paks(ch, &dir, &mut state.local_install) {
+        if reconcile_paks_with_disk(ch, &dir, &mut state.local_install) {
             let path = state_path(&app)?;
             ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
         }
@@ -505,10 +524,11 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
     };
 
     let mut state_dirty = false;
-    // Adopt already-present matching paks first, so a cold install never
-    // re-downloads a pak the user already has on disk.
+    // Reconcile with disk first: forget deleted paks (so they re-download) and
+    // adopt already-present matching ones (so a cold install doesn't re-pull a
+    // pak the user already has).
     if let Some(ch) = manifest.channels.get(&channel) {
-        if adopt_present_paks(ch, &mod_paks_dir, &mut state.local_install) {
+        if reconcile_paks_with_disk(ch, &mod_paks_dir, &mut state.local_install) {
             state_dirty = true;
         }
     }
