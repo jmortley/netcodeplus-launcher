@@ -520,13 +520,17 @@ async function doInstallPaks(sink: HTMLElement | null): Promise<boolean> {
         sink.innerHTML = `<span class="ok">✓ Content paks already up to date.</span>`;
       }
     }
-    // Refresh cached status + the dash card so the row reflects the new state.
+    // Refresh cached status so a later render is accurate.
     try {
       statusCache.paks = await invoke<PakStatusResult>("pak_status");
     } catch (err) {
       console.error("pak_status refresh failed:", err);
     }
-    void renderDashStatus();
+    // Only re-render the dash on success: re-rendering rebuilds #dash-status and
+    // would wipe a per-pak failure detail just written into the dash #pak-status
+    // sink (and re-arm the button with no context). On a partial failure the
+    // message stays put until the next natural refresh (focus / loadStatusData).
+    if (!failed.length) void renderDashStatus();
     return failed.length === 0;
   } catch (err) {
     if (sink) sink.innerHTML = `<span class="warn">Pak update failed: ${escape(String(err))}</span>`;

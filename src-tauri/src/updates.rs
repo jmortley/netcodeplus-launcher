@@ -347,10 +347,21 @@ fn reconcile_paks_with_disk(
             );
             dirty = true;
         }
-        if state.local_install.paks.contains_key(id) && !state.pak_stamps.contains_key(id) {
-            if let Some((size, mtime_ms)) =
-                ncp_host::pak_file_stamp(mod_paks_dir, &pak.pak_filename)
-            {
+        // Stamp a recorded-but-unstamped pak off its RECORDED filename (what's
+        // actually on disk), not the manifest filename — they differ for a pak the
+        // manifest renamed but that's still on disk under the old name, and the
+        // forget pass above keys off the recorded filename too.
+        let unstamped_filename = (!state.pak_stamps.contains_key(id))
+            .then(|| {
+                state
+                    .local_install
+                    .paks
+                    .get(id)
+                    .map(|l| l.pak_filename.clone())
+            })
+            .flatten();
+        if let Some(fname) = unstamped_filename {
+            if let Some((size, mtime_ms)) = ncp_host::pak_file_stamp(mod_paks_dir, &fname) {
                 state.pak_stamps.insert(
                     id.clone(),
                     ncp_host::PakStamp {
@@ -395,11 +406,21 @@ pub async fn pak_status(app: AppHandle) -> Result<PakStatusResult, String> {
     let plan = ncp_planner::plan(&manifest, &channel, &state.local_install, &state.opted_out)
         .map_err(|e| e.to_string())?;
 
+    // Count only THIS channel's paks the user actually has on disk (recorded) —
+    // not the raw global map — so the Play-gate picks "first-time" vs "out of
+    // date" off the current channel, ignoring any unrelated leftover record.
+    let installed_count = manifest.channels.get(&channel).map_or(0, |c| {
+        c.paks
+            .keys()
+            .filter(|id| state.local_install.paks.contains_key(*id))
+            .count()
+    });
+
     Ok(PakStatusResult {
         channel,
         paks_offered,
         up_to_date: plan.is_no_op(),
-        installed_count: state.local_install.paks.len(),
+        installed_count,
         to_download: plan.to_download.iter().map(plan_download).collect(),
         to_remove: plan.to_remove.iter().map(plan_remove).collect(),
         keep_count: plan.to_keep.len(),
@@ -477,6 +498,38 @@ fn emit_pak_progress(app: &AppHandle, done: usize, total: usize, filename: &str)
 /// clear, by which time the sibling paks have finished syncing.
 const PAK_INSTALL_ATTEMPTS: usize = 3;
 
+/// Per-run-unique staging filename for a pak download: `.<name>.incoming.<pid>.
+/// <nanos>`. The nanos nonce means a verified-but-uninstalled staging file
+/// orphaned by a killed prior process can never be mistaken — via the
+/// `!staged.exists()` skip-download check — for a fresh download and installed
+/// without re-verification, even if the OS reuses the PID. Mirrors `ncp_net`'s
+/// own `.partial.<pid>.<nanos>` staging.
+fn staging_name(pak_filename: &str) -> String {
+    let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_nanos())
+        .unwrap_or(0);
+    format!(".{pak_filename}.incoming.{}.{nanos}", std::process::id())
+}
+
+/// Best-effort removal of leftover `.<name>.incoming.*` staging files from a
+/// prior interrupted install (a process killed between download and placement).
+/// The frontend single-flights install_paks and the single-instance launcher
+/// rules out a second process, so sweeping all of them at the start is safe — it
+/// just keeps orphaned ~100 MB staging files from piling up in the paks dir.
+fn sweep_pak_staging(mod_paks_dir: &std::path::Path) {
+    let Ok(entries) = std::fs::read_dir(mod_paks_dir) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if name.starts_with('.') && name.contains(".incoming.") {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
+}
+
 /// Download `pak` (streaming SHA-256 + size verified against the signed manifest)
 /// and place it under its canonical filename in `mod_paks_dir`, retrying a
 /// transient failure up to [`PAK_INSTALL_ATTEMPTS`] times.
@@ -493,11 +546,9 @@ async fn download_and_install_pak(
     mod_paks_dir: &std::path::Path,
 ) -> std::result::Result<(), String> {
     // Stage as a sibling in the paks dir so the final rename is same-filesystem.
-    let staged = mod_paks_dir.join(format!(
-        ".{}.incoming.{}",
-        pak.pak_filename,
-        std::process::id()
-    ));
+    // The per-run nonce means a stale staging file from a killed prior process is
+    // never picked up as if it were this run's verified download.
+    let staged = mod_paks_dir.join(staging_name(&pak.pak_filename));
     let mut last = String::new();
     for _ in 0..PAK_INSTALL_ATTEMPTS {
         // (Re)download only when we don't already hold a verified staged file —
@@ -555,6 +606,8 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
     let Some(mod_paks_dir) = ncp_host::default_mod_paks_dir() else {
         return Err("Couldn't locate your Documents folder to install paks into.".into());
     };
+    // Clear any leftover staging files from an interrupted prior install.
+    sweep_pak_staging(&mod_paks_dir);
 
     let mut state_dirty = false;
     // Reconcile with disk first: forget deleted / overwritten paks (so they
@@ -676,8 +729,20 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
     }
 
     if state_dirty {
+        // Persist the pak changes WITHOUT clobbering anything written during this
+        // (multi-minute) install: re-read the current state and overwrite only the
+        // pak fields, rather than saving this command's minutes-old whole-state
+        // snapshot — which would silently revert a login, a presence toggle, or a
+        // focus-triggered pak_status that wrote state meanwhile. install_paks is
+        // authoritative for the current channel's pak records, so its view of
+        // local_install + pak_stamps is the one to keep.
         let path = state_path(&app)?;
-        ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+        let mut fresh = ncp_host::state::read(&path)
+            .map_err(|e| e.to_string())?
+            .unwrap_or_default();
+        fresh.local_install = state.local_install;
+        fresh.pak_stamps = state.pak_stamps;
+        ncp_host::state::write(&path, &fresh).map_err(|e| e.to_string())?;
     }
 
     Ok(outcomes)
