@@ -413,27 +413,36 @@ async function doInstallPlugin(force = false): Promise<void> {
     const installed = outcomes.filter((o) => o.result === "installed").length;
     const failed = outcomes.filter((o) => o.result === "failed");
     if (failed.length) {
-      // Show the real per-install error and DON'T re-render — re-rendering
-      // rebuilds #plugin-panel and would wipe this message before it's read.
-      // Keep the button enabled so the user can retry after fixing the cause
-      // (e.g. close the game, run as admin for a Program Files install).
-      if (status)
-        status.innerHTML = `<span class="warn">Install failed: ${escape(
-          failed.map((f) => f.detail).join("; "),
-        )}</span>`;
+      // Show the real per-install error in the dash AND surface it in the hero
+      // (the update may have been kicked off from the hero's UPDATE button, which
+      // is otherwise left stuck on "Updating…"). Don't re-render the dash
+      // (#plugin-panel) — that would wipe this message; the hero is a separate
+      // element. surfaceHeroInstallError restores a clickable hero UPDATE so the
+      // user can retry after fixing the cause (e.g. close the game / File
+      // Explorer, run as admin for a Program Files install).
+      const msg = `Install failed: ${failed.map((f) => f.detail).join("; ")}`;
+      if (status) status.innerHTML = `<span class="warn">${escape(msg)}</span>`;
       if (btn) btn.disabled = false;
+      surfaceHeroInstallError(msg);
       return;
     }
     if (installed === 0) {
       // Nothing was installed. Distinguish "already up to date" (benign — there
       // were installs, all skipped) from "no UT4 install found to act on" (the
       // real failure for a non-standard install not picked in Settings).
-      if (status) {
-        status.innerHTML = outcomes.length
-          ? `<span class="ok">✓ NetcodePlus is already up to date.</span>`
-          : `<span class="warn">No UT4 install was found to set up. Pick your install folder in the Settings tab, then try again.</span>`;
-      }
       if (btn) btn.disabled = false;
+      if (outcomes.length) {
+        if (status) status.innerHTML = `<span class="ok">✓ NetcodePlus is already up to date.</span>`;
+        // Re-render the hero (its button was left on "Updating…") and refresh the
+        // status so an actually-current install flips the hero back to PLAY.
+        renderHomeHero();
+        void loadStatusData();
+      } else {
+        const msg =
+          "No UT4 install was found to set up. Pick your install folder in the Settings tab, then try again.";
+        if (status) status.innerHTML = `<span class="warn">${escape(msg)}</span>`;
+        surfaceHeroInstallError(msg);
+      }
       return;
     }
     if (status) {
@@ -448,12 +457,25 @@ async function doInstallPlugin(force = false): Promise<void> {
     renderAdvanced();
     void loadStatusData();
   } catch (err) {
-    if (status) status.innerHTML = `<span class="warn">Update failed: ${escape(String(err))}</span>`;
+    const msg = `Update failed: ${String(err)}`;
+    if (status) status.innerHTML = `<span class="warn">${escape(msg)}</span>`;
     if (btn) btn.disabled = false;
+    surfaceHeroInstallError(msg);
     console.error("install_plugin failed:", err);
   } finally {
     installInFlight = false;
   }
+}
+
+// After a plugin install kicked off from the hero UPDATE button fails (or is a
+// no-op), that button is left stuck on a disabled "Updating…". Rebuild the hero
+// so it becomes a fresh, clickable UPDATE again, then echo the failure into the
+// hero's launch-status line — so the error is visible at the top, not only in
+// the dash card. The dash (#plugin-panel) is untouched, so its copy survives.
+function surfaceHeroInstallError(message: string): void {
+  renderHomeHero();
+  const ls = document.getElementById("launch-status");
+  if (ls) ls.innerHTML = `<span class="warn">${escape(message)}</span>`;
 }
 
 // Once the user chooses to play without updating paks, don't re-prompt on every
