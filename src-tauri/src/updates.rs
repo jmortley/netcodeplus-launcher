@@ -417,6 +417,60 @@ fn emit_pak_progress(app: &AppHandle, done: usize, total: usize, filename: &str)
     );
 }
 
+/// How many times to (re)try a single pak's download + install before giving up.
+/// Covers a transient network drop or a brief filesystem lock — an AV scan, or
+/// OneDrive syncing the paks dir while several large paks land at once (the dir
+/// is under the user's Documents, which may be OneDrive-redirected). Three
+/// attempts × `install_pak`'s internal ~1.5s rename backoff gives a lock ~4.5s to
+/// clear, by which time the sibling paks have finished syncing.
+const PAK_INSTALL_ATTEMPTS: usize = 3;
+
+/// Download `pak` (streaming SHA-256 + size verified against the signed manifest)
+/// and place it under its canonical filename in `mod_paks_dir`, retrying a
+/// transient failure up to [`PAK_INSTALL_ATTEMPTS`] times.
+///
+/// A *download* failure re-fetches. An *install* (rename) failure retries the
+/// placement with the already-verified staged file still in hand — no
+/// re-download — so a brief lock on the destination clears without re-pulling
+/// ~120 MB. Returns `Ok(())` once the verified bytes are in place, or
+/// `Err(detail)` with the last failure after exhausting the retries. Never leaves
+/// a staging file behind.
+async fn download_and_install_pak(
+    client: &ncp_net::Client,
+    pak: &ncp_manifest::ManifestPak,
+    mod_paks_dir: &std::path::Path,
+) -> std::result::Result<(), String> {
+    // Stage as a sibling in the paks dir so the final rename is same-filesystem.
+    let staged = mod_paks_dir.join(format!(
+        ".{}.incoming.{}",
+        pak.pak_filename,
+        std::process::id()
+    ));
+    let mut last = String::new();
+    for _ in 0..PAK_INSTALL_ATTEMPTS {
+        // (Re)download only when we don't already hold a verified staged file —
+        // so a retry after an install/rename lock doesn't re-fetch the bytes.
+        if !staged.exists() {
+            if let Err(e) =
+                ncp_net::download(client, &pak.url, pak.sha256, pak.size_bytes, &staged).await
+            {
+                last = format!("download/verify failed: {e}");
+                let _ = std::fs::remove_file(&staged);
+                continue;
+            }
+        }
+        match ncp_host::install_pak(&staged, mod_paks_dir, &pak.pak_filename) {
+            Ok(()) => return Ok(()),
+            // Keep the verified staged file so the next attempt retries the
+            // placement (a brief OneDrive/AV lock on the dest clears) without
+            // re-downloading; `install_pak` already backs off internally.
+            Err(e) => last = format!("install failed: {e}"),
+        }
+    }
+    let _ = std::fs::remove_file(&staged);
+    Err(last)
+}
+
 /// Bring the local NetcodePlus paks into agreement with the signed manifest:
 /// download + install everything `plan` says is missing or stale, rename a pak
 /// the manifest renamed, and remove paks no longer in the channel (or opted
@@ -427,10 +481,12 @@ fn emit_pak_progress(app: &AppHandle, done: usize, total: usize, filename: &str)
 /// calls this with the game closed (it runs *before* launch), and we re-check in
 /// Rust so a stale frontend can't drive a doomed write.
 ///
-/// Each pak is independent: a failure on one (download/verify or filesystem)
-/// records a `"failed"` outcome and does not abort the rest, and the successful
-/// changes are still persisted — so a Play-gate "Install & Play" proceeds with
-/// whatever installed, and the failed one simply retries next time.
+/// Each pak is independent and is retried a few times on a transient failure
+/// (see [`download_and_install_pak`]) before it records a `"failed"` outcome; a
+/// failure on one never aborts the rest, and successful changes are still
+/// persisted — so a Play-gate "Install & Play" proceeds with whatever installed,
+/// and any still-failed pak is picked up on the next run (no manual re-click for
+/// a one-off blip).
 #[tauri::command]
 pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, String> {
     let (manifest, mut state, _, _) = fetch_verify(&app).await?;
@@ -502,52 +558,30 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
         let pak = &action.manifest_pak;
         emit_pak_progress(&app, i, total, &pak.pak_filename);
 
-        // Stage as a sibling in the paks dir so the final rename is same-fs.
-        let staged = mod_paks_dir.join(format!(
-            ".{}.incoming.{}",
-            pak.pak_filename,
-            std::process::id()
-        ));
-        let downloaded =
-            ncp_net::download(&client, &pak.url, pak.sha256, pak.size_bytes, &staged).await;
-        match downloaded {
-            Ok(_) => match ncp_host::install_pak(&staged, &mod_paks_dir, &pak.pak_filename) {
-                Ok(()) => {
-                    state.local_install.paks.insert(
-                        action.id.clone(),
-                        ncp_planner::LocalPak {
-                            pak_filename: pak.pak_filename.clone(),
-                            version: pak.version.clone(),
-                            sha256: pak.sha256,
-                        },
-                    );
-                    state_dirty = true;
-                    outcomes.push(PakInstallOutcome {
-                        id: action.id.clone(),
-                        filename: pak.pak_filename.clone(),
-                        result: "installed",
-                        detail: format!("v{}", pak.version),
-                    });
-                }
-                Err(e) => {
-                    let _ = std::fs::remove_file(&staged);
-                    outcomes.push(PakInstallOutcome {
-                        id: action.id.clone(),
-                        filename: pak.pak_filename.clone(),
-                        result: "failed",
-                        detail: format!("install failed: {e}"),
-                    });
-                }
-            },
-            Err(e) => {
-                let _ = std::fs::remove_file(&staged);
+        match download_and_install_pak(&client, pak, &mod_paks_dir).await {
+            Ok(()) => {
+                state.local_install.paks.insert(
+                    action.id.clone(),
+                    ncp_planner::LocalPak {
+                        pak_filename: pak.pak_filename.clone(),
+                        version: pak.version.clone(),
+                        sha256: pak.sha256,
+                    },
+                );
+                state_dirty = true;
                 outcomes.push(PakInstallOutcome {
                     id: action.id.clone(),
                     filename: pak.pak_filename.clone(),
-                    result: "failed",
-                    detail: format!("download/verify failed: {e}"),
+                    result: "installed",
+                    detail: format!("v{}", pak.version),
                 });
             }
+            Err(detail) => outcomes.push(PakInstallOutcome {
+                id: action.id.clone(),
+                filename: pak.pak_filename.clone(),
+                result: "failed",
+                detail,
+            }),
         }
     }
     emit_pak_progress(&app, total, total, "");
