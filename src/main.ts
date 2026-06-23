@@ -1668,6 +1668,18 @@ function persist() {
 }
 
 async function launch() {
+  // A pak install in progress (the dash "Update paks" button, or a Play-gate
+  // "Install & Play" already running) holds DownloadedPaks open and must finish
+  // before the game mounts those paks — launching now would race it and lock the
+  // paks it hasn't placed yet. Refuse and let the in-flight install complete; a
+  // Play-gate install launches the game itself when it's done, so the user never
+  // has to come back for that path.
+  if (pakInstallInFlight) {
+    const ls = document.getElementById("launch-status");
+    if (ls)
+      ls.innerHTML = `<span class="warn">NetcodePlus paks are still installing — Play will be ready once that finishes.</span>`;
+    return;
+  }
   const di = state.installs[state.selInstall];
   // If UT4 is already running, pressing Play would spawn a second instance.
   // Warn and let them launch anyway (Play has no server target, so there's no
