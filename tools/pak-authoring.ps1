@@ -25,6 +25,12 @@
 .PARAMETER PakPath
   Path to the local cooked .pak. If omitted, downloads UTCC's current copy.
 
+.PARAMETER Version
+  Explicit manifest semver (MAJOR.MINOR.PATCH, e.g. "1.8.1"). The launcher parses
+  pak.version as STRICT semver, so this is REQUIRED whenever UTCC's version name
+  is not cleanly numeric -- e.g. "1.8a"/"v3.27a", which cannot auto-convert. A bad
+  value breaks the WHOLE manifest (every client hangs on "Checking for updates").
+
 .PARAMETER LoadOrder
   Engine load order for the manifest entry (higher overrides lower). Default 100.
 
@@ -33,27 +39,44 @@
 
 .EXAMPLE
   .\pak-authoring.ps1 -Id 1996 -PakId elimplus -PakPath "C:\path\ElimPlusMutator-WindowsNoEditor.pak"
+
+.EXAMPLE
+  # Letter-suffixed UTCC version (e.g. "1.8a") needs an explicit semver:
+  .\pak-authoring.ps1 -Id 2036 -PakId wipeout -Version 1.8.1 -PakPath "C:\path\WipeoutMutator-WindowsNoEditor.pak"
 #>
 [CmdletBinding()]
 param(
   [Parameter(Mandatory = $true)][int]$Id,
   [string]$PakId,
   [string]$PakPath,
+  [string]$Version,
   [int]$LoadOrder = 100,
   [bool]$Required = $false
 )
 
 $ErrorActionPreference = 'Stop'
 
-# Map a UTCC version name (e.g. "v1.327", "3.27", "12") to a valid semver
-# (major.minor.patch) for the manifest version field -- display/record only,
-# the update trigger is hash-based.
+# Map a UTCC version name (e.g. "v1.327", "3.27", "12") to a STRICT semver
+# (major.minor.patch, all-numeric) for the manifest version field -- display/
+# record only, the update trigger is hash-based. The launcher parses this as a
+# real semver::Version, so a non-numeric part makes the ENTIRE manifest fail to
+# deserialize (every client hangs on "Checking for updates"). We REFUSE to emit
+# an invalid value and tell the caller to pass -Version -- we do NOT guess what a
+# revision letter (the "a" in "1.8a") is meant to be.
 function ConvertTo-Semver([string]$name) {
   $v = $name.Trim().TrimStart('v', 'V')
   $parts = $v.Split('.')
   while ($parts.Count -lt 3) { $parts += '0' }
   if ($parts.Count -gt 3) { $parts = $parts[0..2] }
-  return ($parts -join '.')
+  $semver = ($parts -join '.')
+  if ($semver -notmatch '^\d+\.\d+\.\d+$') {
+    throw ("UTCC version '$name' is not a clean numeric version (auto-converted to " +
+      "'$semver', which is NOT valid semver). The launcher parses pak.version as " +
+      "STRICT semver, so emitting this would break the whole manifest. Re-run with " +
+      "an explicit -Version <MAJOR.MINOR.PATCH> -- e.g. for a revision like '1.8a' " +
+      "pass -Version 1.8.1.")
+  }
+  return $semver
 }
 
 Write-Host "Fetching UTCC catalog for content id $Id ..." -ForegroundColor Cyan
@@ -103,7 +126,17 @@ Write-Host "Cross-check PASSED (md5 + size match UTCC)." -ForegroundColor Green
 if (-not $PakId) {
   $PakId = ($utccPkg -replace '(?i)-windowsnoeditor$', '').ToLower()
 }
-$semver = ConvertTo-Semver $utccVer
+# Honour an explicit -Version (required for letter-suffixed UTCC names); else
+# derive a strict semver from the UTCC version name (throws if not numeric).
+if ($Version) {
+  if ($Version -notmatch '^\d+\.\d+\.\d+([-+].+)?$') {
+    throw "-Version '$Version' is not valid semver. Use MAJOR.MINOR.PATCH (e.g. 1.8.1)."
+  }
+  $semver = $Version
+}
+else {
+  $semver = ConvertTo-Semver $utccVer
+}
 $pakFilename = "$utccPkg.pak"
 
 # Emit the ManifestPak block, keyed by $PakId, to paste into channels.<ch>.paks.
