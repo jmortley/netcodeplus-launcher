@@ -68,3 +68,16 @@ minisign-verify = { workspace = true }
 chrono = { workspace = true }
 semver = { workspace = true }
 
+# WebView2-runtime pre-flight (src/webview2.rs): a Tauri app's UI is rendered by
+# the Edge WebView2 runtime; debloated Windows images strip it, which makes the
+# launcher exit silently. We detect it via the registry and surface a native
+# MessageBox with the download link instead. Windows-only; 0.59 is already in the
+# dependency tree, so this adds no new crate version.
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_System_Registry",
+    "Win32_UI_Shell",
+    "Win32_UI_WindowsAndMessaging",
+] }
+

@@ -12,6 +12,7 @@ mod installer;
 mod presence;
 mod trust_root;
 mod updates;
+mod webview2;
 
 pub use elevated::run_elevated_install;
 
@@ -51,6 +52,12 @@ fn wait_for_predecessor_exit() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // WebView2 is what renders our entire UI on Windows. If the runtime is missing
+    // (debloated images strip it), Tauri would fail to create the window and exit
+    // silently with no error — show a native dialog with the download link instead.
+    // No-op off Windows; must run before we touch Tauri.
+    webview2::ensure_webview2_runtime();
+
     // A self-update relaunch must let its predecessor release the single-instance
     // lock first — wait for it before building anything.
     #[cfg(desktop)]
