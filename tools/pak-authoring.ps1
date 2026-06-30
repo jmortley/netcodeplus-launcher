@@ -82,17 +82,20 @@ function ConvertTo-Semver([string]$name) {
 Write-Host "Fetching UTCC catalog for content id $Id ..." -ForegroundColor Cyan
 $data = Invoke-RestMethod -Uri "https://utcustomcontent.com/content/$Id/data" -Headers @{ Accept = 'application/json' }
 
+# NB: this var must NOT be named $version -- the [string]$Version param above is
+# the same variable (PS names are case-insensitive) and its [string] type
+# constraint would coerce this PSCustomObject to a string, dropping .iniConfig.
 $latestId = $data.content.latestVersion.id
-$version = $data.versions | Where-Object { $_.id -eq $latestId } | Select-Object -First 1
-if (-not $version) { throw "Could not find latest version ($latestId) in the UTCC response for id $Id." }
-$ini = $version.iniConfig
+$utccVersion = $data.versions | Where-Object { $_.id -eq $latestId } | Select-Object -First 1
+if (-not $utccVersion) { throw "Could not find latest version ($latestId) in the UTCC response for id $Id." }
+$ini = $utccVersion.iniConfig
 if (-not $ini -or -not $ini.checkSum) { throw "Latest UTCC version $latestId has no iniConfig.checkSum." }
 
 $utccMd5 = $ini.checkSum.ToLower()
 $utccPkg = $ini.packageName
-$utccSize = [int64]$version.pakFile.size
+$utccSize = [int64]$utccVersion.pakFile.size
 $utccUrl = $ini.packageUrl
-$utccVer = $version.name
+$utccVer = $utccVersion.name
 
 Write-Host "  UTCC: package=$utccPkg version=$utccVer size=$utccSize md5=$utccMd5"
 
