@@ -953,6 +953,82 @@ pub fn dismiss_launcher_cleanup(app: tauri::AppHandle) -> Result<(), String> {
     Ok(())
 }
 
+/// View of the user's onboarding state for the webview, returned by
+/// [`onboarding_status`]. `fresh_install` is the one-time classification: true
+/// only for a genuine fresh install that hasn't completed the first-run
+/// walkthrough (Surface 1). Existing users get `fresh_install = false` and rely
+/// on `seen` to gate the catch-up / what's-new surfaces.
+#[derive(Debug, Clone, serde::Serialize)]
+pub struct OnboardingView {
+    pub fresh_install: bool,
+    pub completed: bool,
+    pub seen: Vec<String>,
+}
+
+/// Resolve and return the user's onboarding state.
+///
+/// Performs the one-time fresh-install-vs-existing-user classification (keyed on
+/// whether a `state.json` existed before this run) and persists it, so the
+/// decision survives restarts and a quit mid-walkthrough. Call this EARLY in
+/// startup — before any other command writes the state file (housekeeping etc.),
+/// which would otherwise create the file and mask a genuine fresh install.
+#[tauri::command]
+pub fn onboarding_status(app: tauri::AppHandle) -> Result<OnboardingView, String> {
+    let path = state_path(&app)?;
+    let loaded = ncp_host::state::read(&path).map_err(|e| e.to_string())?;
+    let file_existed = loaded.is_some();
+    let mut state = loaded.unwrap_or_default();
+
+    let was_resolved = state.onboarding.first_run_resolved;
+    let fresh_install = state.onboarding.resolve_first_run(file_existed);
+    // Only the first resolution mutates state; skip a needless write afterwards.
+    if !was_resolved {
+        ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+    }
+
+    Ok(OnboardingView {
+        fresh_install,
+        completed: state.onboarding.completed,
+        seen: state.onboarding.seen.iter().cloned().collect(),
+    })
+}
+
+/// Record one or more discovery-item IDs as seen/dismissed (Surface 2/3).
+#[tauri::command]
+pub fn mark_features_seen(app: tauri::AppHandle, ids: Vec<String>) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.onboarding.mark_seen(ids);
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
+/// Mark the first-run walkthrough finished (Surface 1) and record its item IDs
+/// as seen, so they never resurface as catch-up / what's-new.
+#[tauri::command]
+pub fn complete_onboarding(app: tauri::AppHandle, ids: Vec<String>) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.onboarding.complete(ids);
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
+/// Reset onboarding to pristine state so the flows can be replayed for testing.
+/// Touches ONLY the `onboarding` block — install path, tokens, paks, etc. are
+/// left intact (a reset can never lose real user state).
+#[tauri::command]
+pub fn reset_onboarding(app: tauri::AppHandle) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.onboarding.reset();
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
 /// Apply the competitive Engine.ini baseline plus the editable knobs,
 /// merging into the existing ini (backing it up first).
 #[tauri::command]

@@ -169,6 +169,87 @@ pub struct LauncherState {
     /// never one supplied by the webview.
     #[serde(default)]
     pub pending_old_launcher_path: Option<String>,
+
+    /// Onboarding / feature-discovery state — which one-time surfaces the user
+    /// has completed or dismissed. Keyed by stable string IDs (never version
+    /// numbers), so an item shows exactly once regardless of which launcher
+    /// versions the user skips. Defaults to a pristine "nothing seen, first run
+    /// unresolved" so a missing/old state file behaves correctly.
+    #[serde(default)]
+    pub onboarding: OnboardingState,
+}
+
+/// Onboarding / feature-discovery persisted state. See [`LauncherState::onboarding`].
+///
+/// `completed` gates the first-run walkthrough (Surface 1). `first_run_resolved`
+/// records that the launcher has decided ONCE whether this user is a genuine
+/// fresh install vs a pre-onboarding existing user, so the decision survives a
+/// quit mid-walkthrough and is never re-evaluated. `seen` holds the stable IDs of
+/// discovery items the user has dismissed; a pending item is simply one whose ID
+/// is absent. Every field defaults, so an old state file (no `onboarding` key)
+/// loads as a pristine, unresolved onboarding.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OnboardingState {
+    /// True once the first-run walkthrough has finished or been skipped, or once
+    /// a pre-onboarding existing user has been back-stamped (so they get the
+    /// one-time catch-up, never a full re-onboard).
+    #[serde(default)]
+    pub completed: bool,
+
+    /// Whether the fresh-install-vs-existing-user classification has been made.
+    /// Guards the one-time existing-user back-stamp so it runs exactly once.
+    #[serde(default)]
+    pub first_run_resolved: bool,
+
+    /// Stable IDs of discovery items the user has seen and dismissed.
+    #[serde(default)]
+    pub seen: HashSet<String>,
+}
+
+impl OnboardingState {
+    /// Resolve, exactly once, whether this user should see the first-run
+    /// walkthrough (Surface 1). `file_existed` is whether a `state.json` was on
+    /// disk when the launcher started this session: a genuine fresh install has
+    /// none, while a user who predates onboarding has one (without an
+    /// `onboarding` block). On the first call we record the decision and, for a
+    /// pre-existing user, mark onboarding `completed` so they skip Surface 1 and
+    /// instead get the one-time catch-up. Returns `true` when Surface 1 should
+    /// run (a fresh install that hasn't completed it). Idempotent thereafter.
+    pub fn resolve_first_run(&mut self, file_existed: bool) -> bool {
+        if !self.first_run_resolved {
+            self.first_run_resolved = true;
+            if file_existed {
+                // Existing, pre-onboarding user — never re-onboard the whole app.
+                self.completed = true;
+            }
+        }
+        !self.completed
+    }
+
+    /// Record one or more discovery-item IDs as seen/dismissed.
+    pub fn mark_seen<I, S>(&mut self, ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.seen.extend(ids.into_iter().map(Into::into));
+    }
+
+    /// Mark the first-run walkthrough finished and record its item IDs as seen,
+    /// so they never resurface as "what's new" or catch-up.
+    pub fn complete<I, S>(&mut self, ids: I)
+    where
+        I: IntoIterator<Item = S>,
+        S: Into<String>,
+    {
+        self.completed = true;
+        self.mark_seen(ids);
+    }
+
+    /// Reset to pristine state so the flows can be replayed for testing.
+    pub fn reset(&mut self) {
+        *self = OnboardingState::default();
+    }
 }
 
 /// Cheap install fingerprint of one pak: its size + mtime at the moment the
@@ -220,6 +301,7 @@ impl Default for LauncherState {
             installed_launcher_path: None,
             installed_launcher_version: None,
             pending_old_launcher_path: None,
+            onboarding: OnboardingState::default(),
         }
     }
 }
@@ -327,5 +409,60 @@ mod tests {
         assert_eq!(state.installed_launcher_path, None);
         assert_eq!(state.installed_launcher_version, None);
         assert_eq!(state.pending_old_launcher_path, None);
+    }
+
+    #[test]
+    fn onboarding_defaults_pristine_for_old_state_files() {
+        // A state file with no `onboarding` key (any pre-onboarding build) loads
+        // with a pristine, unresolved onboarding — not an error.
+        let state: LauncherState = serde_json::from_str(r#"{"channel":"stable"}"#).unwrap();
+        assert!(!state.onboarding.completed);
+        assert!(!state.onboarding.first_run_resolved);
+        assert!(state.onboarding.seen.is_empty());
+    }
+
+    #[test]
+    fn resolve_first_run_fresh_install_shows_walkthrough() {
+        // No state file existed (file_existed = false) → genuine fresh install →
+        // Surface 1 should run, and stays pending until completed.
+        let mut ob = OnboardingState::default();
+        assert!(ob.resolve_first_run(false));
+        assert!(ob.first_run_resolved);
+        assert!(!ob.completed);
+        // A quit mid-walkthrough (re-resolve on next launch, file now exists)
+        // must NOT flip the user to "existing" — Surface 1 keeps showing.
+        assert!(ob.resolve_first_run(true));
+        assert!(!ob.completed);
+    }
+
+    #[test]
+    fn resolve_first_run_existing_user_skips_walkthrough() {
+        // A state file existed (pre-onboarding user) → back-stamp completed,
+        // skip Surface 1 (they get the one-time catch-up instead). Idempotent.
+        let mut ob = OnboardingState::default();
+        assert!(!ob.resolve_first_run(true));
+        assert!(ob.first_run_resolved);
+        assert!(ob.completed);
+        assert!(!ob.resolve_first_run(true));
+        assert!(!ob.resolve_first_run(false));
+    }
+
+    #[test]
+    fn complete_marks_walkthrough_ids_seen() {
+        let mut ob = OnboardingState::default();
+        ob.complete(["competitive-config", "content-paks"]);
+        assert!(ob.completed);
+        assert!(ob.seen.contains("competitive-config"));
+        assert!(ob.seen.contains("content-paks"));
+    }
+
+    #[test]
+    fn mark_seen_then_reset_clears_everything() {
+        let mut ob = OnboardingState::default();
+        ob.resolve_first_run(true);
+        ob.mark_seen(["rich-presence"]);
+        assert!(ob.completed || ob.first_run_resolved || !ob.seen.is_empty());
+        ob.reset();
+        assert_eq!(ob, OnboardingState::default());
     }
 }

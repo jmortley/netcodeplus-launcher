@@ -870,7 +870,10 @@ body {
   align-items: center;
   gap: 14px;
   height: 60px;
-  padding: 0 6px 0 20px;
+  /* No right padding: the window controls (esp. the close button) must sit flush
+     to the window's top-right corner so the red close hover fills the corner and
+     the corner is clickable (Fitts's law). Left inset only, for the brand. */
+  padding: 0 0 0 20px;
   background: var(--bg);
   border-bottom: 1px solid var(--line);
   flex: 0 0 auto;
@@ -2190,4 +2193,136 @@ body {
 }
 .pak-modal-actions .btn {
   margin-right: auto;
+}
+
+/* ---- onboarding / feature-discovery surfaces ---------------------------- */
+/* Modal overlay mirroring .pak-modal-back; the card is a touch wider and
+   scrolls when content (the walkthrough body / highlights list) is tall. */
+.onb-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 1100;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(0, 0, 0, 0.55);
+  backdrop-filter: blur(3px);
+  -webkit-backdrop-filter: blur(3px);
+}
+.onb-card {
+  width: min(580px, 100%);
+  max-height: calc(100vh - 80px);
+  overflow-y: auto;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  padding: 20px 22px;
+  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
+}
+.onb-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+.onb-kicker {
+  font-size: 0.74rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--accent-hi);
+  font-weight: 600;
+}
+.onb-x {
+  background: none;
+  border: none;
+  color: var(--txt-dim);
+  font-size: 0.85rem;
+  cursor: pointer;
+  padding: 4px 6px;
+}
+.onb-x:hover {
+  color: var(--txt);
+}
+.onb-title {
+  margin: 2px 0 10px;
+  font-size: 1.2rem;
+  color: var(--txt);
+}
+.onb-intro {
+  margin: 2px 0 14px;
+  color: var(--txt-dim);
+  font-size: 0.92rem;
+}
+.onb-body {
+  color: var(--txt-dim);
+  font-size: 0.92rem;
+  line-height: 1.5;
+}
+.onb-body p {
+  margin: 0 0 10px;
+}
+.onb-body code {
+  color: var(--txt);
+}
+.onb-status {
+  min-height: 1.2em;
+  margin: 8px 0 2px;
+  font-size: 0.88rem;
+}
+.onb-foot {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  flex-wrap: wrap;
+  margin-top: 16px;
+}
+.onb-foot-end {
+  justify-content: flex-end;
+}
+.onb-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex-wrap: wrap;
+}
+.onb-dots {
+  display: flex;
+  gap: 6px;
+}
+.onb-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--line);
+}
+.onb-dot.on {
+  background: var(--accent);
+}
+/* Highlights (Surface 2/3): one mini-card per pending item. */
+.onb-minis {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+.onb-mini {
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 14px 16px;
+}
+.onb-mini h3 {
+  margin: 0 0 8px;
+  font-size: 1rem;
+  color: var(--txt);
+}
+.onb-mini-foot {
+  margin-top: 10px;
+}
+.onb-reset {
+  margin-top: 14px;
+}
+.onb-reset-note {
+  margin-left: 8px;
 }

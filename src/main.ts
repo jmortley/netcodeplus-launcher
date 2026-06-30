@@ -2330,7 +2330,7 @@ async function showVersion() {
 
 async function loadAll() {
   try {
-    const [installs, presets, prefs, ut4, utpugsConfigured] = await Promise.all([
+    const [installs, presets, prefs, ut4, utpugsConfigured, onbView] = await Promise.all([
       invoke<DetectedInstall[]>("detect_installs"),
       invoke<AffinityPreset[]>("affinity_presets"),
       invoke<LauncherState>("load_state"),
@@ -2338,6 +2338,11 @@ async function loadAll() {
       invoke<Ut4Auth>("ut4_auth_status").catch(() => null),
       // Whether this build has the UTPugs base URL wired in (false hides it).
       invoke<boolean>("utpugs_configured").catch(() => false),
+      // Onboarding classification. Resolved in this same load barrier so it
+      // persists the one-time first-run decision BEFORE the render fan-out below
+      // triggers launcher_update_housekeeping — which would otherwise create the
+      // state file and mask a genuine fresh install. A failure just skips surfaces.
+      invoke<OnboardingView>("onboarding_status").catch(() => null),
     ]);
     state.installs = installs;
     state.presets = presets;
@@ -2384,6 +2389,9 @@ async function loadAll() {
     void loadStatusData();
     renderCommunityLinks();
     renderCommunityVideos();
+    // Feature-discovery surfaces (first-run walkthrough / what's-new / catch-up),
+    // shown over the now-rendered UI. Skipped silently if classification failed.
+    if (onbView) void renderOnboarding(onbView);
     // Tokenless HOME nudges: live-PUG banner + "queue filling" (no token needed).
     void pollLivePugs();
     void pollQueues();
@@ -5020,5 +5028,369 @@ document.addEventListener("click", (e) => {
   if (ext?.dataset.extlink) openExternal(ext.dataset.extlink);
 });
 
+// ===========================================================================
+// Onboarding / feature discovery — Surfaces 1 (first-run walkthrough),
+// 2 (what's new) and 3 (one-time catch-up). Driven entirely by persisted
+// seen-IDs (see the Rust `OnboardingState`); version numbers never gate, so a
+// user who skips releases still sees each unseen item exactly once. NOTHING here
+// writes Engine.ini or game config without an explicit click — the
+// competitive-config "Apply" routes through `apply_engine_config`, which backs
+// up Engine.ini first (same path as the Settings → Performance config button).
+// ===========================================================================
+
+interface OnboardingView {
+  fresh_install: boolean;
+  completed: boolean;
+  seen: string[];
+}
+
+type OnbSurface = "firstRun" | "whatsNew" | "catchUp";
+
+interface DiscoveryItem {
+  id: string;
+  surfaces: OnbSurface[];
+  title: string;
+  /** Static, trusted HTML for the card body. */
+  body: string;
+  /** Highlights-only deep-link button to a nav view. */
+  navTo?: string;
+  navLabel?: string;
+  /** Render the framed competitive-config choice (an Apply button) in the body. */
+  competitiveConfig?: boolean;
+  /** Optional eligibility gate; absent = always eligible. */
+  eligible?: () => boolean;
+}
+
+// The framed competitive-config copy — identical in Surface 1 and Surface 3 per
+// the requirement: explicit choice, stated tradeoff, opt-in, backup called out.
+const COMPETITIVE_CONFIG_BODY = `
+  <p>UT4's default graphics aren't tuned for competitive play. The launcher can
+  apply a competitively-tuned <code>Engine.ini</code> baseline — <strong>high,
+  stable FPS and a cleaner, more readable image</strong>, at the cost of some
+  <strong>visual fidelity</strong> (simpler effects and lighting). Recommended
+  for the smoothest frametimes and netcode feel.</p>
+  <p class="src">Your existing <code>Engine.ini</code> is <strong>backed up
+  first</strong> and restorable in one click. Nothing changes unless you apply —
+  skip if you prefer your current graphics. Playing Blitz/flag-run? You can keep
+  async loading on afterwards in <strong>Settings → Performance config</strong>.</p>`;
+
+const DISCOVERY_ITEMS: DiscoveryItem[] = [
+  {
+    id: "install-location",
+    surfaces: ["firstRun"],
+    title: "Your UT4 install",
+    body: `<p>The launcher auto-detects your Unreal Tournament 4 install and
+      launches it in one click. If it didn't find yours, point it at the folder
+      in <strong>Settings → Pick install folder</strong> — it looks for
+      <code>Engine/Binaries/Win64/</code> and
+      <code>UnrealTournament/Content/Paks/</code>.</p>`,
+  },
+  {
+    id: "netcodeplus-plugin",
+    surfaces: ["firstRun"],
+    title: "NetcodePlus, kept up to date",
+    body: `<p>NetcodePlus adds improved netcode and hit registration, Wipeout,
+      ElimPlus, an improved CTF, ncHUD and higher FPS. The launcher installs it
+      and keeps it current automatically — the update path is cryptographically
+      verified end to end, so you never trust a random download.</p>`,
+  },
+  {
+    id: "content-paks",
+    surfaces: ["firstRun", "catchUp"],
+    title: "Content paks stay current",
+    body: `<p>Some servers expect NetcodePlus content paks (sounds, modes). The
+      launcher downloads, verifies and keeps them in sync, so you're not left
+      with missing sounds when a server doesn't push a pak. No action needed —
+      it just keeps them current.</p>`,
+  },
+  {
+    id: "competitive-config",
+    surfaces: ["firstRun", "catchUp"],
+    title: "Apply the competitive config?",
+    body: COMPETITIVE_CONFIG_BODY,
+    competitiveConfig: true,
+  },
+  {
+    id: "rich-presence",
+    surfaces: ["firstRun", "catchUp"],
+    title: "Show your PUG status on Discord",
+    body: `<p>Opt in to Discord Rich Presence and the launcher broadcasts your
+      PUG state to your Discord profile — handy for letting friends see you're
+      queued or in a match. It's off by default; enable it in Settings.</p>`,
+    navTo: "settings",
+    navLabel: "Open Settings",
+  },
+  {
+    id: "stats",
+    surfaces: ["firstRun", "catchUp"],
+    title: "See your stats in the launcher",
+    body: `<p>Link your ut4stats.com profile once and your stats panel shows up
+      right here — ratings, trends and recent matches without leaving the
+      launcher.</p>`,
+    navTo: "stats",
+    navLabel: "Link your profile",
+  },
+  // --- "What's new" (Surface 2) -------------------------------------------
+  // Add ONE entry per release with a NEW stable id and surfaces: ["whatsNew"].
+  // Each shows exactly once to every user who hasn't seen it (gated on the seen
+  // set, never the version), so someone who skips two versions still sees each
+  // unseen item once and never re-sees a dismissed one. After a release an item
+  // can be moved into a firstRun card for newcomers. Leave empty when a release
+  // has nothing high-signal — an empty what's-new surface shows nothing.
+  // Example:
+  //   {
+  //     id: "instagib-selector",
+  //     surfaces: ["whatsNew"],
+  //     title: "Pick your Instagib queue",
+  //     body: `<p>Choose iCTF or Elim before you queue …</p>`,
+  //   },
+];
+
+// Vite replaces import.meta.env at build time; cast keeps tsc happy without a
+// vite/client reference. true in `npm run dev`, false in a packaged build.
+const IS_DEV = Boolean((import.meta as { env?: { DEV?: boolean } }).env?.DEV);
+
+function closeOnboarding(): void {
+  document.getElementById("onb-backdrop")?.remove();
+}
+
+// Create (or replace) the modal overlay and return its card element to fill in.
+function openOnboarding(): HTMLElement {
+  closeOnboarding();
+  const backdrop = document.createElement("div");
+  backdrop.id = "onb-backdrop";
+  backdrop.className = "onb-backdrop";
+  const card = document.createElement("div");
+  card.className = "onb-card";
+  card.setAttribute("role", "dialog");
+  card.setAttribute("aria-modal", "true");
+  backdrop.appendChild(card);
+  document.body.appendChild(backdrop);
+  return card;
+}
+
+// Apply the competitive baseline through the SAME backed-up path as the config
+// panel (apply_engine_config → ncp_host::config::apply, which writes .ncpbak
+// before touching Engine.ini). Only ever reached from an explicit click.
+async function applyCompetitiveConfigFromOnboarding(statusEl: HTMLElement | null): Promise<void> {
+  try {
+    const cfg = await invoke<{ ini_exists: boolean }>("engine_config_state");
+    if (!cfg.ini_exists) {
+      if (statusEl)
+        statusEl.innerHTML = `<span class="warn">No <code>Engine.ini</code> yet — launch UT4 once so it's created, then apply from Settings → Performance config.</span>`;
+      return;
+    }
+    await invoke("apply_engine_config", {
+      frameRateCap: 360,
+      smoothFrameRate: false,
+      displayGamma: 3,
+      allowAsyncLoading: false,
+      setOpenalAudio: false,
+    });
+    if (statusEl)
+      statusEl.innerHTML = `<span class="ok">Applied — your previous Engine.ini was backed up. Restart UT4 for it to take effect.</span>`;
+    void renderConfig();
+  } catch (err) {
+    if (statusEl) statusEl.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("apply_engine_config (onboarding) failed:", err);
+  }
+}
+
+// Surface 1 — first-run guided walkthrough (stepper over the firstRun items).
+function runFirstRunWalkthrough(): void {
+  const steps = DISCOVERY_ITEMS.filter((i) => i.surfaces.includes("firstRun"));
+  if (steps.length === 0) return;
+  // On completion, suppress every currently-known discovery item from later
+  // catch-up/what's-new — the newcomer has now been introduced to all of them.
+  const completedIds = DISCOVERY_ITEMS.filter(
+    (i) => i.surfaces.includes("firstRun") || i.surfaces.includes("catchUp"),
+  ).map((i) => i.id);
+  let idx = 0;
+  const card = openOnboarding();
+
+  const finish = (): void => {
+    void invoke("complete_onboarding", { ids: completedIds }).catch((err) =>
+      console.error("complete_onboarding failed:", err),
+    );
+    closeOnboarding();
+  };
+
+  const renderStep = (): void => {
+    const item = steps[idx];
+    const isLast = idx === steps.length - 1;
+    const dots = steps
+      .map((_, i) => `<span class="onb-dot${i === idx ? " on" : ""}"></span>`)
+      .join("");
+    const advanceLabel = item.competitiveConfig
+      ? isLast
+        ? "Finish"
+        : "Continue →"
+      : isLast
+        ? "Finish"
+        : "Next →";
+    card.innerHTML = `
+      <div class="onb-head">
+        <span class="onb-kicker">Getting started · ${idx + 1} of ${steps.length}</span>
+        <button class="onb-x" id="onb-skip" type="button">Skip tour</button>
+      </div>
+      <h2 class="onb-title">${escape(item.title)}</h2>
+      <div class="onb-body">${item.body}</div>
+      <div class="onb-status" id="onb-status"></div>
+      <div class="onb-foot">
+        <div class="onb-dots">${dots}</div>
+        <div class="onb-actions">
+          ${item.competitiveConfig ? `<button id="onb-apply" type="button">Apply competitive config</button>` : ""}
+          ${idx > 0 ? `<button class="link-btn" id="onb-back" type="button">Back</button>` : ""}
+          <button id="onb-next" type="button">${advanceLabel}</button>
+        </div>
+      </div>`;
+    document.getElementById("onb-skip")?.addEventListener("click", finish);
+    document.getElementById("onb-back")?.addEventListener("click", () => {
+      if (idx > 0) {
+        idx--;
+        renderStep();
+      }
+    });
+    document.getElementById("onb-next")?.addEventListener("click", () => {
+      if (isLast) finish();
+      else {
+        idx++;
+        renderStep();
+      }
+    });
+    document
+      .getElementById("onb-apply")
+      ?.addEventListener("click", () =>
+        void applyCompetitiveConfigFromOnboarding(document.getElementById("onb-status")),
+      );
+  };
+  renderStep();
+}
+
+// Surfaces 2 + 3 — "what's new" / one-time catch-up. A single dismissible list of
+// pending items; closing marks every shown item seen so none re-appear.
+function renderHighlights(items: DiscoveryItem[]): void {
+  if (items.length === 0) return;
+  const shownIds = items.map((i) => i.id);
+  const card = openOnboarding();
+  const anyNew = items.some((i) => i.surfaces.includes("whatsNew"));
+  const heading = anyNew ? "What's new" : "Tips you might have missed";
+  const intro = anyNew
+    ? "New since you were last here:"
+    : "A few launcher features that are easy to miss — set up once, then you're done.";
+
+  const minis = items
+    .map((item) => {
+      const action = item.competitiveConfig
+        ? `<button type="button" data-apply="${item.id}">Apply competitive config</button>`
+        : item.navTo
+          ? `<button class="link-btn" type="button" data-nav-to="${item.navTo}" data-close-onb="1">${escape(item.navLabel ?? "Open")} →</button>`
+          : "";
+      return `
+        <div class="onb-mini">
+          <h3>${escape(item.title)}</h3>
+          <div class="onb-body">${item.body}</div>
+          <div class="onb-status" id="onb-mini-status-${item.id}"></div>
+          ${action ? `<div class="onb-mini-foot">${action}</div>` : ""}
+        </div>`;
+    })
+    .join("");
+
+  card.innerHTML = `
+    <div class="onb-head">
+      <span class="onb-kicker">${escape(heading)}</span>
+      <button class="onb-x" id="onb-done" type="button">Done</button>
+    </div>
+    <p class="onb-intro">${escape(intro)}</p>
+    <div class="onb-minis">${minis}</div>
+    <div class="onb-foot onb-foot-end">
+      <button id="onb-done2" type="button">Done</button>
+    </div>`;
+
+  const done = (): void => {
+    // Once dismissed, none re-appear — mark every shown item seen.
+    void invoke("mark_features_seen", { ids: shownIds }).catch((err) =>
+      console.error("mark_features_seen failed:", err),
+    );
+    closeOnboarding();
+  };
+  document.getElementById("onb-done")?.addEventListener("click", done);
+  document.getElementById("onb-done2")?.addEventListener("click", done);
+  card.querySelectorAll<HTMLElement>("[data-apply]").forEach((btn) => {
+    btn.addEventListener("click", () =>
+      void applyCompetitiveConfigFromOnboarding(
+        document.getElementById(`onb-mini-status-${btn.dataset.apply}`),
+      ),
+    );
+  });
+  // A deep-link click counts as "seen" + closes (the document handler at the
+  // bottom of this file then switches view via data-nav-to).
+  card.querySelectorAll<HTMLElement>("[data-close-onb]").forEach((btn) => {
+    btn.addEventListener("click", done);
+  });
+}
+
+// Decide which surface (if any) to show for this user.
+function renderOnboarding(view: OnboardingView): void {
+  if (view.fresh_install) {
+    runFirstRunWalkthrough();
+    return;
+  }
+  const seen = new Set(view.seen);
+  const pending = DISCOVERY_ITEMS.filter(
+    (i) =>
+      (i.surfaces.includes("whatsNew") || i.surfaces.includes("catchUp")) &&
+      !seen.has(i.id) &&
+      (i.eligible ? i.eligible() : true),
+  );
+  renderHighlights(pending);
+}
+
+// Reset affordance (decision B+A): a visible button in dev builds; in a packaged
+// build it's revealed by tapping the About version label 5× within 2s — a
+// deliberate, never-accidental gesture. Reset clears only onboarding state, then
+// replays the first-run walkthrough immediately so flows can be re-tested without
+// reinstalling (catch-up replays on the next normal launch if not completed).
+function wireOnboardingReset(): void {
+  const ver = document.getElementById("about-version");
+  const host = ver?.closest(".about") ?? ver?.parentElement;
+  if (!ver || !host) return;
+
+  const wrap = document.createElement("div");
+  wrap.className = "onb-reset";
+  wrap.style.display = IS_DEV ? "block" : "none";
+  wrap.innerHTML = `<button id="onb-reset-btn" type="button" class="link-btn">Reset tips &amp; onboarding${IS_DEV ? " (dev)" : ""}</button>
+    <span class="src onb-reset-note" id="onb-reset-note"></span>`;
+  host.appendChild(wrap);
+
+  document.getElementById("onb-reset-btn")?.addEventListener("click", () => {
+    void (async () => {
+      try {
+        await invoke("reset_onboarding");
+        const note = document.getElementById("onb-reset-note");
+        if (note) note.textContent = " Reset — replaying the first-run walkthrough.";
+        runFirstRunWalkthrough();
+      } catch (err) {
+        console.error("reset_onboarding failed:", err);
+      }
+    })();
+  });
+
+  if (!IS_DEV) {
+    let taps = 0;
+    let timer = 0;
+    ver.addEventListener("click", () => {
+      taps += 1;
+      window.clearTimeout(timer);
+      timer = window.setTimeout(() => (taps = 0), 2000);
+      if (taps >= 5) {
+        taps = 0;
+        wrap.style.display = "block";
+      }
+    });
+  }
+}
+
 void showVersion();
 void loadAll();
+wireOnboardingReset();

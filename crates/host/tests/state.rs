@@ -6,7 +6,7 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 
-use ncp_host::{state, LauncherState, Priority, StateError};
+use ncp_host::{state, LauncherState, OnboardingState, PakStamp, Priority, StateError};
 use ncp_manifest::Sha256Digest;
 use ncp_planner::{InstalledPlugin, LocalInstall, LocalPak};
 use semver::Version;
@@ -45,10 +45,28 @@ fn sample_state() -> LauncherState {
         },
     );
 
+    let mut pak_stamps = HashMap::new();
+    pak_stamps.insert(
+        "ncutplus".to_string(),
+        PakStamp {
+            size_bytes: 12_345_678,
+            mtime_ms: 1_700_000_000_000,
+        },
+    );
+
+    let mut seen = HashSet::new();
+    seen.insert("competitive-config".to_string());
+    let onboarding = OnboardingState {
+        completed: true,
+        first_run_resolved: true,
+        seen,
+    };
+
     LauncherState {
         install_path: Some("C:/Games/UnrealTournament".into()),
         channel: "stable".to_string(),
         local_install: LocalInstall { paks },
+        pak_stamps,
         opted_out,
         launch_profile_label: Some("Unreal Tournament 4 UU".to_string()),
         launch_priority: Priority::High,
@@ -67,6 +85,7 @@ fn sample_state() -> LauncherState {
         installed_launcher_path: Some("C:/Games/UT4-Community-Launcher-0.2.0.exe".to_string()),
         installed_launcher_version: Some("0.2.0".to_string()),
         pending_old_launcher_path: Some("C:/Old/launcher-0.1.0.exe".to_string()),
+        onboarding,
     }
 }
 

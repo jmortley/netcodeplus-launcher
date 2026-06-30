@@ -55,5 +55,5 @@ pub use crate::shortcut::{
     create_desktop_shortcut, desktop_shortcut_is_stale, detect_outdated_launcher, is_stale_pending,
     schedule_delete_on_reboot, ShortcutError, LAUNCHER_SHORTCUT_NAME,
 };
-pub use crate::state::{LauncherState, PakStamp, DEFAULT_CHANNEL};
+pub use crate::state::{LauncherState, OnboardingState, PakStamp, DEFAULT_CHANNEL};
 pub use crate::stray::{remove_stray, scan_strays, StrayKind, StrayPlugin, StrayRemoveError};
