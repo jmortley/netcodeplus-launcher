@@ -2152,47 +2152,42 @@ body {
   margin-top: 2px;
 }
 
-/* Pre-play pak gate modal (built ad-hoc — the app has no generic modal). Theme
-   tokens keep it correct in both light and dark. */
-.pak-modal-back {
-  position: fixed;
-  inset: 0;
-  z-index: 1000;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  padding: 24px;
-  background: rgba(0, 0, 0, 0.55);
-  backdrop-filter: blur(3px);
-  -webkit-backdrop-filter: blur(3px);
+/* Hub content-pak versions in the Servers detail pane (from UTCC). */
+.srv-hubpaks {
+  padding: 8px 12px 10px;
+  border-bottom: 1px solid var(--line);
 }
-.pak-modal {
-  width: min(440px, 100%);
-  background: var(--panel-2);
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  padding: 20px 22px;
-  box-shadow: 0 18px 50px rgba(0, 0, 0, 0.45);
-}
-.pak-modal h3 {
-  margin: 0 0 10px;
-  font-size: 1.05rem;
-  color: var(--txt);
-}
-.pak-modal p {
-  margin: 0 0 18px;
+.srv-hubpaks-h {
+  font-size: 0.72rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
   color: var(--txt-dim);
-  font-size: 0.92rem;
-  line-height: 1.45;
+  margin-bottom: 6px;
 }
-.pak-modal-actions {
+.srv-hubpak-list {
   display: flex;
-  align-items: center;
-  gap: 14px;
   flex-wrap: wrap;
+  gap: 6px 8px;
 }
-.pak-modal-actions .btn {
-  margin-right: auto;
+.hubpak {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 9px;
+  border-radius: 999px;
+  font-size: 0.8rem;
+  border: 1px solid var(--line);
+  background: var(--panel-2);
+  color: var(--txt-dim);
+}
+.hubpak.warn {
+  color: #e0a92b;
+  border-color: rgba(224, 169, 43, 0.5);
+  background: rgba(224, 169, 43, 0.12);
+}
+.hubpak-revert {
+  font-size: 0.74rem;
+  padding: 0;
 }
 
 /* ---- onboarding / feature-discovery surfaces ---------------------------- */

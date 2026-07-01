@@ -80,9 +80,9 @@ interface PlanRemove {
   filename: string;
   reason: "not_in_channel" | "opted_out";
 }
-// NetcodePlus content-pak status from `pak_status` — drives the dash row and the
-// pre-play gate. `installed_count === 0` distinguishes a first-time user (the
-// "get the paks" prompt) from one with out-of-date paks (the "update" prompt).
+// NetcodePlus content-pak status from `pak_status` — drives the dash "Update paks"
+// row. `installed_count === 0` selects the "Install paks" vs "Update paks" button
+// label + message (the on-PLAY pak prompt was removed in 1.5.2; see launch()).
 interface PakStatusResult {
   channel: string;
   paks_offered: boolean;
@@ -147,6 +147,7 @@ interface LauncherState {
   ut4stats_playername: string | null;
   launcher_token: string | null;
   utpugs_launcher_token: string | null;
+  unrealpugs_launcher_token: string | null;
   discord_presence_enabled?: boolean;
 }
 
@@ -307,6 +308,13 @@ const state = {
   utpugsMode: "wipe" as string,
   utpugsStatus: null as PugStatus | null,
   utpugsConfigured: false,
+  // UnrealPUGs (skandalouz's PugApi bot) — a third community with its own per-user
+  // token. BLITZ-only for now; the bot tracks no live servers, so no connect/
+  // spectate/ready — just join/leave/queue-status. `unrealpugsConfigured` mirrors
+  // the Rust `unrealpugs_configured()` (false hides the whole section).
+  unrealpugsToken: null as string | null,
+  unrealpugsStatus: null as PugStatus | null,
+  unrealpugsConfigured: false,
   // Live PUGs anyone can spectate (from the tokenless bot /live endpoint) —
   // drives the HOME "watch to learn" banner. Empty when nothing is live.
   livePugs: [] as SpectatePug[],
@@ -478,11 +486,9 @@ function surfaceHeroInstallError(message: string): void {
   if (ls) ls.innerHTML = `<span class="warn">${escape(message)}</span>`;
 }
 
-// Once the user chooses to play without updating paks, don't re-prompt on every
-// PLAY for the rest of the session (paks aren't required to launch).
-let pakGateSkippedThisSession = false;
-// Single-flight: the dash button and the Play-gate both call doInstallPaks;
-// concurrent runs would race on the same-PID staging files in the paks dir.
+// Single-flight guard: concurrent doInstallPaks runs would race on the same-PID
+// staging files in the paks dir. The dash "Update paks" button is the only caller
+// now — the on-PLAY pak prompt was removed in 1.5.2 (see launch()).
 let pakInstallInFlight = false;
 
 // Download + install/update the NetcodePlus content paks via `install_paks`,
@@ -540,48 +546,6 @@ async function doInstallPaks(sink: HTMLElement | null): Promise<boolean> {
     if (unlisten) unlisten();
     pakInstallInFlight = false;
   }
-}
-
-// A small 3-choice pre-play modal (the app has no generic modal system). Resolves
-// to the chosen action; Esc or a backdrop click counts as cancel. The two cases
-// (paks missing vs. out of date) differ only in the caller-supplied copy.
-function pakPlayGate(o: {
-  title: string;
-  body: string;
-  primaryLabel: string;
-  secondaryLabel: string;
-}): Promise<"primary" | "secondary" | "cancel"> {
-  return new Promise((resolve) => {
-    const back = document.createElement("div");
-    back.className = "pak-modal-back";
-    back.innerHTML = `
-      <div class="pak-modal" role="dialog" aria-modal="true" aria-labelledby="pak-modal-title">
-        <h3 id="pak-modal-title">${escape(o.title)}</h3>
-        <p>${escape(o.body)}</p>
-        <div class="pak-modal-actions">
-          <button type="button" class="btn" data-act="primary">${escape(o.primaryLabel)}</button>
-          <button type="button" class="link-btn" data-act="secondary">${escape(o.secondaryLabel)}</button>
-          <button type="button" class="link-btn" data-act="cancel">Cancel</button>
-        </div>
-      </div>`;
-    const finish = (r: "primary" | "secondary" | "cancel") => {
-      document.removeEventListener("keydown", onKey);
-      back.remove();
-      resolve(r);
-    };
-    const onKey = (e: KeyboardEvent) => {
-      if (e.key === "Escape") finish("cancel");
-    };
-    back.addEventListener("click", (e) => {
-      const target = e.target as HTMLElement;
-      if (target === back) return finish("cancel");
-      const act = target.closest("[data-act]")?.getAttribute("data-act");
-      if (act === "primary" || act === "secondary" || act === "cancel") finish(act);
-    });
-    document.addEventListener("keydown", onKey);
-    document.body.appendChild(back);
-    (back.querySelector('[data-act="primary"]') as HTMLButtonElement | null)?.focus();
-  });
 }
 
 // Warn about stray / misplaced NetcodePlus copies (e.g. a hand-install dropped
@@ -791,7 +755,7 @@ async function loadStatusDataInner(): Promise<void> {
     console.error("launcher_update_status failed after retries:", err);
   }
   // Content paks live in one per-user dir (no per-install roots), so this needs
-  // no args. Powers the dash row and the pre-play gate.
+  // no args. Powers the dash "Update paks" row.
   try {
     statusCache.paks = await invokeWithRetry<PakStatusResult>("pak_status");
   } catch (err) {
@@ -1672,12 +1636,10 @@ function persist() {
 }
 
 async function launch() {
-  // A pak install in progress (the dash "Update paks" button, or a Play-gate
-  // "Install & Play" already running) holds DownloadedPaks open and must finish
-  // before the game mounts those paks — launching now would race it and lock the
-  // paks it hasn't placed yet. Refuse and let the in-flight install complete; a
-  // Play-gate install launches the game itself when it's done, so the user never
-  // has to come back for that path.
+  // A dash "Update paks" install in progress holds DownloadedPaks open and must
+  // finish before the game mounts those paks — launching now would race it and
+  // lock the paks it hasn't placed yet. Refuse and let it finish, then press Play
+  // again.
   if (pakInstallInFlight) {
     const ls = document.getElementById("launch-status");
     if (ls)
@@ -1730,41 +1692,12 @@ async function launch() {
       return;
     }
   }
-  // Pre-play NetcodePlus PAK check (the content paks — sounds etc.). Surfaced on
-  // PLAY with case-specific copy: a first-time "get them" prompt when none are
-  // installed, an "out of date" prompt otherwise. Soft gate — Play-anyway is
-  // always allowed (paks aren't required to launch), and choosing it once
-  // suppresses the prompt for the rest of the session. "& Play" installs first
-  // (the game is closed now, so the paks aren't locked) then falls through to
-  // launch, regardless of a partial failure.
-  const paks = statusCache.paks;
-  if (paks && paks.paks_offered && !paks.up_to_date && !pakGateSkippedThisSession) {
-    const missing = paks.installed_count === 0;
-    const mb = Math.round(paks.total_download_bytes / (1024 * 1024));
-    const n = paks.to_download.length;
-    const choice = await pakPlayGate(
-      missing
-        ? {
-            title: "Get the NetcodePlus paks",
-            body: `You don't have the NetcodePlus content paks yet (about ${mb} MB). Installing them means you'll always have the right sounds and content, even when a server doesn't send them.`,
-            primaryLabel: "Install & Play",
-            secondaryLabel: "Play without",
-          }
-        : {
-            title: "NetcodePlus paks out of date",
-            body: `${n} of your NetcodePlus pak${n === 1 ? " is" : "s are"} out of date (about ${mb} MB). Updating keeps your sounds and content in sync with servers.`,
-            primaryLabel: "Update & Play",
-            secondaryLabel: "Play anyway",
-          },
-    );
-    if (choice === "cancel") return;
-    if (choice === "secondary") pakGateSkippedThisSession = true;
-    if (choice === "primary") {
-      // Install into the hero's launch-status line, then fall through to launch
-      // even on a partial failure — paks aren't required to play.
-      await doInstallPaks(document.getElementById("launch-status"));
-    }
-  }
+  // NOTE (1.5.2): the launcher deliberately does NOT prompt to install/update the
+  // content paks on PLAY. Auto-pushing the LATEST pak breaks play on a hub whose
+  // owner hasn't updated yet — the player's newer local pak mismatches the hub's
+  // older one and they can't join. Paks are optional (never required to launch),
+  // pak management is user-initiated (dash "Update paks"), and the Servers tab
+  // surfaces each hub's pak version so a mismatch is visible/fixable per-hub.
   const profile =
     di.profiles.find((p) => p.label === state.profileLabel) ?? di.profiles[selectedProfileIndex(di)];
   const status = document.getElementById("launch-status")!;
@@ -2309,6 +2242,7 @@ function applyPrefs(prefs: LauncherState) {
   state.linkedName = prefs.ut4stats_playername;
   state.launcherToken = prefs.launcher_token;
   state.utpugsToken = prefs.utpugs_launcher_token;
+  state.unrealpugsToken = prefs.unrealpugs_launcher_token;
   state.discordPresence = prefs.discord_presence_enabled ?? false;
   if (prefs.install_path) {
     const i = state.installs.findIndex((d) => d.install.root === prefs.install_path);
@@ -2330,7 +2264,8 @@ async function showVersion() {
 
 async function loadAll() {
   try {
-    const [installs, presets, prefs, ut4, utpugsConfigured, onbView] = await Promise.all([
+    const [installs, presets, prefs, ut4, utpugsConfigured, unrealpugsConfigured, onbView] =
+      await Promise.all([
       invoke<DetectedInstall[]>("detect_installs"),
       invoke<AffinityPreset[]>("affinity_presets"),
       invoke<LauncherState>("load_state"),
@@ -2338,6 +2273,8 @@ async function loadAll() {
       invoke<Ut4Auth>("ut4_auth_status").catch(() => null),
       // Whether this build has the UTPugs base URL wired in (false hides it).
       invoke<boolean>("utpugs_configured").catch(() => false),
+      // Whether this build has the UnrealPUGs base URL wired in (false hides it).
+      invoke<boolean>("unrealpugs_configured").catch(() => false),
       // Onboarding classification. Resolved in this same load barrier so it
       // persists the one-time first-run decision BEFORE the render fan-out below
       // triggers launcher_update_housekeeping — which would otherwise create the
@@ -2349,6 +2286,7 @@ async function loadAll() {
     state.selInstall = 0;
     state.ut4 = ut4;
     state.utpugsConfigured = utpugsConfigured;
+    state.unrealpugsConfigured = unrealpugsConfigured;
     applyPrefs(prefs);
     // A manually-picked install that auto-detection doesn't find would otherwise
     // be lost on restart (detect_installs overwrote state.installs, so the saved
@@ -2373,6 +2311,7 @@ async function loadAll() {
     renderStats();
     renderPug();
     renderUtpugs();
+    renderUnrealpugs();
     // Arm Discord presence from the persisted opt-in, then push initial state.
     if (state.discordPresence) {
       void invoke("set_discord_presence_enabled", { enabled: true }).catch(() => {});
@@ -2407,6 +2346,10 @@ async function loadAll() {
     if (state.utpugsConfigured && state.utpugsToken) {
       void pollUtpugsStatus();
       startUtpugsPolling();
+    }
+    if (state.unrealpugsConfigured && state.unrealpugsToken) {
+      void pollUnrealpugsStatus();
+      startUnrealpugsPolling();
     }
   } catch (err) {
     homeHero.innerHTML = `<div class="warn">Detection failed: ${escape(String(err))}</div>`;
@@ -2468,6 +2411,7 @@ const COMMUNITIES: Community[] = [
   { name: "Unreal Pugs (EU)", url: "https://discord.gg/unrealpugs" },
   { name: "Phoenix Germany", url: "https://discord.gg/qCSm4YjCeU" },
   { name: "Unreal Carnage", url: "https://discord.gg/UpGhtAa" },
+  { name: "UT4 LATAM", url: "https://discord.gg/Ufn3KChExR" },
 ];
 
 // Fill the Community tab's Discord buttons from COMMUNITIES (the Home card does
@@ -2686,6 +2630,10 @@ function updateDiscordPresence(): void {
         ? normUtpugsMode(state.utpugsStatus.mode)
         : state.utpugsMode;
     candidates.push({ community: "UTPugs", mode: utMode, st: state.utpugsStatus });
+  }
+  if (state.unrealpugsConfigured && state.unrealpugsToken && state.unrealpugsStatus) {
+    // BLITZ-only for now; the bot doesn't report a mode on status, so it's fixed.
+    candidates.push({ community: "UnrealPUGs", mode: "blitz", st: state.unrealpugsStatus });
   }
   let best: { community: string; mode: string; st: PugStatus } | null = null;
   for (const c of candidates) {
@@ -3386,6 +3334,7 @@ const QUEUES_POLL_MS = 45000; // HOME "queue filling" nudge
 
 let pugLastFetch = 0;
 let utpugsLastFetch = 0;
+let unrealpugsLastFetch = 0;
 let liveLastFetch = 0;
 let queuesLastFetch = 0;
 let visibilityWired = false;
@@ -3418,6 +3367,10 @@ function onLauncherVisible(): void {
   if (state.utpugsToken && state.utpugsConfigured) {
     utpugsLastFetch = now;
     void pollUtpugsStatus();
+  }
+  if (state.unrealpugsToken && state.unrealpugsConfigured) {
+    unrealpugsLastFetch = now;
+    void pollUnrealpugsStatus();
   }
   // Re-check the plugin/launcher version on focus when the startup check never
   // landed (flaky cold start → statusCache.plugin still null) or it's gone stale —
@@ -3471,6 +3424,191 @@ async function pollUtpugsStatus() {
   } catch (err) {
     console.error("utpugs_status failed:", err);
     if (isPugTokenError(err)) handleUtpugsTokenError();
+  }
+}
+
+// ---- in-launcher PUG join (UnrealPUGs / skandalouz's PugApi, 3rd community) ─
+// A reduced mirror of the UTPugs section: this bot tracks no live game servers,
+// so there is no connect/spectate/ready — only join / leave / queue-status.
+// Blitz-only for now; the mode string must be exactly what the Rust allowlist
+// (commands.rs UNREALPUGS_MODES) and the bot expect — an EXACT-match uppercase
+// "BLITZ" (the bot is case-lenient, but our own guard is not). The whole section
+// is hidden when this build has no UnrealPUGs base URL wired in.
+const UNREALPUGS_MODE = "BLITZ";
+
+let unrealpugsTokenRejected = false;
+let unrealpugsActionInFlight = false;
+
+// A token problem on any UnrealPUGs call: drop the dead token (stops polling,
+// re-renders the link prompt) and flag why — mirrors handleUtpugsTokenError.
+function handleUnrealpugsTokenError(): void {
+  unrealpugsTokenRejected = true;
+  void saveUnrealpugsToken(null);
+}
+
+async function saveUnrealpugsToken(token: string | null) {
+  state.unrealpugsToken = token;
+  if (token) unrealpugsTokenRejected = false;
+  if (!token) state.unrealpugsStatus = null;
+  try {
+    await invoke("save_unrealpugs_token", { token });
+  } catch (err) {
+    console.error("save_unrealpugs_token failed:", err);
+  }
+  renderUnrealpugs();
+  updateDiscordPresence();
+  if (token) {
+    void pollUnrealpugsStatus();
+    startUnrealpugsPolling();
+  } else {
+    stopUnrealpugsPolling();
+  }
+}
+
+async function unrealpugsPug(action: "joinpug" | "leavepug" | "listpug") {
+  const token = state.unrealpugsToken?.trim();
+  if (!token) {
+    renderUnrealpugs();
+    return;
+  }
+  const status = document.getElementById("unrealpugs-status");
+  const toggle = action === "joinpug" || action === "leavepug";
+  // Simple single-flight on join/leave so a double-click can't fire two toggles.
+  if (toggle) {
+    if (unrealpugsActionInFlight) return;
+    unrealpugsActionInFlight = true;
+  }
+  if (status) status.textContent = action === "listpug" ? "Checking queue…" : "Working…";
+  try {
+    const raw = await invoke<string>("unrealpugs_action", {
+      action,
+      mode: UNREALPUGS_MODE,
+      token,
+    });
+    let msg = raw;
+    try {
+      msg = (JSON.parse(raw) as { message?: string }).message ?? raw;
+    } catch {
+      /* response wasn't JSON; show it raw */
+    }
+    if (status) status.textContent = msg;
+    // Reflect the queue change immediately rather than waiting for the next poll.
+    void pollUnrealpugsStatus();
+  } catch (err) {
+    console.error("unrealpugs_action failed:", err);
+    if (isPugTokenError(err)) handleUnrealpugsTokenError();
+    else if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+  } finally {
+    if (toggle) unrealpugsActionInFlight = false;
+  }
+}
+
+function renderUnrealpugs(): void {
+  const section = document.getElementById("unrealpugs-section");
+  const el = document.getElementById("unrealpugs-controls");
+  if (!section || !el) return;
+  // Not wired up in this build → hide the whole section, heading and all.
+  if (!state.unrealpugsConfigured) {
+    section.style.display = "none";
+    return;
+  }
+  section.style.display = "";
+
+  if (!state.unrealpugsToken) {
+    el.innerHTML = `
+      ${
+        unrealpugsTokenRejected
+          ? `<p class="warn">Your UnrealPUGs token wasn't recognized — it may not be linked yet, or it was reset. Re-link it below.</p>`
+          : ""
+      }
+      <p>Queue UnrealPUGs Blitz here. Run <code>launchertoken</code> in the UnrealPUGs Discord and paste the token it DMs you:</p>
+      <div class="controls">
+        <label>Launcher token
+          <input id="unrealpugs-token" type="password" placeholder="paste your launchertoken value" spellcheck="false" autocomplete="off" />
+        </label>
+        <button id="unrealpugs-token-save" type="button">Save token</button>
+      </div>`;
+    document.getElementById("unrealpugs-token-save")?.addEventListener("click", () => {
+      const v = (document.getElementById("unrealpugs-token") as HTMLInputElement).value.trim();
+      if (v) void saveUnrealpugsToken(v);
+    });
+    return;
+  }
+
+  const st = state.unrealpugsStatus;
+  let block: string;
+  if (st && st.state === "starting") {
+    block = `<p class="ok">🛰️ Your Blitz PUG is starting — picking teams…</p>`;
+  } else {
+    const queued = st?.state === "queued";
+    const queueLine = queued
+      ? `In queue — ${st?.players ?? 0}/${st?.max_players ?? 10}`
+      : `Queue for Blitz`;
+    block = `
+      <p>${queueLine}</p>
+      <div class="discord-btns">
+        <button id="unrealpugs-join" type="button">Join Blitz PUG</button>
+        <button id="unrealpugs-leave" type="button">Leave</button>
+        <button id="unrealpugs-refresh" type="button">Queue status</button>
+      </div>`;
+  }
+  el.innerHTML = `
+    <div class="utpugs-modebar">
+      <span class="src">Blitz</span>
+      <button id="unrealpugs-token-clear" type="button" class="link-btn">change token</button>
+    </div>
+    ${block}<div id="unrealpugs-status" class="launch-status"></div>`;
+
+  document
+    .getElementById("unrealpugs-token-clear")
+    ?.addEventListener("click", () => void saveUnrealpugsToken(null));
+  document
+    .getElementById("unrealpugs-join")
+    ?.addEventListener("click", () => void unrealpugsPug("joinpug"));
+  document
+    .getElementById("unrealpugs-leave")
+    ?.addEventListener("click", () => void unrealpugsPug("leavepug"));
+  document
+    .getElementById("unrealpugs-refresh")
+    ?.addEventListener("click", () => void unrealpugsPug("listpug"));
+}
+
+let unrealpugsPollTimer: number | undefined;
+
+function startUnrealpugsPolling() {
+  if (unrealpugsPollTimer !== undefined) return;
+  unrealpugsLastFetch = Date.now();
+  unrealpugsPollTimer = window.setInterval(() => {
+    if (statusPollDue(unrealpugsLastFetch, pollEngaged(state.unrealpugsStatus?.state))) {
+      unrealpugsLastFetch = Date.now();
+      void pollUnrealpugsStatus();
+    }
+  }, POLL_TICK_MS);
+}
+
+function stopUnrealpugsPolling() {
+  if (unrealpugsPollTimer !== undefined) {
+    clearInterval(unrealpugsPollTimer);
+    unrealpugsPollTimer = undefined;
+  }
+}
+
+async function pollUnrealpugsStatus() {
+  if (!state.unrealpugsToken || !state.unrealpugsConfigured) return;
+  try {
+    const next = JSON.parse(
+      await invoke<string>("unrealpugs_status", {
+        mode: UNREALPUGS_MODE,
+        token: state.unrealpugsToken,
+      }),
+    ) as PugStatus;
+    const prev = state.unrealpugsStatus;
+    state.unrealpugsStatus = next;
+    updateDiscordPresence();
+    if (pugStatusChanged(prev, next)) renderUnrealpugs();
+  } catch (err) {
+    console.error("unrealpugs_status failed:", err);
+    if (isPugTokenError(err)) handleUnrealpugsTokenError();
   }
 }
 
@@ -3550,6 +3688,165 @@ let selectedHubId: string | null = null;
 let selectedMatchId: string | null = null;
 let serversSearch = "";
 
+// ---- hub content-pak versions (UTCC) -------------------------------------
+// Which NCP content-pak version each hub runs, from utcustomcontent.com (the
+// hub_pak_versions command aggregates the 6 paks' server lists). Surfaced in the
+// hub detail so a player can SEE when a hub lags the latest pak — the case where
+// their newer local pak would otherwise stop them joining — and revert their copy.
+interface HubPakVersion {
+  pak: string;
+  version: string;
+  is_latest: boolean;
+}
+interface HubPakEntry {
+  name: string;
+  server_type: string;
+  paks: HubPakVersion[];
+}
+interface HubPakData {
+  latest: Record<string, string>;
+  hubs: HubPakEntry[];
+}
+let hubPakData: HubPakData | null = null;
+let hubPakFetched = false;
+
+const HUB_PAK_LABELS: Record<string, string> = {
+  elimplus: "ElimPlus",
+  wipeout: "Wipeout",
+  ncutplus: "UTPlus",
+  instagibncp: "Instagib",
+  sdom: "Sdom",
+  ncwepmut: "Weapons",
+};
+
+// Normalize a hub name so UTCC's list matches the live server browser (strip
+// bracket tags / punctuation / case): "[PHX] PHOENIX GERMANY" ↔ "phx phoenix germany".
+function normHubName(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[^a-z0-9]+/g, " ")
+    .trim();
+}
+
+// Fetch the hub→pak-version map once per session (it changes rarely), then
+// re-render the browser so the detail pane picks it up. Best-effort: a failure
+// (UTCC down) just leaves the pak panel hidden — the server browser still works.
+async function loadHubPakData() {
+  if (hubPakFetched) return;
+  try {
+    hubPakData = JSON.parse(await invoke<string>("hub_pak_versions")) as HubPakData;
+    hubPakFetched = true;
+    if (document.getElementById("srv-search")) renderServerList();
+  } catch (err) {
+    console.error("hub_pak_versions failed:", err);
+  }
+}
+
+// The selected hub's NCP pak versions — laggards (older than latest) flagged amber
+// with a per-pak "revert" that removes the user's newer local copy so the hub can
+// serve its own. Empty when the hub isn't in UTCC's list or data hasn't loaded.
+function hubPakPanel(hub: GameServerEntry | null): string {
+  if (!hub || !hubPakData) return "";
+  const name = String(hub.attributes?.UT_SERVERNAME_s || hub.serverName || "").trim();
+  if (!name) return "";
+  const entry = hubPakData.hubs.find((h) => normHubName(h.name) === normHubName(name));
+  if (!entry || !entry.paks.length) return "";
+
+  // ElimPlus, UTPlus and WipeoutMutator cross-reference each other in Blueprint, so
+  // a version mismatch in ANY one breaks the set. Check + revert them as ONE cluster
+  // (only where its anchor — ElimPlus — actually runs; UTPlus on a non-ElimPlus hub
+  // stays its own badge) and surface it under a single "ElimPlus" label.
+  const PAK_GROUPS: { label: string; anchor: string; members: string[] }[] = [
+    { label: "ElimPlus", anchor: "elimplus", members: ["elimplus", "ncutplus", "wipeout"] },
+  ];
+  const byKey = new Map(entry.paks.map((p) => [p.pak, p] as [string, HubPakVersion]));
+  const grouped = new Set<string>();
+  const badges: string[] = [];
+  let anyBehind = false;
+
+  const latestOf = (k: string): string | undefined => hubPakData?.latest?.[k];
+  const okBadge = (label: string, ver: string): string =>
+    `<span class="hubpak ok" title="matches the latest content">${escape(label)} ${escape(ver)}</span>`;
+  const behindBadge = (
+    label: string,
+    ver: string,
+    latest: string | undefined,
+    revertKeys: string[],
+  ): string => {
+    const latestV = latest ? ` · latest ${escape(latest)}` : "";
+    return `<span class="hubpak warn" title="this hub runs an older ${escape(label)} than the latest — a version mismatch can stop you joining">${escape(label)} ${escape(ver)}${latestV} <button type="button" class="link-btn hubpak-revert" data-paks="${escape(revertKeys.join(","))}">revert</button></span>`;
+  };
+
+  // Clusters first: flagged when ANY present member is behind; revert clears the
+  // WHOLE cluster's local paks (a partial revert would re-break the BP refs).
+  for (const g of PAK_GROUPS) {
+    if (!byKey.has(g.anchor)) continue;
+    g.members.filter((m) => byKey.has(m)).forEach((m) => grouped.add(m));
+    const behind = g.members.some((m) => byKey.has(m) && !byKey.get(m)!.is_latest);
+    const head = byKey.get(g.anchor)!;
+    if (behind) {
+      anyBehind = true;
+      badges.push(behindBadge(g.label, head.version, latestOf(g.anchor), g.members));
+    } else {
+      badges.push(okBadge(g.label, head.version));
+    }
+  }
+  // Remaining paks (Weapons / Instagib / Sdom) as their own single badges.
+  for (const p of entry.paks) {
+    if (grouped.has(p.pak)) continue;
+    const label = HUB_PAK_LABELS[p.pak] ?? p.pak;
+    if (p.is_latest) {
+      badges.push(okBadge(label, p.version));
+    } else {
+      anyBehind = true;
+      badges.push(behindBadge(label, p.version, latestOf(p.pak), [p.pak]));
+    }
+  }
+
+  const note = anyBehind
+    ? `<div class="src">Amber = this hub runs an older pak than the latest. If you can't join here, “revert” removes your newer local copies for that set so the hub serves its own versions (UT4 must be closed).</div>`
+    : "";
+  return `<div class="srv-hubpaks"><div class="srv-hubpaks-h">NetcodePlus content on this hub</div><div class="srv-hubpak-list">${badges.join("")}</div>${note}</div>`;
+}
+
+// Remove the user's local copies of a pak set so a lagging hub can serve its own —
+// the per-hub fix for the "newer local pak blocks a not-yet-updated hub" case. Takes
+// a SET because cross-referenced paks (the ElimPlus cluster) must move together, or a
+// surviving newer pak re-breaks the BP refs. remove_installed_pak is idempotent, so
+// listing a pak the user doesn't have installed is a harmless no-op.
+async function revertHubPak(pakIds: string[]) {
+  const labels = pakIds.map((id) => HUB_PAK_LABELS[id] ?? id);
+  const human =
+    labels.length > 1
+      ? `${labels.slice(0, -1).join(", ")} and ${labels[labels.length - 1]}`
+      : labels[0];
+  const plural = pakIds.length > 1;
+  const ok = await confirm(
+    `Remove your ${human} content pak${plural ? "s" : ""}?${
+      plural ? " These cross-reference each other, so they're removed together." : ""
+    } This deletes your local copies from DownloadedPaks so a hub running older versions can serve its own consistent set — the fix when a newer local pak stops you joining a not-yet-updated hub. UT4 must be closed. You can reinstall anytime from the "Update paks" button on Home.`,
+    { title: `Revert ${human}`, kind: "warning", okLabel: "Remove", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  const status = document.getElementById("srv-detail-status");
+  if (status) status.textContent = `Removing ${human}…`;
+  try {
+    for (const id of pakIds) {
+      await invoke("remove_installed_pak", { pakId: id });
+    }
+    if (status)
+      status.innerHTML = `<span class="ok">✓ Removed ${escape(human)} — the hub will serve its own version${plural ? "s" : ""} when you join.</span>`;
+    try {
+      statusCache.paks = await invoke<PakStatusResult>("pak_status");
+    } catch {
+      /* dash refresh is best-effort */
+    }
+  } catch (err) {
+    console.error("remove_installed_pak failed:", err);
+    if (status) status.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+  }
+}
+
 async function renderServers() {
   if (serversFetching) return;
   serversFetching = true;
@@ -3564,6 +3861,7 @@ async function renderServers() {
   }
   serversFetching = false;
   renderServerList();
+  void loadHubPakData();
 }
 
 // Live player count for a session (in-game players for an instance, lobby
@@ -3939,6 +4237,7 @@ function renderServerList(): void {
           </div>
         </div>
         <div class="srv-detail">
+          ${serversMode === "hubs" ? hubPakPanel(selectedHub) : ""}
           ${detailBody}
           <div class="srv-actions detail">
             <div id="srv-detail-status" class="row-status">${signedOut}</div>
@@ -3952,6 +4251,16 @@ function renderServerList(): void {
   // ---- wiring ----
   const masterStatus = (): HTMLElement | null => document.getElementById("srv-master-status");
   const detailStatus = (): HTMLElement | null => document.getElementById("srv-detail-status");
+
+  // Per-pak "revert" in the hub pak panel — remove the user's newer local copy so
+  // a lagging hub serves its own version.
+  serversPanel.querySelectorAll<HTMLButtonElement>(".hubpak-revert").forEach((btn) => {
+    btn.addEventListener("click", (e) => {
+      e.stopPropagation();
+      const paks = (btn.dataset.paks ?? "").split(",").filter(Boolean);
+      if (paks.length) void revertHubPak(paks);
+    });
+  });
 
   serversPanel.querySelectorAll<HTMLButtonElement>(".srv-toggle button").forEach((btn) => {
     btn.addEventListener("click", () => {

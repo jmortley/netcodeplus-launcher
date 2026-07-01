@@ -104,6 +104,11 @@ pub struct LauncherState {
     #[serde(default)]
     pub utpugs_launcher_token: Option<String>,
 
+    /// Per-user PUG token for the UnrealPUGs community (skandalouz's PugApi bot).
+    /// Per-community like [`Self::utpugs_launcher_token`]. `None` = not linked.
+    #[serde(default)]
+    pub unrealpugs_launcher_token: Option<String>,
+
     /// Whether Discord Rich Presence is enabled (opt-in; default off). When on,
     /// the launcher broadcasts the user's PUG state to their Discord profile.
     /// See `src-tauri/src/presence.rs`.
@@ -292,6 +297,7 @@ impl Default for LauncherState {
             ut4stats_playername: None,
             launcher_token: None,
             utpugs_launcher_token: None,
+            unrealpugs_launcher_token: None,
             discord_presence_enabled: false,
             ut4_username: None,
             ut4_display_name: None,

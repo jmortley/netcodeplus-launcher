@@ -278,6 +278,20 @@ pub fn save_utpugs_token(app: tauri::AppHandle, token: Option<String>) -> Result
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
 }
 
+/// Save (or clear, by passing null) the per-user UnrealPUGs PUG launcher token.
+/// Per-community, stored separately from the iCTF/UTPugs tokens.
+#[tauri::command]
+pub fn save_unrealpugs_token(app: tauri::AppHandle, token: Option<String>) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.unrealpugs_launcher_token = token
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
 const UT4STATS_BASE: &str = "https://ut4stats.com";
 const UT4STATS_MAX: u64 = 256 * 1024;
 
@@ -364,6 +378,208 @@ pub async fn list_servers() -> Result<String, String> {
     ncp_net::fetch_text(&client, MASTER_SERVERS_URL, SERVER_LIST_MAX)
         .await
         .map_err(|e| e.to_string())
+}
+
+/// The 6 NetcodePlus content paks on UT Custom Content, as
+/// `(manifest-key, UTCC content id)` pairs. Order is stable so the
+/// aggregation is deterministic; the manifest key is what the frontend keys on.
+const HUB_PAK_CONTENT: &[(&str, u32)] = &[
+    ("elimplus", 1996),
+    ("wipeout", 2036),
+    ("ncutplus", 852),
+    ("instagibncp", 2037),
+    ("sdom", 2040),
+    ("ncwepmut", 2042),
+];
+
+/// A UTCC content payload is a few hundred KB of JSON at most; cap generously.
+const UTCC_CONTENT_MAX: u64 = 10 * 1024 * 1024;
+
+/// One hub's recorded version of a single pak, in the aggregated output.
+struct HubPakVersion {
+    /// The version display name the hub serves.
+    version: String,
+    /// True when the hub tracks the pak's latest version (either it opted into
+    /// `useLatest`, or the version it pins equals the pak's current latest name).
+    is_latest: bool,
+}
+
+/// Fetch one UTCC content payload and fold it into the running aggregation.
+///
+/// `latest` collects each pak's current latest-version display name (keyed by
+/// manifest key). `hubs` collects, per hub NAME, that hub's version of each pak.
+/// Both are mutated in place. Everything is parsed defensively from an untrusted
+/// external payload: a missing / oddly-typed field skips just that entry rather
+/// than failing — an individual malformed server never derails the pak.
+fn fold_utcc_content(
+    body: &str,
+    pak_key: &str,
+    latest: &mut std::collections::BTreeMap<String, String>,
+    hubs: &mut std::collections::BTreeMap<String, HubEntry>,
+) {
+    let Ok(root) = serde_json::from_str::<serde_json::Value>(body) else {
+        return;
+    };
+
+    // Map version id -> display name for this pak.
+    let mut ver_names: std::collections::HashMap<i64, String> = std::collections::HashMap::new();
+    if let Some(vers) = root.get("versions").and_then(|v| v.as_array()) {
+        for v in vers {
+            let (Some(id), Some(name)) = (
+                v.get("id").and_then(serde_json::Value::as_i64),
+                v.get("name").and_then(serde_json::Value::as_str),
+            ) else {
+                continue;
+            };
+            ver_names.insert(id, name.to_string());
+        }
+    }
+
+    // The pak's "latest" display name = the name of content.latestVersion.id.
+    let latest_name = root
+        .get("content")
+        .and_then(|c| c.get("latestVersion"))
+        .and_then(|lv| lv.get("id"))
+        .and_then(serde_json::Value::as_i64)
+        .and_then(|id| ver_names.get(&id).cloned());
+    if let Some(ref name) = latest_name {
+        latest.insert(pak_key.to_string(), name.clone());
+    }
+
+    let Some(servers) = root.get("servers").and_then(|s| s.as_array()) else {
+        return;
+    };
+    for srv in servers {
+        let Some(server) = srv.get("server") else {
+            continue;
+        };
+        let Some(name) = server.get("name").and_then(|n| n.as_str()) else {
+            continue;
+        };
+        let server_type = server
+            .get("serverType")
+            .and_then(|t| t.as_str())
+            .unwrap_or("")
+            .to_string();
+        let use_latest = srv
+            .get("useLatest")
+            .and_then(serde_json::Value::as_bool)
+            .unwrap_or(false);
+
+        // Resolve the hub's pinned version display name from its first listed
+        // version id. `useLatest` hubs may not list one — fall back to latest.
+        let pinned_name = srv
+            .get("versions")
+            .and_then(|v| v.as_array())
+            .and_then(|arr| arr.first())
+            .and_then(serde_json::Value::as_i64)
+            .and_then(|id| ver_names.get(&id).cloned());
+
+        let version = match (pinned_name, use_latest, latest_name.as_ref()) {
+            (Some(v), _, _) => v,
+            (None, true, Some(l)) => l.clone(),
+            // No resolvable version for this hub+pak — nothing meaningful to show.
+            _ => continue,
+        };
+
+        let is_latest = use_latest || latest_name.as_deref() == Some(version.as_str());
+
+        let entry = hubs.entry(name.to_string()).or_insert_with(|| HubEntry {
+            name: name.to_string(),
+            server_type: server_type.clone(),
+            paks: std::collections::BTreeMap::new(),
+        });
+        // First non-empty server_type wins (payloads agree per hub in practice).
+        if entry.server_type.is_empty() && !server_type.is_empty() {
+            entry.server_type = server_type;
+        }
+        entry
+            .paks
+            .insert(pak_key.to_string(), HubPakVersion { version, is_latest });
+    }
+}
+
+/// One hub in the aggregated output, accumulating its per-pak versions across
+/// all 6 content payloads. Keyed by pak key so the paks list sorts naturally.
+struct HubEntry {
+    name: String,
+    server_type: String,
+    paks: std::collections::BTreeMap<String, HubPakVersion>,
+}
+
+/// Aggregate the 6 NetcodePlus content paks on UT Custom Content into a compact
+/// hub -> pak-version view for the "which hub serves which pak version" UI.
+///
+/// Fetches each content payload from UTCC (same net path as [`list_servers`]),
+/// resolves each hub's pinned version to its display name, and folds them into a
+/// per-hub aggregation. External JSON is parsed defensively — a malformed field
+/// skips just that entry, and a single pak's fetch failing skips only that pak;
+/// only an all-six failure returns `Err`.
+///
+/// Returns a JSON string of shape:
+/// ```json
+/// {"latest": {"elimplus": "3.27.4", ...},
+///  "hubs": [{"name": "...", "server_type": "HUB",
+///            "paks": [{"pak": "elimplus", "version": "3.27.4", "is_latest": true}, ...]}]}
+/// ```
+/// `hubs` is sorted by name (case-insensitive); each hub's `paks` by pak key.
+#[tauri::command]
+pub async fn hub_pak_versions() -> Result<String, String> {
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+
+    let mut latest: std::collections::BTreeMap<String, String> = std::collections::BTreeMap::new();
+    let mut hubs: std::collections::BTreeMap<String, HubEntry> = std::collections::BTreeMap::new();
+    let mut any_ok = false;
+
+    for (pak_key, id) in HUB_PAK_CONTENT {
+        let url = format!("https://utcustomcontent.com/content/{id}/data");
+        match ncp_net::fetch_text(&client, &url, UTCC_CONTENT_MAX).await {
+            Ok(body) => {
+                any_ok = true;
+                fold_utcc_content(&body, pak_key, &mut latest, &mut hubs);
+            }
+            // A single pak's fetch failing skips only that pak — never the whole
+            // command. Only an all-six failure is an error (below).
+            Err(_) => continue,
+        }
+    }
+
+    if !any_ok {
+        return Err("Couldn't reach UT Custom Content for any content pak.".into());
+    }
+
+    // Sort hubs case-insensitively by name; sort each hub's paks by pak key
+    // (BTreeMap iteration already yields sorted keys).
+    let mut hub_list: Vec<&HubEntry> = hubs.values().collect();
+    hub_list.sort_by_key(|h| h.name.to_lowercase());
+
+    let hubs_json: Vec<serde_json::Value> = hub_list
+        .into_iter()
+        .map(|h| {
+            let paks: Vec<serde_json::Value> = h
+                .paks
+                .iter()
+                .map(|(pak, v)| {
+                    serde_json::json!({
+                        "pak": pak,
+                        "version": v.version,
+                        "is_latest": v.is_latest,
+                    })
+                })
+                .collect();
+            serde_json::json!({
+                "name": h.name,
+                "server_type": h.server_type,
+                "paks": paks,
+            })
+        })
+        .collect();
+
+    let out = serde_json::json!({
+        "latest": latest,
+        "hubs": hubs_json,
+    });
+    Ok(out.to_string())
 }
 
 /// Open an external HTTPS URL in the user's default handler (browser /
@@ -728,6 +944,103 @@ pub async fn utpugs_queues() -> Result<String, String> {
     ncp_net::post_json(&client, &url, &[], "{}".to_string(), 64 * 1024)
         .await
         .map_err(|e| e.to_string())
+}
+
+// ---- UnrealPUGs (skandalouz's PugApi bot, the third community) --------------
+//
+// Multi-tenant Spring bot: the community is the 5-char `clientId` baked into the
+// path (`/launcher/upugs`). Reduced surface vs UTPugs — join / leave / queue-
+// status only; the bot tracks no live game servers yet, so spectate/live/ready
+// are deferred bot-side and we don't wire them. Auth is the same per-player
+// `launcher-token` header. Empty base disables the section.
+//
+// ⚠️ `:7081` is an unusual port to pin into a signed release — confirm with
+// skandalouz it's permanent (or gets proxied to 443) before shipping.
+const UNREALPUGS_BASE: &str = "https://www.hkant.nl:7081/launcher/upugs";
+
+/// Modes UnrealPUGs offers via the launcher. The `mode` is sent verbatim and
+/// `check_unrealpugs_mode` gates it with an EXACT (case-sensitive) match — so the
+/// frontend must send the literal uppercase name (`UNREALPUGS_MODE = "BLITZ"` in
+/// main.ts). The bot itself is case-lenient, but our own guard is not, so a
+/// lowercase "blitz" would be rejected here before ever reaching the bot.
+/// BLITZ-only for now — the community also runs CTF/ICTF/2TDM; add them here + in
+/// the frontend list when we widen past Blitz.
+const UNREALPUGS_MODES: &[&str] = &["BLITZ"];
+
+/// Whether UnrealPUGs PUGs are wired up in this build (base URL set). The UI
+/// shows the section only when true.
+#[tauri::command]
+pub fn unrealpugs_configured() -> bool {
+    !UNREALPUGS_BASE.is_empty()
+}
+
+/// Build an UnrealPUGs endpoint URL, refusing if the base isn't configured.
+fn unrealpugs_url(path: &str) -> Result<String, String> {
+    if UNREALPUGS_BASE.is_empty() {
+        return Err("UnrealPUGs PUGs aren't enabled in this launcher build yet.".into());
+    }
+    Ok(format!("{UNREALPUGS_BASE}{path}"))
+}
+
+/// Reject any `mode` UnrealPUGs doesn't advertise, before it reaches the bot.
+fn check_unrealpugs_mode(mode: &str) -> Result<(), String> {
+    if UNREALPUGS_MODES.contains(&mode) {
+        Ok(())
+    } else {
+        Err(format!("unknown UnrealPUGs mode '{mode}'"))
+    }
+}
+
+/// UnrealPUGs join/leave/list for `mode`, authenticated by the per-user token.
+/// Mirrors [`utpugs_action`]; the bot requires `mode` on join/leave.
+#[tauri::command]
+pub async fn unrealpugs_action(
+    action: String,
+    mode: String,
+    token: String,
+) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err(
+            "Set your UnrealPUGs launcher token first (run launchertoken in the UnrealPUGs Discord)."
+                .into(),
+        );
+    }
+    check_unrealpugs_mode(&mode)?;
+    let url = unrealpugs_url("/pug_action")?;
+    let body = serde_json::json!({ "action": action, "mode": mode }).to_string();
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(
+        &client,
+        &url,
+        &[("launcher-token", token.trim())],
+        body,
+        64 * 1024,
+    )
+    .await
+    .map_err(pug_error)
+}
+
+/// Poll the caller's UnrealPUGs status for `mode` (idle / queued / starting).
+/// Mirrors [`utpugs_status`]. The bot never reports `live` (no server tracking),
+/// so there's no CONNECT surface — join/leave/queue-status only.
+#[tauri::command]
+pub async fn unrealpugs_status(mode: String, token: String) -> Result<String, String> {
+    if token.trim().is_empty() {
+        return Err("no launcher token set".into());
+    }
+    check_unrealpugs_mode(&mode)?;
+    let url = unrealpugs_url("/pug_status")?;
+    let body = serde_json::json!({ "mode": mode }).to_string();
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    ncp_net::post_json(
+        &client,
+        &url,
+        &[("launcher-token", token.trim())],
+        body,
+        64 * 1024,
+    )
+    .await
+    .map_err(pug_error)
 }
 
 /// Launcher version (from `Cargo.toml`). Surfaced in the UI for bug reports.

@@ -748,6 +748,49 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
     Ok(outcomes)
 }
 
+/// Remove ONE launcher-installed pak from `DownloadedPaks` on demand — the
+/// "revert so the hub can serve its own version" UI action. Drops the file and
+/// forgets the recorded install so the next server that offers this content is
+/// free to send its own copy.
+///
+/// **Refuses while UT4 is running** — the same file-lock reason `install_paks`
+/// refuses: the engine holds an open handle on every mounted pak, so a delete
+/// would fail with a sharing violation.
+///
+/// Idempotent: if `pak_id` isn't in the local-install snapshot it's already
+/// gone, so this returns `Ok(())` without touching disk.
+#[tauri::command]
+pub async fn remove_installed_pak(app: AppHandle, pak_id: String) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+
+    // Not recorded as installed by the launcher — treat as already-removed so a
+    // double-click / stale UI can't error.
+    let Some(local) = state.local_install.paks.get(&pak_id) else {
+        return Ok(());
+    };
+    let filename = local.pak_filename.clone();
+
+    // A mounted pak is locked — refuse rather than fight the file lock.
+    if crate::commands::shipping_client_running() {
+        return Err("Close UT4 to change content paks.".into());
+    }
+
+    let Some(mod_paks_dir) = ncp_host::default_mod_paks_dir() else {
+        return Err("Couldn't locate your Documents folder to remove the pak from.".into());
+    };
+
+    ncp_host::remove_pak(&mod_paks_dir, &filename).map_err(|e| e.to_string())?;
+
+    state.local_install.paks.remove(&pak_id);
+    state.pak_stamps.remove(&pak_id);
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+
+    Ok(())
+}
+
 // ===================================================================
 // Plugin update (NetcodePlus) — across ALL detected installs.
 // ===================================================================
