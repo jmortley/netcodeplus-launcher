@@ -155,6 +155,7 @@ pub fn run() {
             commands::reveal_plugins_folder,
             commands::reveal_openal_folder,
             commands::launcher_version,
+            commands::platform_info,
             presence::set_discord_presence,
             presence::set_discord_presence_enabled,
             installer::game_installer_info,

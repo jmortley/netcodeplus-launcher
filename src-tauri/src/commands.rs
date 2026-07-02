@@ -181,6 +181,27 @@ pub(crate) fn shipping_client_running() -> bool {
     is_game_running("UE4-Win64-Shipping.exe".to_string())
 }
 
+/// Host OS, so the frontend can hide Windows-only surfaces on Linux (the .NET
+/// gate, the Windows game-installer flow, the "run as administrator" escape hatch,
+/// and stray-plugin scanning). Compile-time — the launcher binary is per-platform.
+#[derive(serde::Serialize)]
+pub struct PlatformInfo {
+    /// `"windows"` | `"linux"` | `"other"`.
+    pub os: String,
+}
+
+#[tauri::command]
+pub fn platform_info() -> PlatformInfo {
+    let os = if cfg!(windows) {
+        "windows"
+    } else if cfg!(target_os = "linux") {
+        "linux"
+    } else {
+        "other"
+    };
+    PlatformInfo { os: os.to_string() }
+}
+
 /// Path to the persistent launcher state file in the per-app config dir.
 pub(crate) fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     let dir = app.path().app_config_dir().map_err(|e| e.to_string())?;

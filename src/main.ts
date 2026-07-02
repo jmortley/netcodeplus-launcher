@@ -556,6 +556,11 @@ async function doInstallPaks(sink: HTMLElement | null): Promise<boolean> {
 async function renderStrays(): Promise<void> {
   const panel = document.getElementById("stray-panel");
   if (!panel) return;
+  // Windows-only: scan_strays checks Windows plugin locations. No-op on Linux.
+  if (platformOs !== "windows") {
+    panel.innerHTML = "";
+    return;
+  }
   let found: InstallStrays[];
   try {
     found = await invoke<InstallStrays[]>("scan_strays");
@@ -1400,7 +1405,7 @@ async function renderDashStatus(): Promise<void> {
           )} — latest.</span></div>`,
     );
   }
-  if (statusCache.dotnetAvailable) {
+  if (platformOs === "windows" && statusCache.dotnetAvailable) {
     lines.push(
       statusCache.dotnetOk
         ? `<div class="statline"><span class="ok">✓</span><span>.NET Desktop Runtime detected.</span></div>`
@@ -1742,6 +1747,12 @@ async function launch() {
 async function renderAdminWarning(): Promise<void> {
   const panel = document.getElementById("admin-warn-panel");
   if (!panel) return;
+  // "Run as administrator" is a Windows compat flag — N/A on Linux (the Wine
+  // prefix is user-owned), so this warning + the elevation escape hatch are hidden.
+  if (platformOs !== "windows") {
+    panel.innerHTML = "";
+    return;
+  }
   const exe = state.installs[state.selInstall]?.install.executable;
   if (!exe) {
     panel.innerHTML = "";
@@ -2262,9 +2273,18 @@ async function showVersion() {
   }
 }
 
+interface PlatformInfo {
+  os: "windows" | "linux" | "other";
+}
+// Host OS (from the platform_info command), fetched once in loadAll's barrier
+// before the render fan-out — drives hiding Windows-only surfaces on Linux (game
+// installer, .NET gate, admin/elevation, stray scan). Defaults to "windows" so a
+// (near-impossible) fetch failure preserves the desktop UI.
+let platformOs: PlatformInfo["os"] = "windows";
+
 async function loadAll() {
   try {
-    const [installs, presets, prefs, ut4, utpugsConfigured, unrealpugsConfigured, onbView] =
+    const [installs, presets, prefs, ut4, utpugsConfigured, unrealpugsConfigured, platformInfo, onbView] =
       await Promise.all([
       invoke<DetectedInstall[]>("detect_installs"),
       invoke<AffinityPreset[]>("affinity_presets"),
@@ -2275,6 +2295,8 @@ async function loadAll() {
       invoke<boolean>("utpugs_configured").catch(() => false),
       // Whether this build has the UnrealPUGs base URL wired in (false hides it).
       invoke<boolean>("unrealpugs_configured").catch(() => false),
+      // Host OS → hide Windows-only surfaces on Linux (default windows on failure).
+      invoke<PlatformInfo>("platform_info").catch(() => ({ os: "windows" as const })),
       // Onboarding classification. Resolved in this same load barrier so it
       // persists the one-time first-run decision BEFORE the render fan-out below
       // triggers launcher_update_housekeeping — which would otherwise create the
@@ -2287,6 +2309,7 @@ async function loadAll() {
     state.ut4 = ut4;
     state.utpugsConfigured = utpugsConfigured;
     state.unrealpugsConfigured = unrealpugsConfigured;
+    platformOs = platformInfo.os;
     applyPrefs(prefs);
     // A manually-picked install that auto-detection doesn't find would otherwise
     // be lost on restart (detect_installs overwrote state.installs, so the saved
@@ -4695,6 +4718,12 @@ let gameDownloadUnlisten: UnlistenFn | null = null;
 async function renderGameInstall(): Promise<void> {
   const panel = document.getElementById("game-install-panel");
   if (!panel) return;
+  // The bundled UT4 installer is a Windows .exe/.zip flow — hidden on Linux
+  // (Lutris/Wine users already have the game).
+  if (platformOs !== "windows") {
+    panel.innerHTML = "";
+    return;
+  }
   let info: GameInstallerInfo;
   try {
     info = await invoke<GameInstallerInfo>("game_installer_info");
