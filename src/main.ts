@@ -4912,7 +4912,7 @@ function renderLinuxGetGame(panel: HTMLElement): void {
         <li><strong>Get the game</strong> from <button class="card-link" data-extlink="https://ut4ever.org" type="button">ut4ever.org</button> — the community "UT4 Installer" (~10&nbsp;GB).</li>
         <li><strong>Install it with Lutris:</strong> <em>Lutris → + → Install a game from an executable file</em>, point it at <code>UT4_Installer.exe</code>, and use a <strong>Proton</strong> runner (e.g. GE-Proton). It's a <strong>.NET&nbsp;6</strong> app, so the prefix needs two things (verified working): add the runtime with <code>winetricks dotnetdesktop6</code>, and launch with <code>DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1</code> set (otherwise it dies on a Wine ICU error).</li>
         <li><em>Prefer to skip .NET entirely?</em> The download is just a zip: extract the inner <code>UnrealTournament&nbsp;(…).zip</code> into a folder and add <code>…/Engine/Binaries/Win64/UE4-Win64-Shipping.exe</code> to Lutris under a Proton runner. No installer, no .NET needed.</li>
-        <li><strong>Come back and rescan</strong> — the launcher finds your Lutris game automatically. You can also point it at the prefix + runner yourself in <em>Settings → Wine&nbsp;/&nbsp;Proton</em>.</li>
+        <li><strong>Come back and rescan</strong> — the launcher finds your Lutris game automatically. Once it's detected, you can fine-tune the prefix + runner in <em>Settings → Wine&nbsp;/&nbsp;Proton</em>.</li>
       </ol>
       <div class="ut4-integrity" style="margin:0.7rem 0;padding:0.55rem 0.7rem;border:1px solid var(--line,#333);border-radius:6px">
         <div><strong>Trust what you download.</strong> ut4ever is a third-party host, but the launcher pins the installer's SHA-256 in its <em>signed</em> update manifest — so you can confirm your download is byte-for-byte what we signed, regardless of the host.</div>
@@ -4976,7 +4976,7 @@ function renderLinuxGetGame(panel: HTMLElement): void {
       if (state.installs.length > 0) {
         render(); // found it — re-render swaps this panel out for the real UI
       } else if (status) {
-        status.innerHTML = `<span class="warn">Still no UT4 install found. Make sure it's added in Lutris (or set the prefix + runner in Settings → Wine / Proton).</span>`;
+        status.innerHTML = `<span class="warn">Still no UT4 install found. Make sure UT4 is added to Lutris (it needs a valid <code>UnrealTournament</code> game folder), then rescan.</span>`;
       }
     } catch (err) {
       if (status) status.innerHTML = `<span class="warn">Rescan failed: ${escape(String(err))}</span>`;

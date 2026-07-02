@@ -312,6 +312,9 @@ pub struct LutrisLaunch {
     pub args: Vec<String>,
     /// `game.prefix` — the explicit WINEPREFIX (authoritative; never derived).
     pub prefix: Option<PathBuf>,
+    /// `game.working_dir` — the cwd Lutris launches in. Empty/absent → fall back
+    /// to the exe's folder (UE4's usual default).
+    pub working_dir: Option<PathBuf>,
     /// `wine.version` — the runner name, resolved to a wine binary at launch.
     pub runner: Option<String>,
     /// `system.env` — extra environment variables (literal `key=value`, never
@@ -388,6 +391,7 @@ pub fn parse_lutris_launch(contents: &str) -> LutrisLaunch {
             "game" => match key {
                 "exe" => out.exe = clean_scalar(value),
                 "prefix" => out.prefix = clean_scalar(value),
+                "working_dir" => out.working_dir = clean_scalar(value),
                 "args" => out.args = split_tokens(value),
                 _ => {}
             },
@@ -481,11 +485,16 @@ pub fn plan_lutris_launch(
     let program = wine_bin
         .map(|p| p.to_string_lossy().into_owned())
         .unwrap_or_else(|| "wine".to_string());
+    // Honor Lutris `game.working_dir` when set; else the exe's folder (UE4 default).
+    let cwd = cfg
+        .working_dir
+        .clone()
+        .unwrap_or_else(|| exe.parent().unwrap_or(exe).to_path_buf());
     WineLaunch {
         program,
         args: argv,
         wineprefix,
-        cwd: exe.parent().unwrap_or(exe).to_path_buf(),
+        cwd,
         env: cfg.env.clone(),
         wrapper: cfg.prefix_command.clone(),
     }
@@ -623,50 +632,82 @@ pub fn paks_dir_for_user(prefix: &Path, user: &str) -> PathBuf {
         .join("DownloadedPaks")
 }
 
-/// The in-prefix mod-paks download dir, choosing the prefix user that owns the
-/// UT4 Saved tree. Prefers a user whose `Documents/UnrealTournament` already
-/// exists (`steamuser` first — the Proton default — then the login name, then any
-/// other non-`Public` user); falls back to `steamuser` when none exist yet.
+/// The in-prefix mod-paks download dir, choosing the prefix user that owns (or
+/// will own) the UT4 Saved tree.
+///
+/// The `runner` name (Lutris `wine.version`, or the wine-binary path for a manual
+/// override) disambiguates the prefix user: **Proton/GE-Proton run the game as
+/// `steamuser`**, while a **plain wine runner runs as the Linux login user**. That
+/// matters because pak sync can happen *before* the game's first launch (before
+/// the Saved tree exists), so we can't always rely on the tree already being
+/// there — an unconditional `steamuser` default would misplace paks for a plain-
+/// wine prefix, where the game reads from `users/<login>/…`.
+///
+/// Resolution: (1) a user whose `Documents/UnrealTournament` tree already exists
+/// wins (authoritative), in runner-family order; (2) on a fresh prefix, whichever
+/// user dir Wine created, runner-family first; (3) the runner-family default.
 #[cfg(not(windows))]
 #[must_use]
-pub fn mod_paks_dir_in_prefix(prefix: &Path) -> PathBuf {
+pub fn mod_paks_dir_in_prefix(prefix: &Path, runner: Option<&str>) -> PathBuf {
+    let users_dir = prefix.join(DRIVE_C).join("users");
     let has_ut4 = |user: &str| {
-        prefix
-            .join(DRIVE_C)
-            .join("users")
+        users_dir
             .join(user)
             .join("Documents")
             .join("UnrealTournament")
             .is_dir()
     };
-    // 1. Preferred users, in order.
+    let dir_exists = |user: &str| users_dir.join(user).is_dir();
     let login = std::env::var("USER").ok();
-    let preferred = std::iter::once("steamuser".to_string()).chain(login.clone());
-    for user in preferred {
-        if has_ut4(&user) {
-            return paks_dir_for_user(prefix, &user);
+    let is_proton = runner.is_some_and(|r| r.to_ascii_lowercase().contains("proton"));
+
+    // Runner-family preference order.
+    let mut ordered: Vec<String> = Vec::new();
+    if is_proton {
+        ordered.push("steamuser".to_string());
+        ordered.extend(login.clone());
+    } else {
+        ordered.extend(login.clone());
+        ordered.push("steamuser".to_string());
+    }
+
+    // 1. Authoritative: a user whose UT4 Saved tree already exists.
+    for user in &ordered {
+        if has_ut4(user) {
+            return paks_dir_for_user(prefix, user);
         }
     }
-    // 2. Any other real (non-Public) user that already has the UT4 tree.
-    if let Ok(entries) = std::fs::read_dir(prefix.join(DRIVE_C).join("users")) {
+    if let Ok(entries) = std::fs::read_dir(&users_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
-            if name != "Public" && has_ut4(&name) {
+            if name != "Public" && !ordered.contains(&name) && has_ut4(&name) {
                 return paks_dir_for_user(prefix, &name);
             }
         }
     }
-    // 3. Nothing created yet — default to the Proton user.
-    paks_dir_for_user(prefix, "steamuser")
+    // 2. Fresh prefix (no UT4 tree yet): whichever user dir Wine created, in
+    //    runner-family order.
+    for user in &ordered {
+        if dir_exists(user) {
+            return paks_dir_for_user(prefix, user);
+        }
+    }
+    // 3. Nothing at all yet — the runner-family default (steamuser for Proton,
+    //    login for plain wine).
+    paks_dir_for_user(
+        prefix,
+        ordered.first().map(String::as_str).unwrap_or("steamuser"),
+    )
 }
 
-/// The Wine prefix for a detected Lutris install, matched by install `root` (or
-/// the sole Lutris game when `root` is `None`). Used to resolve the in-prefix
-/// mod-paks dir for the pak commands.
+/// The Wine prefix + runner for a detected Lutris install, matched by install
+/// `root` (or the sole Lutris game when `root` is `None`). The runner
+/// (`wine.version`) is returned so the mod-paks resolver can pick the right prefix
+/// user (Proton → steamuser, plain wine → login).
 #[cfg(not(windows))]
 #[must_use]
-pub fn lutris_prefix_for_root(root: Option<&Path>) -> Option<PathBuf> {
-    let mut sole: Option<PathBuf> = None;
+pub fn lutris_prefix_for_root(root: Option<&Path>) -> Option<(PathBuf, Option<String>)> {
+    let mut sole: Option<(PathBuf, Option<String>)> = None;
     let mut sole_count = 0usize;
     for path in lutris_game_ymls() {
         let Ok(contents) = std::fs::read_to_string(&path) else {
@@ -680,10 +721,10 @@ pub fn lutris_prefix_for_root(root: Option<&Path>) -> Option<PathBuf> {
         // Only the resolved root matters here, so the mod-paks arg is irrelevant.
         if let Some(install) = crate::install::check_install(&probe, PathBuf::new()) {
             match root {
-                Some(r) if install.root == r => return Some(prefix),
+                Some(r) if install.root == r => return Some((prefix, cfg.runner)),
                 None => {
                     sole_count += 1;
-                    sole = Some(prefix);
+                    sole = Some((prefix, cfg.runner));
                 }
                 _ => {}
             }
@@ -697,16 +738,22 @@ pub fn lutris_prefix_for_root(root: Option<&Path>) -> Option<PathBuf> {
 }
 
 /// Resolve the Linux in-prefix mod-paks dir for the active install: an explicit
-/// override prefix wins, else the Lutris prefix for `root` (or the sole Lutris
-/// game). `None` → the caller falls back to `default_mod_paks_dir` (e.g. a native
-/// build or an install with no discoverable prefix).
+/// override prefix wins (with its wine path as the runner hint), else the Lutris
+/// prefix for `root` (or the sole Lutris game). `None` → the caller falls back to
+/// `default_mod_paks_dir` (a native build or an install with no discoverable prefix).
 #[cfg(not(windows))]
 #[must_use]
-pub fn linux_mod_paks_dir(root: Option<&Path>, override_prefix: Option<&Path>) -> Option<PathBuf> {
+pub fn linux_mod_paks_dir(
+    root: Option<&Path>,
+    override_prefix: Option<&Path>,
+    override_wine: Option<&Path>,
+) -> Option<PathBuf> {
     if let Some(prefix) = override_prefix {
-        return Some(mod_paks_dir_in_prefix(prefix));
+        // The override's wine path (e.g. …/GE-Proton…/wine) is a fine runner hint.
+        let runner = override_wine.and_then(|w| w.to_str());
+        return Some(mod_paks_dir_in_prefix(prefix, runner));
     }
-    lutris_prefix_for_root(root).map(|p| mod_paks_dir_in_prefix(&p))
+    lutris_prefix_for_root(root).map(|(p, runner)| mod_paks_dir_in_prefix(&p, runner.as_deref()))
 }
 
 /// `(install, launch-profile)` hits from Lutris configs, for [`crate::install::
@@ -735,9 +782,10 @@ pub fn detect_lutris_hits(
             continue;
         };
         // On Linux the game reads paks from INSIDE the prefix, not the Linux
-        // ~/Documents that `mod_paks_dir` (default_mod_paks_dir) points at.
+        // ~/Documents that `mod_paks_dir` (default_mod_paks_dir) points at. The
+        // runner picks the right prefix user (Proton → steamuser, plain → login).
         if let Some(prefix) = cfg.prefix.as_deref() {
-            install.mod_paks_dir = mod_paks_dir_in_prefix(prefix);
+            install.mod_paks_dir = mod_paks_dir_in_prefix(prefix, cfg.runner.as_deref());
         }
         let args = if cfg.args.is_empty() {
             install.launch_args.clone()
@@ -1115,6 +1163,30 @@ wine:
         assert_eq!(plan.program, "wine");
     }
 
+    #[test]
+    fn plan_lutris_launch_honors_working_dir_when_set() {
+        let yml = "game:\n  exe: /g/UT4/Engine/Binaries/Win64/UE4-Win64-Shipping.exe\n  prefix: /p\n  working_dir: /g/UT4\n";
+        let cfg = parse_lutris_launch(yml);
+        assert_eq!(cfg.working_dir.as_deref(), Some(Path::new("/g/UT4")));
+        let exe = Path::new("/g/UT4/Engine/Binaries/Win64/UE4-Win64-Shipping.exe");
+        let plan = plan_lutris_launch(&cfg, exe, &[], None);
+        assert_eq!(
+            plan.cwd,
+            PathBuf::from("/g/UT4"),
+            "cwd should be game.working_dir"
+        );
+    }
+
+    #[test]
+    fn plan_lutris_launch_falls_back_to_exe_dir_when_working_dir_blank() {
+        // The real dogfood config has `working_dir: ''` → None → exe's folder.
+        let cfg = parse_lutris_launch(REAL_LUTRIS_YML);
+        assert_eq!(cfg.working_dir, None);
+        let exe = Path::new("/home/jeremy/Games/UT4/Engine/Binaries/Win64/UE4-Win64-Shipping.exe");
+        let plan = plan_lutris_launch(&cfg, exe, &[], None);
+        assert_eq!(plan.cwd, exe.parent().unwrap());
+    }
+
     // ── in-prefix mod-paks dir ───────────────────────────────────────────────
 
     #[test]
@@ -1137,17 +1209,38 @@ wine:
         let ut4 = prefix.join("drive_c/users/steamuser/Documents/UnrealTournament");
         std::fs::create_dir_all(&ut4).unwrap();
         assert_eq!(
-            mod_paks_dir_in_prefix(prefix),
+            mod_paks_dir_in_prefix(prefix, Some("GE-Proton10-34")),
             paks_dir_for_user(prefix, "steamuser")
         );
     }
 
     #[test]
-    fn mod_paks_dir_defaults_to_steamuser_when_nothing_exists_yet() {
+    fn mod_paks_dir_proton_defaults_to_steamuser_when_nothing_exists_yet() {
         let tmp = tempfile::TempDir::new().unwrap();
         assert_eq!(
-            mod_paks_dir_in_prefix(tmp.path()),
+            mod_paks_dir_in_prefix(tmp.path(), Some("GE-Proton10-34")),
             paks_dir_for_user(tmp.path(), "steamuser")
+        );
+    }
+
+    #[test]
+    fn mod_paks_dir_plain_wine_uses_login_user_not_steamuser() {
+        // A plain (non-Proton) Lutris wine runner runs the game as the Linux login
+        // user, so paks must go to users/<login>/…, NOT steamuser — even on a fresh
+        // prefix where sync happens before first launch. (Regression guard: the old
+        // code hardcoded steamuser and misplaced them.)
+        let login = std::env::var("USER").unwrap_or_default();
+        if login.is_empty() || login == "steamuser" {
+            return; // can't meaningfully assert without a distinct login name
+        }
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prefix = tmp.path();
+        // Fresh prefix: only the login user's dir exists (as `wineboot` creates).
+        std::fs::create_dir_all(prefix.join("drive_c/users").join(&login)).unwrap();
+        assert_eq!(
+            mod_paks_dir_in_prefix(prefix, Some("lutris-ge-8-26")),
+            paks_dir_for_user(prefix, &login),
+            "plain-wine runner must resolve to the login user's DownloadedPaks"
         );
     }
 }

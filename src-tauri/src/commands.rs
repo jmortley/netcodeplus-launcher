@@ -249,9 +249,12 @@ pub(crate) fn active_mod_paks_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
         {
             let root = state.install_path.clone();
             let override_prefix = state.linux_launch.as_ref().and_then(|l| l.prefix.clone());
-            if let Some(dir) =
-                ncp_host::linux::linux_mod_paks_dir(root.as_deref(), override_prefix.as_deref())
-            {
+            let override_wine = state.linux_launch.as_ref().and_then(|l| l.wine.clone());
+            if let Some(dir) = ncp_host::linux::linux_mod_paks_dir(
+                root.as_deref(),
+                override_prefix.as_deref(),
+                override_wine.as_deref(),
+            ) {
                 return Some(dir);
             }
         }
