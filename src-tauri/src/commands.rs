@@ -20,8 +20,22 @@ use tauri::Manager;
 /// fallback when no shortcut resolves. Each install carries how it was
 /// found, whether NetcodePlus is installed there, and one launch profile
 /// per distinct shortcut variant. Empty array if nothing is found.
+/// Dev/QA affordance: when `NCP_SIMULATE_NO_INSTALL=1` (or `true`) is set in the
+/// environment, detection reports nothing and folder-validation refuses — so a
+/// developer can preview the brand-new-user experience (the Linux "Getting UT4"
+/// panel, the onboarding, etc.) on a machine that actually has UT4 installed.
+/// Purely an env toggle; ships inert (off unless explicitly set).
+fn simulate_no_install() -> bool {
+    std::env::var("NCP_SIMULATE_NO_INSTALL")
+        .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
+        .unwrap_or(false)
+}
+
 #[tauri::command]
 pub fn detect_installs() -> Vec<DetectedInstall> {
+    if simulate_no_install() {
+        return Vec::new();
+    }
     ncp_host::detect_installs()
 }
 
@@ -30,6 +44,9 @@ pub fn detect_installs() -> Vec<DetectedInstall> {
 /// and a single `Default` launch profile. `null` if not a UT4 install.
 #[tauri::command]
 pub fn check_install(path: String) -> Option<DetectedInstall> {
+    if simulate_no_install() {
+        return None;
+    }
     let mod_paks_dir = ncp_host::default_mod_paks_dir()?;
     let install = ncp_host::check_install(Path::new(&path), mod_paks_dir)?;
     let netcodeplus = ncp_host::netcodeplus_status(&install.root);
