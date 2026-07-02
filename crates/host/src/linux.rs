@@ -672,7 +672,9 @@ pub fn paks_dir_for_user(prefix: &Path, user: &str) -> PathBuf {
 /// Resolution: (1) a user whose `Documents/UnrealTournament` tree already exists
 /// wins (authoritative), in runner-family order; (2) on a fresh prefix, whichever
 /// user dir Wine created, runner-family first; (3) the runner-family default.
-#[cfg(not(windows))]
+///
+/// Pure fs/path logic (`USER` is simply absent on Windows), compiled everywhere
+/// so its tests run on the Windows dev box + CI.
 #[must_use]
 pub fn resolve_prefix_user(prefix: &Path, runner: Option<&str>) -> String {
     let users_dir = prefix.join(DRIVE_C).join("users");
@@ -727,7 +729,6 @@ pub fn resolve_prefix_user(prefix: &Path, runner: Option<&str>) -> String {
 
 /// The in-prefix mod-paks download dir for the game's prefix user (see
 /// [`resolve_prefix_user`]) — where the Wine-run game reads downloaded paks.
-#[cfg(not(windows))]
 #[must_use]
 pub fn mod_paks_dir_in_prefix(prefix: &Path, runner: Option<&str>) -> PathBuf {
     paks_dir_for_user(prefix, &resolve_prefix_user(prefix, runner))
@@ -738,7 +739,6 @@ pub fn mod_paks_dir_in_prefix(prefix: &Path, runner: Option<&str>) -> PathBuf {
 /// — a sibling of the paks dir under `Saved/`. This is what the Wine-run game
 /// actually reads, NOT the Linux `~/Documents` that `config::engine_ini_path`
 /// returns.
-#[cfg(not(windows))]
 #[must_use]
 pub fn engine_ini_in_prefix(prefix: &Path, runner: Option<&str>) -> PathBuf {
     prefix

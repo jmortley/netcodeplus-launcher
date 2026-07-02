@@ -24,11 +24,10 @@ pub mod extract;
 mod fs_util;
 pub mod install;
 pub mod launch;
-// Linux (Wine/Lutris) support — pure path/argv helpers. Compiled in test builds
-// on any host (so the tests run on the Windows dev box + CI) and in real
-// non-Windows builds; excluded from a non-test Windows build, where nothing uses
-// it (avoids a dead-code warning).
-#[cfg(any(test, not(windows)))]
+// Linux (Wine/Lutris) support — pure path/argv helpers. Compiled on every
+// platform: the tests run on the Windows dev box + CI, and the Tauri commands
+// `list_wine_runners` / `resolve_linux_launch` name `WineRunner` / `WineLaunch`
+// in their (un-gated) signatures, so the types must resolve on Windows too.
 pub mod linux;
 pub mod pak_install;
 pub mod plugin_install;
