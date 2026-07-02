@@ -406,6 +406,353 @@ pub fn default_download_dir() -> Option<String> {
     ncp_host::default_download_dir().map(|p| p.to_string_lossy().into_owned())
 }
 
+// ---- UT4 Editor -------------------------------------------------------------
+//
+// Same trust model as the game installer (third-party UT4Ever host, SHA-256
+// pinned in the signed manifest), but a simpler payload: the archive is a plain
+// `UnrealTournamentEditor/` tree with no installer exe, so "install" is just a
+// verified extract — no elevation, no external installer window. Progress goes
+// out on its own `editor-download-progress` channel so an editor flow can't
+// fight the game installer's bar.
+
+/// Set by [`cancel_editor_download`], polled by the editor download loop.
+static EDITOR_CANCEL: AtomicBool = AtomicBool::new(false);
+
+/// Path of the most recently downloaded **and verified** editor zip, recorded by
+/// [`download_editor`] and consumed by [`install_editor`] — same
+/// no-frontend-supplied-path defense as [`VERIFIED_INSTALLER`].
+static VERIFIED_EDITOR: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+/// `UE4Editor.exe` located by [`install_editor`] after a verified extract —
+/// the only exe [`launch_editor`] will start (never a frontend-supplied path).
+static EDITOR_EXE: Mutex<Option<PathBuf>> = Mutex::new(None);
+
+fn emit_editor(app: &AppHandle, phase: &'static str, done: u64, total: u64) {
+    let _ = app.emit("editor-download-progress", Progress { phase, done, total });
+}
+
+/// What the UI needs to offer the editor download (or hide it).
+#[derive(Debug, Serialize)]
+pub struct EditorInstallerInfo {
+    /// Whether the signed manifest advertises the editor at all.
+    pub available: bool,
+    /// Display version (the third party's label); empty when none.
+    pub version: String,
+    /// Declared zip size in bytes (0 when none).
+    pub size_bytes: u64,
+}
+
+/// Whether the signed manifest advertises the UT4 editor, and its version/size.
+#[tauri::command]
+pub async fn editor_installer_info(app: AppHandle) -> Result<EditorInstallerInfo, String> {
+    let (manifest, ..) = fetch_verify(&app).await?;
+    Ok(match manifest.editor_installer {
+        Some(e) => EditorInstallerInfo {
+            available: true,
+            version: e.version,
+            size_bytes: e.size_bytes,
+        },
+        None => EditorInstallerInfo {
+            available: false,
+            version: String::new(),
+            size_bytes: 0,
+        },
+    })
+}
+
+/// Cancel an in-progress editor download. The partial file is kept so a later
+/// download resumes from it.
+#[tauri::command]
+pub fn cancel_editor_download() {
+    EDITOR_CANCEL.store(true, Ordering::Relaxed);
+}
+
+/// Download the UT4 editor zip into `dir`, verifying it against the signed
+/// manifest's SHA-256. Resumable, cancellable, progress-reported via
+/// `editor-download-progress` events. Returns the path of the verified `.zip`.
+///
+/// The picked `dir` is also where [`install_editor`] extracts the editor tree
+/// (the archive's own `UnrealTournamentEditor/` folder lands inside it), so the
+/// free-space guard covers the zip **plus** the unpacked tree.
+#[tauri::command]
+pub async fn download_editor(app: AppHandle, dir: String) -> Result<String, String> {
+    let (manifest, ..) = fetch_verify(&app).await?;
+    let editor = manifest
+        .editor_installer
+        .ok_or("the update manifest has no UT4 editor entry")?;
+
+    let dir = PathBuf::from(&dir);
+    if !dir.is_dir() {
+        return Err("pick an existing folder to download into".into());
+    }
+    if !ncp_host::dir_writable(&dir) {
+        return Err(
+            "can't download there — that's a protected folder. Pick a normal folder you own (the editor also unpacks there), not Program Files or a drive root."
+                .into(),
+        );
+    }
+    let final_path = dir.join(format!("UT4-Editor-{}.zip", safe_version(&editor.version)));
+    let part = PathBuf::from(format!("{}.part", final_path.to_string_lossy()));
+
+    // Free-space guard: the drive needs the zip AND the unpacked tree (the
+    // editor archive is compressed — the tree is ~1.25× the download), so
+    // require ~2.25× the download plus headroom. `install_editor` re-checks
+    // the exact uncompressed size before extracting.
+    if let Some(free) = ncp_host::disk::available_space(&dir) {
+        let needed = editor
+            .size_bytes
+            .saturating_mul(9)
+            .saturating_div(4)
+            .saturating_add(512 * 1024 * 1024);
+        if free < needed {
+            return Err(format!(
+                "not enough free space on that drive — downloading and unpacking the editor needs ~{:.0} GB, have {:.1} GB",
+                needed as f64 / 1e9,
+                free as f64 / 1e9,
+            ));
+        }
+    }
+
+    EDITOR_CANCEL.store(false, Ordering::Relaxed);
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+
+    let app_dl = app.clone();
+    ncp_net::download_resumable(
+        &client,
+        &editor.url,
+        editor.size_bytes,
+        &part,
+        &EDITOR_CANCEL,
+        move |done, total| emit_editor(&app_dl, "download", done, total),
+    )
+    .await
+    .map_err(|e| match e {
+        ncp_net::NetError::Cancelled => "cancelled".to_string(),
+        ncp_net::NetError::Io(io)
+            if io.raw_os_error() == Some(5) || io.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            "couldn't write the download to that folder — it may be write-protected or blocked by antivirus. Try a different folder.".to_string()
+        }
+        other => other.to_string(),
+    })?;
+
+    let app_v = app.clone();
+    let digest = ncp_net::hash_file(&part, move |done, total| {
+        emit_editor(&app_v, "verify", done, total)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if digest != editor.sha256 {
+        let _ = std::fs::remove_file(&part);
+        return Err(
+            "the download failed verification (its contents don't match the signed manifest) — it was discarded"
+                .into(),
+        );
+    }
+
+    std::fs::rename(&part, &final_path).map_err(|e| e.to_string())?;
+    *VERIFIED_EDITOR.lock().unwrap() = Some(final_path.clone());
+    Ok(final_path.to_string_lossy().into_owned())
+}
+
+/// Where [`install_editor`] unpacked the tree and the editor exe it found.
+#[derive(Debug, Serialize)]
+pub struct InstallEditorResult {
+    /// The folder holding the unpacked `UnrealTournamentEditor/` tree.
+    pub editor_dir: String,
+    /// `UE4Editor.exe`, when it was located (used by [`launch_editor`]).
+    pub exe_path: Option<String>,
+}
+
+/// Extract the previously downloaded + verified editor zip beside itself. The
+/// archive carries a single top-level `UnrealTournamentEditor/` folder, so the
+/// tree lands as `<picked dir>/UnrealTournamentEditor/`. No elevation and no
+/// installer to run — on success the editor is ready; [`launch_editor`] starts
+/// it. Emits `editor-download-progress` events with phase `"extract"`.
+///
+/// Takes NO path: it acts only on the zip [`download_editor`] verified this
+/// session (recorded in [`VERIFIED_EDITOR`]). A re-run over a previous unpack
+/// simply overwrites the tree's files — the picked folder is the user's, so it
+/// is never cleared wholesale.
+#[tauri::command]
+pub async fn install_editor(app: AppHandle) -> Result<InstallEditorResult, String> {
+    let zip = VERIFIED_EDITOR
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("download the UT4 editor first — there's no verified download to unpack")?;
+    if !zip.is_file() {
+        return Err("the downloaded editor zip is missing — download it again".into());
+    }
+    let dest = zip
+        .parent()
+        .ok_or("the editor zip has no containing folder")?
+        .to_path_buf();
+
+    let total = ncp_host::total_uncompressed_size(&zip).map_err(|e| e.to_string())?;
+    if let Some(free) = ncp_host::disk::available_space(&dest) {
+        let needed = total.saturating_add(512 * 1024 * 1024);
+        if free < needed {
+            return Err(format!(
+                "not enough free space to unpack the editor — need ~{:.1} GB more on that drive, have {:.1} GB. Free up space (you can delete the downloaded .zip once it's unpacked) and try again.",
+                total as f64 / 1e9,
+                free as f64 / 1e9,
+            ));
+        }
+    }
+
+    // The ~38 GB extract is synchronous — keep it off the async executor.
+    let app_bg = app.clone();
+    let handle =
+        tauri::async_runtime::spawn_blocking(move || -> Result<InstallEditorResult, String> {
+            ncp_host::extract_zip(&zip, &dest, total, |done, total| {
+                emit_editor(&app_bg, "extract", done, total);
+            })
+            .map_err(|e| e.to_string())?;
+
+            // The known top-level folder first; fall back to scanning the picked
+            // dir in case a future re-rolled archive renames it.
+            let known = dest.join("UnrealTournamentEditor");
+            let exe = if known.is_dir() {
+                ncp_host::find_editor_exe(&known)
+            } else {
+                ncp_host::find_editor_exe(&dest)
+            };
+            let editor_dir = exe
+                .as_deref()
+                .and_then(|e| {
+                    // …/Engine/Binaries/Win64/UE4Editor.exe → the tree root, 4 up.
+                    e.ancestors().nth(4).map(Path::to_path_buf)
+                })
+                .unwrap_or(known);
+            *EDITOR_EXE.lock().unwrap() = exe.clone();
+            Ok(InstallEditorResult {
+                editor_dir: editor_dir.to_string_lossy().into_owned(),
+                exe_path: exe.map(|e| e.to_string_lossy().into_owned()),
+            })
+        });
+
+    match handle.await {
+        Ok(res) => res,
+        Err(e) => Err(format!("the unpack step failed to run: {e}")),
+    }
+}
+
+/// Start `UE4Editor.exe` from the tree [`install_editor`] just unpacked. Acts
+/// only on the backend-recorded exe (never a frontend-supplied path). No
+/// elevation — the editor is a normal user-level program.
+#[tauri::command]
+pub fn launch_editor() -> Result<(), String> {
+    let exe = EDITOR_EXE
+        .lock()
+        .unwrap()
+        .clone()
+        .ok_or("unpack the UT4 editor first — there's nothing to launch")?;
+    if !exe.is_file() {
+        return Err("UE4Editor.exe is missing — unpack the editor again".into());
+    }
+    let work = exe
+        .parent()
+        .ok_or("the editor exe has no containing folder")?
+        .to_path_buf();
+    ncp_host::shell_launch(&exe, &work).map_err(|e| e.to_string())
+}
+
+// ---- UT4-OpenAL -------------------------------------------------------------
+
+/// What the UI needs to offer the one-click UT4-OpenAL install.
+#[derive(Debug, Serialize)]
+pub struct OpenalInfo {
+    /// Whether the signed manifest advertises UT4-OpenAL at all.
+    pub available: bool,
+    /// Display version (the release tag, e.g. `"2023-10-21"`); empty when none.
+    pub version: String,
+    /// Declared zip size in bytes (0 when none).
+    pub size_bytes: u64,
+}
+
+/// Whether the signed manifest advertises UT4-OpenAL, and its version/size.
+#[tauri::command]
+pub async fn openal_info(app: AppHandle) -> Result<OpenalInfo, String> {
+    let (manifest, ..) = fetch_verify(&app).await?;
+    Ok(match manifest.openal {
+        Some(o) => OpenalInfo {
+            available: true,
+            version: o.version,
+            size_bytes: o.size_bytes,
+        },
+        None => OpenalInfo {
+            available: false,
+            version: String::new(),
+            size_bytes: 0,
+        },
+    })
+}
+
+/// One-click UT4-OpenAL install into `root` (a detected UT4 install):
+/// download the release zip, verify it against the signed manifest's SHA-256,
+/// overlay `Win64/**` onto `<root>/Engine/Binaries/Win64/`, and stage the
+/// OpenAL Soft config (`alsoft.ini` + HRTF data) for the chosen sample rate
+/// into the roaming config dir — keeping any `alsoft.ini` the user already
+/// tuned. The Engine.ini `[Audio]` line is NOT written here; the existing
+/// "Apply competitive config" flow adds it once detection succeeds.
+///
+/// `sample_rate` is the sound card's output rate: 48000 (the usual Windows
+/// default) or 44100.
+#[tauri::command]
+pub async fn install_openal(
+    app: AppHandle,
+    root: String,
+    sample_rate: u32,
+) -> Result<ncp_host::OpenalInstallSummary, String> {
+    if !cfg!(windows) {
+        // The Wine-run game reads the config inside the prefix, not the Linux
+        // ~/.config — supporting that needs the in-prefix resolver first.
+        return Err("UT4-OpenAL install isn't supported on Linux yet — install it into the Wine prefix by hand for now".into());
+    }
+    let (manifest, ..) = fetch_verify(&app).await?;
+    let entry = manifest
+        .openal
+        .ok_or("the update manifest has no UT4-OpenAL entry")?;
+    // The overlay replaces the audio DLLs and sounds the game keeps open.
+    if crate::commands::shipping_client_running() {
+        return Err(
+            "Close Unreal Tournament first — UT4-OpenAL replaces audio files the game keeps open."
+                .into(),
+        );
+    }
+    let config_dir = ncp_host::openal_install::roaming_config_dir()
+        .ok_or("couldn't resolve the roaming config folder (%AppData%)")?;
+
+    let zip_path = std::env::temp_dir().join(format!("ncp-openal-{}.zip", std::process::id()));
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    if let Err(e) = ncp_net::download(
+        &client,
+        &entry.url,
+        entry.sha256,
+        entry.size_bytes,
+        &zip_path,
+    )
+    .await
+    {
+        let _ = std::fs::remove_file(&zip_path);
+        return Err(format!("UT4-OpenAL download/verify failed: {e}"));
+    }
+
+    let root_pb = PathBuf::from(&root);
+    let zip_bg = zip_path.clone();
+    let handle = tauri::async_runtime::spawn_blocking(move || {
+        ncp_host::install_openal_zip(&zip_bg, &root_pb, &config_dir, sample_rate)
+            .map_err(|e| e.to_string())
+    });
+    let result = match handle.await {
+        Ok(res) => res,
+        Err(e) => Err(format!("the install step failed to run: {e}")),
+    };
+    let _ = std::fs::remove_file(&zip_path);
+    result
+}
+
 /// Reveal a downloaded file by opening its containing folder (the user runs the
 /// installer themselves). Opens a real directory only — never a file, no exec
 /// surface.

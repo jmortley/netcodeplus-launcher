@@ -156,6 +156,40 @@ pub fn find_installer_exe(dir: &Path) -> Option<PathBuf> {
     best
 }
 
+/// Find `UE4Editor.exe` under `dir` (a freshly extracted editor tree),
+/// shallowest match first. The editor archive is a plain tree
+/// (`UnrealTournamentEditor/Engine/Binaries/Win64/UE4Editor.exe`) with no
+/// installer exe, so this is the launch target. Returns `None` when nothing
+/// matches; the caller then just offers "open folder".
+#[must_use]
+pub fn find_editor_exe(dir: &Path) -> Option<PathBuf> {
+    let mut best: Option<PathBuf> = None;
+    let mut best_depth = usize::MAX;
+    let mut stack = vec![dir.to_path_buf()];
+    while let Some(d) = stack.pop() {
+        let Ok(entries) = fs::read_dir(&d) else {
+            continue;
+        };
+        for entry in entries.flatten() {
+            let path = entry.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else if path
+                .file_name()
+                .and_then(|n| n.to_str())
+                .is_some_and(|n| n.eq_ignore_ascii_case("UE4Editor.exe"))
+            {
+                let depth = path.components().count();
+                if depth < best_depth {
+                    best_depth = depth;
+                    best = Some(path);
+                }
+            }
+        }
+    }
+    best
+}
+
 /// Whether `path` is an installer entry-point exe: `.exe` extension, file name
 /// contains "installer" (case-insensitive), and no path component is
 /// `Resources` (where the bundled redistributables live).
@@ -206,6 +240,24 @@ mod tests {
 
         let found = find_installer_exe(root).expect("should find the installer");
         assert_eq!(found.file_name().unwrap(), "UT4_Installer.exe");
+    }
+
+    #[test]
+    fn finds_editor_exe_shallowest() {
+        let tmp = TempDir::new().unwrap();
+        let root = tmp.path();
+        // The real layout: one wrapper folder, exe under Engine/Binaries/Win64.
+        let wrap = root.join("UnrealTournamentEditor");
+        touch(&wrap.join("Engine/Binaries/Win64/UE4Editor.exe"), b"MZ");
+        touch(&wrap.join("Engine/Binaries/Win64/UE4Editor-Cmd.exe"), b"MZ");
+        touch(&wrap.join("Engine/Binaries/Win64/UnrealPak.exe"), b"MZ");
+
+        let found = find_editor_exe(root).expect("should find the editor");
+        assert_eq!(
+            found,
+            wrap.join("Engine/Binaries/Win64").join("UE4Editor.exe")
+        );
+        assert!(find_editor_exe(&root.join("missing")).is_none());
     }
 
     #[test]

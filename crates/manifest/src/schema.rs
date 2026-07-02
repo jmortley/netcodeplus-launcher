@@ -82,6 +82,23 @@ pub struct Manifest {
     /// [`GameInstaller::sha256`] in the signed manifest, verified after download.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub game_installer: Option<GameInstaller>,
+
+    /// The UT4 **editor** distribution (a plain zipped tree, no installer exe —
+    /// the launcher extracts it and the user runs `UE4Editor.exe`). Same trust
+    /// model and entry shape as [`Self::game_installer`]: third-party host
+    /// (UT4Ever), integrity pinned by the signed digest. `#[serde(default)]` →
+    /// `None`, so manifests authored before editor support — and launchers built
+    /// before it — interoperate.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub editor_installer: Option<GameInstaller>,
+
+    /// The UT4-OpenAL audio module (HRTF positional audio, by Main.exe): a zip
+    /// whose `Win64/` tree overlays `<root>/Engine/Binaries/Win64/` plus nested
+    /// per-sample-rate OpenAL Soft config zips. Hosted on a third-party GitHub
+    /// release; integrity comes from the signed digest, exactly like a pak.
+    /// `#[serde(default)]` → `None` for back-compat in both directions.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub openal: Option<GameInstaller>,
 }
 
 /// The latest launcher build advertised by a [`Manifest`].
@@ -526,6 +543,58 @@ mod tests {
             launcher.sha256.expect("digest present").to_string(),
             "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
         );
+        let reparsed: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(reparsed, m);
+    }
+
+    #[test]
+    fn manifest_without_editor_or_openal_parses() {
+        // Back-compat: every manifest published before editor/OpenAL support
+        // (no `editor_installer` / `openal` keys) must deserialise with both
+        // `None` — and, symmetrically, 1.5.x launchers ignore the new keys
+        // (serde's default tolerates unknown fields; nothing here derives
+        // `deny_unknown_fields`).
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-07-02T00:00:00Z",
+            "expires_at": "2027-07-02T00:00:00Z",
+            "sequence": 35,
+            "min_launcher_version": "0.1.0",
+            "channels": {}
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert!(m.editor_installer.is_none());
+        assert!(m.openal.is_none());
+    }
+
+    #[test]
+    fn manifest_with_editor_and_openal_round_trips() {
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-07-02T00:00:00Z",
+            "expires_at": "2027-07-02T00:00:00Z",
+            "sequence": 36,
+            "min_launcher_version": "0.1.0",
+            "channels": {},
+            "editor_installer": {
+                "version": "2023-03-06",
+                "url": "https://example.invalid/UnrealTournamentEditor.zip",
+                "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "size_bytes": 33313033101
+            },
+            "openal": {
+                "version": "2023-10-21",
+                "url": "https://example.invalid/UT4-OpenAL.zip",
+                "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                "size_bytes": 16878227
+            }
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let editor = m.editor_installer.as_ref().expect("editor entry present");
+        assert_eq!(editor.version, "2023-03-06");
+        assert_eq!(editor.size_bytes, 33_313_033_101);
+        let openal = m.openal.as_ref().expect("openal entry present");
+        assert_eq!(openal.version, "2023-10-21");
         let reparsed: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(reparsed, m);
     }

@@ -68,6 +68,8 @@ fn manifest_with_channel(name: &str, paks: HashMap<String, ManifestPak>) -> Mani
         channels,
         launcher: None,
         game_installer: None,
+        editor_installer: None,
+        openal: None,
     }
 }
 

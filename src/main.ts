@@ -4739,36 +4739,127 @@ async function pollQueues(): Promise<void> {
 
 // ---- recommended add-ons (Advanced) ----------------------------------------
 
-// Recommends optional community plugins for the selected install, mirroring the
-// UT4-OpenAL recommendation: detect the shipping DLL and, if it's missing, link
-// out to the project so the player installs it themselves (the launcher never
-// installs these). Currently just UltiCross — parameterized custom crosshairs.
+// Optional community add-ons for the selected install. UltiCross stays
+// detect + link-out (unzip it yourself); UT4-OpenAL is a one-click install when
+// the signed manifest advertises it (download → SHA-256 verify → place), with
+// the link-out kept as the fallback for older manifests / Linux. The UT4
+// Editor section below is install-independent: a verified 31 GB download +
+// unpack for mappers/modders.
 async function renderAddons(): Promise<void> {
   const panel = document.getElementById("addons-panel");
   if (!panel) return;
   const root = state.installs[state.selInstall]?.install.root;
-  if (!root) {
-    panel.innerHTML = `<p class="src">Detect a UT4 install to see recommended add-ons.</p>`;
-    return;
-  }
+
+  let addons = `<p class="src">Detect a UT4 install to see recommended add-ons.</p>`;
   let hasUlti = false;
-  try {
-    hasUlti = await invoke<boolean>("ulticross_status", { root });
-  } catch (err) {
-    console.error("ulticross_status failed:", err);
-    panel.innerHTML = "";
-    return;
+  let hasOpenal = false;
+  let openalInfo: AddonEntryInfo | null = null;
+  if (root) {
+    try {
+      hasUlti = await invoke<boolean>("ulticross_status", { root });
+    } catch (err) {
+      console.error("ulticross_status failed:", err);
+    }
+    try {
+      hasOpenal = await invoke<boolean>("openal_status", { root });
+    } catch (err) {
+      console.error("openal_status failed:", err);
+    }
+    if (!hasOpenal && platformOs === "windows") {
+      openalInfo = await invoke<AddonEntryInfo>("openal_info").catch(() => null);
+    }
+    const ulti = hasUlti
+      ? `<div class="ok">✓ UltiCross detected — fully customizable crosshairs (type <code>ulticross</code> in the console).</div>`
+      : `<p class="src">UltiCross not detected — get <button id="get-ulticross" type="button" class="link-btn">UltiCross</button> for fully customizable crosshairs, then unzip it into your <button id="open-plugins" type="button" class="link-btn">Plugins folder</button> and relaunch.</p>`;
+    let openal: string;
+    if (hasOpenal) {
+      openal = `<div class="ok">✓ UT4-OpenAL detected — HRTF positional audio. Enable it via <strong>Settings → Apply competitive config</strong>.</div>`;
+    } else if (openalInfo?.available) {
+      const mb = (openalInfo.size_bytes / 1e6).toFixed(0);
+      openal = `
+        <div class="game-install">
+          <div><strong>UT4-OpenAL</strong> — HRTF positional audio by Main.exe (hear exactly where sounds come from). The launcher downloads the release (${mb} MB), verifies it against the signed manifest, puts the audio module into this install, and stages the OpenAL config for your sound card's sample rate. Your existing <code>alsoft.ini</code> tuning is kept.</div>
+          <div class="game-install-actions">
+            <label>Sample rate
+              <select id="openal-rate">
+                <option value="48000" selected>48,000 Hz (Windows default)</option>
+                <option value="44100">44,100 Hz</option>
+              </select>
+            </label>
+            <button id="openal-install-btn" type="button">Install UT4-OpenAL</button>
+            <button id="get-openal-manual" type="button" class="link-btn">Project page</button>
+          </div>
+          <div id="openal-install-status" class="launch-status"></div>
+        </div>`;
+    } else {
+      openal = `<p class="src">UT4-OpenAL not detected — get <button id="get-openal-manual" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio, then drop its DLLs into <code>Engine\\Binaries\\Win64</code> and relaunch.</p>`;
+    }
+    addons = `
+      <p>Optional community add-ons for this install.</p>
+      ${ulti}
+      ${openal}`;
   }
-  const ulti = hasUlti
-    ? `<div class="ok">✓ UltiCross detected — fully customizable crosshairs (type <code>ulticross</code> in the console).</div>`
-    : `<p class="src">UltiCross not detected — get <button id="get-ulticross" type="button" class="link-btn">UltiCross</button> for fully customizable crosshairs, then unzip it into your <button id="open-plugins" type="button" class="link-btn">Plugins folder</button> and relaunch.</p>`;
   panel.innerHTML = `
-    <p>Optional community plugins for this install — the launcher only checks whether you have them.</p>
-    ${ulti}`;
-  document
-    .getElementById("get-ulticross")
-    ?.addEventListener("click", () => openExternal("https://github.com/aldehir/UT4-UltiCross"));
-  document.getElementById("open-plugins")?.addEventListener("click", () => void revealPlugins(root));
+    ${addons}
+    <div id="editor-install-section"></div>`;
+  if (root) {
+    document
+      .getElementById("get-ulticross")
+      ?.addEventListener("click", () => openExternal("https://github.com/aldehir/UT4-UltiCross"));
+    document
+      .getElementById("open-plugins")
+      ?.addEventListener("click", () => void revealPlugins(root));
+    document
+      .getElementById("get-openal-manual")
+      ?.addEventListener("click", () => openExternal("https://github.com/main-exe/UT4-OpenAL/"));
+    document
+      .getElementById("openal-install-btn")
+      ?.addEventListener("click", () => void installOpenal(root));
+  }
+  void renderEditorInstall();
+}
+
+// One-click UT4-OpenAL install: download + verify + place, then re-render so
+// the ✓ state (and the config panel's audio line) reflect the new detection.
+async function installOpenal(root: string): Promise<void> {
+  const status = document.getElementById("openal-install-status");
+  const rate = Number(
+    (document.getElementById("openal-rate") as HTMLSelectElement | null)?.value ?? "48000",
+  );
+  const btn = document.getElementById("openal-install-btn") as HTMLButtonElement | null;
+  if (btn) btn.disabled = true;
+  if (status) status.innerHTML = `<span class="src">Downloading and verifying UT4-OpenAL…</span>`;
+  try {
+    const s = await invoke<{
+      binaries_files: number;
+      alsoft_ini_written: boolean;
+      alsoft_ini_kept: boolean;
+      hrtf_files: number;
+    }>("install_openal", { root, sampleRate: rate });
+    const kept = s.alsoft_ini_kept
+      ? " Your existing alsoft.ini tuning was kept."
+      : "";
+    // Re-render both surfaces; report into the fresh addons panel.
+    await renderAddons();
+    await renderConfig({
+      text: "UT4-OpenAL installed — apply the config to enable its audio module.",
+      cls: "ok",
+    });
+    const fresh = document.getElementById("addons-panel");
+    if (fresh) {
+      const ok = fresh.querySelector(".ok");
+      if (ok) {
+        ok.insertAdjacentHTML(
+          "afterend",
+          `<div class="ok">Installed ${s.binaries_files} audio files + ${s.hrtf_files} HRTF profiles.${kept} Now click <strong>Apply competitive config</strong> in Settings so the game loads it.</div>`,
+        );
+      }
+    }
+  } catch (err) {
+    if (btn) btn.disabled = false;
+    const st = document.getElementById("openal-install-status");
+    if (st) st.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+  }
 }
 
 // ---- performance config ---------------------------------------------------
@@ -4804,7 +4895,9 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
     : `<code>Engine\\Binaries\\Win64</code>`;
   const audioLine = openal
     ? `<div class="ok">✓ UT4-OpenAL detected — its audio module will be enabled.</div>`
-    : `<p class="src">OpenAL not detected — get <button id="get-openal" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio, then drop its DLL into ${openalDest} and relaunch. The audio override is skipped without it.</p>`;
+    : platformOs === "windows" && root
+      ? `<p class="src">OpenAL not detected — one-click install <button class="link-btn" data-nav-to="addons" type="button">UT4-OpenAL on the Add-ons tab</button> for HRTF positional audio. The audio override is skipped without it.</p>`
+      : `<p class="src">OpenAL not detected — get <button id="get-openal" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio, then drop its DLL into ${openalDest} and relaunch. The audio override is skipped without it.</p>`;
 
   const t = cfg.tweaks;
   const readOnlyWarn = cfg.engine_ini_read_only
@@ -5221,6 +5314,172 @@ async function findMyInstall(): Promise<void> {
     state.installs.length > 0
       ? `<span class="ok">✓ Found your UT4 install — it's ready to play on the Home tab.</span>`
       : `<span class="warn">No UT4 install detected yet. If the installer just finished, give it a moment and click again — or use <strong>Settings → Pick install folder</strong> to point at where you installed UT4.</span>`;
+}
+
+// ---- UT4 Editor (verified download + unpack, Add-ons tab) -------------------
+
+// Manifest entry facts for an optional add-on download (editor / OpenAL).
+interface AddonEntryInfo {
+  available: boolean;
+  version: string;
+  size_bytes: number;
+}
+
+let editorDownloadUnlisten: UnlistenFn | null = null;
+
+// The editor's own progress channel (so it can't fight the game installer's
+// bar): same phase → verb mapping, editor-prefixed element ids.
+async function attachEditorProgress(): Promise<UnlistenFn> {
+  return await listen<{ phase: string; done: number; total: number }>(
+    "editor-download-progress",
+    (e) => {
+      const { phase, done, total } = e.payload;
+      const pct = total > 0 ? Math.floor((done / total) * 100) : 0;
+      const bar = document.getElementById("editor-progress-bar");
+      if (bar) bar.style.width = `${pct}%`;
+      const label = document.getElementById("editor-progress-label");
+      if (label) {
+        label.textContent = `${gamePhaseLabel(phase)} ${pct}% — ${(done / 1e9).toFixed(2)} / ${(
+          total / 1e9
+        ).toFixed(2)} GB`;
+      }
+    },
+  );
+}
+
+function editorProgressSkeleton(withCancel: boolean): string {
+  return `
+    <div class="game-progress"><div id="editor-progress-bar" class="game-progress-bar"></div></div>
+    <div class="src"><span id="editor-progress-label">Starting…</span>${
+      withCancel
+        ? ` <button id="editor-cancel-btn" type="button" class="link-btn">Cancel</button>`
+        : ""
+    }</div>`;
+}
+
+// The UT4 Editor section on the Add-ons tab: a verified ~31 GB download that
+// unpacks to a ready-to-run editor tree (no installer exe, no admin prompt).
+// Windows-only, and only when the signed manifest advertises it.
+async function renderEditorInstall(): Promise<void> {
+  const section = document.getElementById("editor-install-section");
+  if (!section) return;
+  if (platformOs !== "windows") {
+    section.innerHTML = "";
+    return;
+  }
+  const info = await invoke<AddonEntryInfo>("editor_installer_info").catch(() => null);
+  if (!info?.available) {
+    section.innerHTML = "";
+    return;
+  }
+  const gb = (info.size_bytes / 1e9).toFixed(0);
+  section.innerHTML = `
+    <h2>UT4 Editor</h2>
+    <div class="game-install">
+      <div><strong>Make maps and mods.</strong> The launcher downloads the community UT4 Editor (${gb} GB) to a folder you choose, verifies it against the signed manifest, and unpacks it there (~38 GB unpacked — the drive needs room for both while it installs). No installer to click through; when it's done you launch <code>UE4Editor.exe</code> straight from here.</div>
+      <div class="game-install-actions">
+        <button id="editor-download-btn" type="button">Download &amp; unpack the UT4 Editor</button>
+      </div>
+      <div id="editor-install-status" class="launch-status"></div>
+    </div>`;
+  document
+    .getElementById("editor-download-btn")
+    ?.addEventListener("click", () => void startEditorDownload());
+}
+
+async function startEditorDownload(): Promise<void> {
+  const status = document.getElementById("editor-install-status");
+  const defaultDir = await invoke<string | null>("default_download_dir").catch(() => null);
+  const dir = await open({
+    directory: true,
+    defaultPath: defaultDir ?? undefined,
+    title: "Pick where the UT4 Editor should live (needs ~70 GB free while installing)",
+  });
+  if (typeof dir !== "string") return; // folder picker cancelled
+
+  if (status) status.innerHTML = editorProgressSkeleton(true);
+  document
+    .getElementById("editor-cancel-btn")
+    ?.addEventListener("click", () => void invoke("cancel_editor_download"));
+
+  if (editorDownloadUnlisten) {
+    editorDownloadUnlisten();
+    editorDownloadUnlisten = null;
+  }
+  editorDownloadUnlisten = await attachEditorProgress();
+
+  try {
+    await invoke<string>("download_editor", { dir });
+    // One-click: roll straight into the unpack.
+    await startEditorInstall();
+  } catch (err) {
+    const msg = String(err);
+    if (status) {
+      status.innerHTML = msg.includes("cancelled")
+        ? `<span class="warn">Download cancelled — it'll resume where it stopped if you start again.</span>`
+        : `<span class="warn">${escape(msg)}</span>`;
+    }
+  } finally {
+    if (editorDownloadUnlisten) {
+      editorDownloadUnlisten();
+      editorDownloadUnlisten = null;
+    }
+  }
+}
+
+// Unpack the verified editor zip beside itself (phase "extract" on the editor
+// progress channel), then offer Launch / Open folder. Reached automatically
+// after a verified download, and from its own "Try again" on failure.
+async function startEditorInstall(): Promise<void> {
+  const status = document.getElementById("editor-install-status");
+  if (status) status.innerHTML = editorProgressSkeleton(false);
+
+  if (editorDownloadUnlisten) {
+    editorDownloadUnlisten();
+    editorDownloadUnlisten = null;
+  }
+  editorDownloadUnlisten = await attachEditorProgress();
+
+  try {
+    const res = await invoke<{ editor_dir: string; exe_path: string | null }>("install_editor");
+    if (status) {
+      const launchBtn = res.exe_path
+        ? `<button id="editor-launch-btn" type="button">Launch the editor</button>`
+        : "";
+      status.innerHTML = `<span class="ok">✓ UT4 Editor installed.</span>
+        You can delete the downloaded .zip next to it to reclaim ~31 GB. First startup takes a while (it compiles shaders).
+        <div class="game-install-actions">
+          ${launchBtn}
+          <button id="editor-open-btn" type="button" class="link-btn">Open folder</button>
+        </div>`;
+    }
+    document
+      .getElementById("editor-launch-btn")
+      ?.addEventListener("click", () => void invoke("launch_editor").catch((err) => {
+        const s = document.getElementById("editor-install-status");
+        if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+      }));
+    document
+      .getElementById("editor-open-btn")
+      ?.addEventListener("click", () =>
+        void invoke("reveal_path", { path: res.exe_path ?? `${res.editor_dir}\\x` }),
+      );
+  } catch (err) {
+    if (status) {
+      status.innerHTML = `<span class="warn">${escape(String(err))}</span>
+        <div class="game-install-actions">
+          <button id="editor-retry-btn" type="button">Try again</button>
+        </div>`;
+      document
+        .getElementById("editor-retry-btn")
+        ?.addEventListener("click", () => void startEditorInstall());
+    }
+  } finally {
+    if (editorDownloadUnlisten) {
+      editorDownloadUnlisten();
+      editorDownloadUnlisten = null;
+    }
+  }
 }
 
 async function applyConfig(setOpenalAudio: boolean) {

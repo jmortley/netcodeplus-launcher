@@ -77,6 +77,8 @@ fn sample_manifest(now: DateTime<Utc>) -> Manifest {
         channels,
         launcher: None,
         game_installer: None,
+        editor_installer: None,
+        openal: None,
     }
 }
 

@@ -29,6 +29,7 @@ pub mod launch;
 // `list_wine_runners` / `resolve_linux_launch` name `WineRunner` / `WineLaunch`
 // in their (un-gated) signatures, so the types must resolve on Windows too.
 pub mod linux;
+pub mod openal_install;
 pub mod pak_install;
 pub mod plugin_install;
 pub mod shortcut;
@@ -39,7 +40,9 @@ mod zip_safety;
 pub use crate::dotnet::windowsdesktop_runtime_present;
 pub use crate::elevate::{dir_writable, run_elevated, shell_launch, ElevateError};
 pub use crate::error::{Result, StateError};
-pub use crate::extract::{extract_zip, find_installer_exe, total_uncompressed_size, ExtractError};
+pub use crate::extract::{
+    extract_zip, find_editor_exe, find_installer_exe, total_uncompressed_size, ExtractError,
+};
 pub use crate::install::{
     check_install, default_download_dir, default_mod_paks_dir, detect, detect_installs,
     netcodeplus_dir, netcodeplus_status, play_install_from_shortcut, plugins_dir,
@@ -50,6 +53,7 @@ pub use crate::launch::{
     affinity_presets, launch, logical_cpus, parse_mask_hex, AffinityPreset, LaunchOptions,
     LinuxLaunchSettings, Priority,
 };
+pub use crate::openal_install::{install_openal_zip, OpenalInstallError, OpenalInstallSummary};
 pub use crate::pak_install::{
     install_pak, pak_file_stamp, pak_on_disk_digest, remove_pak, rename_pak,
 };
