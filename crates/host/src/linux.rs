@@ -659,23 +659,22 @@ pub fn paks_dir_for_user(prefix: &Path, user: &str) -> PathBuf {
         .join("DownloadedPaks")
 }
 
-/// The in-prefix mod-paks download dir, choosing the prefix user that owns (or
-/// will own) the UT4 Saved tree.
+/// Choose the prefix user that owns (or will own) the UT4 Saved tree, so both the
+/// mod-paks dir and Engine.ini resolve to where the game actually reads/writes.
 ///
 /// The `runner` name (Lutris `wine.version`, or the wine-binary path for a manual
-/// override) disambiguates the prefix user: **Proton/GE-Proton run the game as
-/// `steamuser`**, while a **plain wine runner runs as the Linux login user**. That
-/// matters because pak sync can happen *before* the game's first launch (before
-/// the Saved tree exists), so we can't always rely on the tree already being
-/// there — an unconditional `steamuser` default would misplace paks for a plain-
-/// wine prefix, where the game reads from `users/<login>/…`.
+/// override) disambiguates: **Proton/GE-Proton run the game as `steamuser`**,
+/// while a **plain wine runner runs as the Linux login user**. This matters
+/// because sync can happen *before* the game's first launch (before the Saved
+/// tree exists), so we can't always rely on the tree already being there — an
+/// unconditional `steamuser` default would misplace files for a plain-wine prefix.
 ///
 /// Resolution: (1) a user whose `Documents/UnrealTournament` tree already exists
 /// wins (authoritative), in runner-family order; (2) on a fresh prefix, whichever
 /// user dir Wine created, runner-family first; (3) the runner-family default.
 #[cfg(not(windows))]
 #[must_use]
-pub fn mod_paks_dir_in_prefix(prefix: &Path, runner: Option<&str>) -> PathBuf {
+pub fn resolve_prefix_user(prefix: &Path, runner: Option<&str>) -> String {
     let users_dir = prefix.join(DRIVE_C).join("users");
     let has_ut4 = |user: &str| {
         users_dir
@@ -701,30 +700,57 @@ pub fn mod_paks_dir_in_prefix(prefix: &Path, runner: Option<&str>) -> PathBuf {
     // 1. Authoritative: a user whose UT4 Saved tree already exists.
     for user in &ordered {
         if has_ut4(user) {
-            return paks_dir_for_user(prefix, user);
+            return user.clone();
         }
     }
     if let Ok(entries) = std::fs::read_dir(&users_dir) {
         for entry in entries.flatten() {
             let name = entry.file_name().to_string_lossy().into_owned();
             if name != "Public" && !ordered.contains(&name) && has_ut4(&name) {
-                return paks_dir_for_user(prefix, &name);
+                return name;
             }
         }
     }
-    // 2. Fresh prefix (no UT4 tree yet): whichever user dir Wine created, in
-    //    runner-family order.
+    // 2. Fresh prefix (no UT4 tree yet): whichever user dir Wine created.
     for user in &ordered {
         if dir_exists(user) {
-            return paks_dir_for_user(prefix, user);
+            return user.clone();
         }
     }
-    // 3. Nothing at all yet — the runner-family default (steamuser for Proton,
-    //    login for plain wine).
-    paks_dir_for_user(
-        prefix,
-        ordered.first().map(String::as_str).unwrap_or("steamuser"),
-    )
+    // 3. Nothing yet — the runner-family default (steamuser for Proton, login for
+    //    plain wine).
+    ordered
+        .into_iter()
+        .next()
+        .unwrap_or_else(|| "steamuser".to_string())
+}
+
+/// The in-prefix mod-paks download dir for the game's prefix user (see
+/// [`resolve_prefix_user`]) — where the Wine-run game reads downloaded paks.
+#[cfg(not(windows))]
+#[must_use]
+pub fn mod_paks_dir_in_prefix(prefix: &Path, runner: Option<&str>) -> PathBuf {
+    paks_dir_for_user(prefix, &resolve_prefix_user(prefix, runner))
+}
+
+/// The in-prefix `Engine.ini` for the game's prefix user:
+/// `…/users/<user>/Documents/UnrealTournament/Saved/Config/WindowsNoEditor/Engine.ini`
+/// — a sibling of the paks dir under `Saved/`. This is what the Wine-run game
+/// actually reads, NOT the Linux `~/Documents` that `config::engine_ini_path`
+/// returns.
+#[cfg(not(windows))]
+#[must_use]
+pub fn engine_ini_in_prefix(prefix: &Path, runner: Option<&str>) -> PathBuf {
+    prefix
+        .join(DRIVE_C)
+        .join("users")
+        .join(resolve_prefix_user(prefix, runner))
+        .join("Documents")
+        .join("UnrealTournament")
+        .join("Saved")
+        .join("Config")
+        .join("WindowsNoEditor")
+        .join("Engine.ini")
 }
 
 /// The Wine prefix + runner for a detected Lutris install, matched by install
@@ -764,10 +790,28 @@ pub fn lutris_prefix_for_root(root: Option<&Path>) -> Option<(PathBuf, Option<St
     }
 }
 
-/// Resolve the Linux in-prefix mod-paks dir for the active install: an explicit
-/// override prefix wins (with its wine path as the runner hint), else the Lutris
-/// prefix for `root` (or the sole Lutris game). `None` → the caller falls back to
-/// `default_mod_paks_dir` (a native build or an install with no discoverable prefix).
+/// The `(prefix, runner)` for the active install: an explicit override prefix
+/// wins (its wine path is the runner hint), else the Lutris prefix for `root` (or
+/// the sole Lutris game). Shared by the in-prefix path resolvers below.
+#[cfg(not(windows))]
+#[must_use]
+fn active_prefix_runner(
+    root: Option<&Path>,
+    override_prefix: Option<&Path>,
+    override_wine: Option<&Path>,
+) -> Option<(PathBuf, Option<String>)> {
+    if let Some(prefix) = override_prefix {
+        return Some((
+            prefix.to_path_buf(),
+            override_wine.and_then(|w| w.to_str()).map(String::from),
+        ));
+    }
+    lutris_prefix_for_root(root)
+}
+
+/// Resolve the Linux in-prefix mod-paks dir for the active install. `None` → the
+/// caller falls back to `default_mod_paks_dir` (a native build or an install with
+/// no discoverable prefix).
 #[cfg(not(windows))]
 #[must_use]
 pub fn linux_mod_paks_dir(
@@ -775,12 +819,21 @@ pub fn linux_mod_paks_dir(
     override_prefix: Option<&Path>,
     override_wine: Option<&Path>,
 ) -> Option<PathBuf> {
-    if let Some(prefix) = override_prefix {
-        // The override's wine path (e.g. …/GE-Proton…/wine) is a fine runner hint.
-        let runner = override_wine.and_then(|w| w.to_str());
-        return Some(mod_paks_dir_in_prefix(prefix, runner));
-    }
-    lutris_prefix_for_root(root).map(|(p, runner)| mod_paks_dir_in_prefix(&p, runner.as_deref()))
+    active_prefix_runner(root, override_prefix, override_wine)
+        .map(|(p, runner)| mod_paks_dir_in_prefix(&p, runner.as_deref()))
+}
+
+/// Resolve the Linux in-prefix `Engine.ini` for the active install. `None` → the
+/// caller falls back to `config::engine_ini_path` (the Linux `~/Documents`).
+#[cfg(not(windows))]
+#[must_use]
+pub fn linux_engine_ini(
+    root: Option<&Path>,
+    override_prefix: Option<&Path>,
+    override_wine: Option<&Path>,
+) -> Option<PathBuf> {
+    active_prefix_runner(root, override_prefix, override_wine)
+        .map(|(p, runner)| engine_ini_in_prefix(&p, runner.as_deref()))
 }
 
 /// `(install, launch-profile)` hits from Lutris configs, for [`crate::install::
@@ -1274,6 +1327,26 @@ wine:
             mod_paks_dir_in_prefix(prefix, Some("GE-Proton10-34")),
             paks_dir_for_user(prefix, "steamuser")
         );
+    }
+
+    #[test]
+    fn engine_ini_in_prefix_shares_the_saved_base_with_the_paks_dir() {
+        // Engine.ini and DownloadedPaks are both under the SAME in-prefix
+        // .../Documents/UnrealTournament/Saved/ for the resolved prefix user.
+        let tmp = tempfile::TempDir::new().unwrap();
+        let prefix = tmp.path();
+        std::fs::create_dir_all(prefix.join("drive_c/users/steamuser/Documents/UnrealTournament"))
+            .unwrap();
+        let base = prefix.join("drive_c/users/steamuser/Documents/UnrealTournament/Saved");
+        let ini = engine_ini_in_prefix(prefix, Some("GE-Proton10-34"));
+        let paks = mod_paks_dir_in_prefix(prefix, Some("GE-Proton10-34"));
+        assert!(ini.starts_with(&base), "ini under Saved: {}", ini.display());
+        assert!(
+            paks.starts_with(&base),
+            "paks under Saved: {}",
+            paks.display()
+        );
+        assert!(ini.ends_with("Config/WindowsNoEditor/Engine.ini"));
     }
 
     #[test]

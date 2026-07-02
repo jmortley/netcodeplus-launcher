@@ -233,6 +233,23 @@ pub(crate) fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("state.json"))
 }
 
+/// The active install's `(root, override_prefix, override_wine)` from saved state —
+/// the inputs both Linux in-prefix path resolvers (mod-paks, Engine.ini) need.
+#[cfg(not(windows))]
+fn linux_active_ctx(
+    app: &tauri::AppHandle,
+) -> Option<(Option<PathBuf>, Option<PathBuf>, Option<PathBuf>)> {
+    let state = state_path(app)
+        .and_then(|p| ncp_host::state::read(&p).map_err(|e| e.to_string()))
+        .ok()
+        .flatten()?;
+    Some((
+        state.install_path.clone(),
+        state.linux_launch.as_ref().and_then(|l| l.prefix.clone()),
+        state.linux_launch.as_ref().and_then(|l| l.wine.clone()),
+    ))
+}
+
 /// Resolve the mod-paks directory for the active install.
 ///
 /// On Linux the game runs under Wine and reads downloaded paks from INSIDE its
@@ -244,16 +261,11 @@ pub(crate) fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
 pub(crate) fn active_mod_paks_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     #[cfg(not(windows))]
     {
-        if let Ok(Some(state)) =
-            state_path(app).and_then(|p| ncp_host::state::read(&p).map_err(|e| e.to_string()))
-        {
-            let root = state.install_path.clone();
-            let override_prefix = state.linux_launch.as_ref().and_then(|l| l.prefix.clone());
-            let override_wine = state.linux_launch.as_ref().and_then(|l| l.wine.clone());
+        if let Some((root, prefix, wine)) = linux_active_ctx(app) {
             if let Some(dir) = ncp_host::linux::linux_mod_paks_dir(
                 root.as_deref(),
-                override_prefix.as_deref(),
-                override_wine.as_deref(),
+                prefix.as_deref(),
+                wine.as_deref(),
             ) {
                 return Some(dir);
             }
@@ -262,6 +274,27 @@ pub(crate) fn active_mod_paks_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
     #[cfg(windows)]
     let _ = app;
     ncp_host::default_mod_paks_dir()
+}
+
+/// Resolve the `Engine.ini` path for the active install — the in-prefix
+/// `…/Saved/Config/WindowsNoEditor/Engine.ini` the Wine-run game reads on Linux,
+/// else the Linux `~/Documents` location (Windows, or no discoverable prefix).
+pub(crate) fn active_engine_ini(app: &tauri::AppHandle) -> Option<PathBuf> {
+    #[cfg(not(windows))]
+    {
+        if let Some((root, prefix, wine)) = linux_active_ctx(app) {
+            if let Some(ini) = ncp_host::linux::linux_engine_ini(
+                root.as_deref(),
+                prefix.as_deref(),
+                wine.as_deref(),
+            ) {
+                return Some(ini);
+            }
+        }
+    }
+    #[cfg(windows)]
+    let _ = app;
+    ncp_host::config::engine_ini_path()
 }
 
 /// Load persisted launcher state (defaults on first run).
@@ -1193,17 +1226,17 @@ pub fn launcher_version() -> &'static str {
     env!("CARGO_PKG_VERSION")
 }
 
-/// Per-user Engine.ini path, or an error if Documents can't be located.
-fn engine_ini() -> Result<PathBuf, String> {
-    ncp_host::config::engine_ini_path()
-        .ok_or_else(|| "could not locate your Documents folder".to_string())
+/// The active install's Engine.ini path (in-prefix on Linux, `~/Documents` on
+/// Windows), or an error if it can't be located.
+fn engine_ini(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    active_engine_ini(app).ok_or_else(|| "could not locate your Engine.ini".to_string())
 }
 
 /// Read the player's current competitive-config state: whether the ini
 /// exists, whether a restore point exists, and the current editable values.
 #[tauri::command]
-pub fn engine_config_state() -> Result<ncp_host::config::ConfigState, String> {
-    Ok(ncp_host::config::read_state(&engine_ini()?))
+pub fn engine_config_state(app: tauri::AppHandle) -> Result<ncp_host::config::ConfigState, String> {
+    Ok(ncp_host::config::read_state(&engine_ini(&app)?))
 }
 
 /// Whether UT4-OpenAL is installed in `root` — gates the `[Audio]` OpenAL
@@ -1490,6 +1523,7 @@ pub fn reset_onboarding(app: tauri::AppHandle) -> Result<(), String> {
 /// merging into the existing ini (backing it up first).
 #[tauri::command]
 pub fn apply_engine_config(
+    app: tauri::AppHandle,
     frame_rate_cap: f64,
     smooth_frame_rate: bool,
     display_gamma: f64,
@@ -1502,20 +1536,21 @@ pub fn apply_engine_config(
         display_gamma,
         allow_async_loading,
     };
-    ncp_host::config::apply(&engine_ini()?, &tweaks, set_openal_audio).map_err(|e| e.to_string())
+    ncp_host::config::apply(&engine_ini(&app)?, &tweaks, set_openal_audio)
+        .map_err(|e| e.to_string())
 }
 
 /// Restore Engine.ini from the launcher's `.ncpbak` backup.
 #[tauri::command]
-pub fn restore_engine_config() -> Result<(), String> {
-    ncp_host::config::restore(&engine_ini()?).map_err(|e| e.to_string())
+pub fn restore_engine_config(app: tauri::AppHandle) -> Result<(), String> {
+    ncp_host::config::restore(&engine_ini(&app)?).map_err(|e| e.to_string())
 }
 
 /// Clear the read-only attribute on Engine.ini so the competitive config can be
 /// applied. Opt-in (the UI offers it) — some players set it read-only on purpose.
 #[tauri::command]
-pub fn clear_engine_ini_readonly() -> Result<(), String> {
-    ncp_host::config::clear_read_only(&engine_ini()?).map_err(|e| e.to_string())
+pub fn clear_engine_ini_readonly(app: tauri::AppHandle) -> Result<(), String> {
+    ncp_host::config::clear_read_only(&engine_ini(&app)?).map_err(|e| e.to_string())
 }
 
 /// Open an install's NetcodePlus plugin folder in the OS file manager. Only ever
@@ -1580,6 +1615,6 @@ pub fn reveal_openal_folder(app: tauri::AppHandle, root: String) -> Result<(), S
 /// Verify and, if needed, repair the `[OnlineSubsystemMcp.*]` master-server
 /// sections that a UT4 bug sometimes wipes. Returns whether a repair ran.
 #[tauri::command]
-pub fn repair_master_server() -> Result<bool, String> {
-    ncp_host::config::repair_master_server(&engine_ini()?).map_err(|e| e.to_string())
+pub fn repair_master_server(app: tauri::AppHandle) -> Result<bool, String> {
+    ncp_host::config::repair_master_server(&engine_ini(&app)?).map_err(|e| e.to_string())
 }
