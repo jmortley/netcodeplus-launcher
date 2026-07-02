@@ -64,4 +64,15 @@ ignore = [
     # logger that calls back into `rand::rng()`. We don't use either
     # rand or env_logger directly; transitive only.
     "RUSTSEC-2026-0097",
+
+    # ---- quick-xml DoS on untrusted XML ----
+    #
+    # Quadratic duplicate-attribute check (0194) and unbounded
+    # NsReader namespace allocation (0195). Both require parsing
+    # attacker-supplied XML; quick-xml is transitive only (Tauri
+    # stack — plist et al.) and the launcher never parses untrusted
+    # XML. Patched only in quick-xml >= 0.41, a semver-major jump the
+    # parent crates pin below. Re-check when Tauri bumps quick-xml.
+    "RUSTSEC-2026-0194",
+    "RUSTSEC-2026-0195",
 ]
