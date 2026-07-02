@@ -528,7 +528,10 @@ mod tests {
         assert_eq!(fs::read(&dll).unwrap(), b"DLL-bytes-v327");
 
         // Real files, not symlinks (Wine requires copies).
-        assert!(!fs::symlink_metadata(&uplugin).unwrap().file_type().is_symlink());
+        assert!(!fs::symlink_metadata(&uplugin)
+            .unwrap()
+            .file_type()
+            .is_symlink());
         assert!(!fs::symlink_metadata(&dll).unwrap().file_type().is_symlink());
     }
 

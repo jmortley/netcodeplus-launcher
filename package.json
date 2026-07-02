@@ -20,5 +20,8 @@
     "@tauri-apps/cli": "^2",
     "vite": "^6.0.3",
     "typescript": "~5.6.2"
+  },
+  "allowScripts": {
+    "esbuild@0.25.12": true
   }
 }
