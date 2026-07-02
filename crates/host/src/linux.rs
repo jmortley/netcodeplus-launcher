@@ -81,6 +81,34 @@ pub fn plan_wine_launch(exe: &Path, args: &[String], wine_bin: Option<&str>) -> 
     })
 }
 
+/// The in-prefix UT4 install **root** for a Wine `prefix` — the path to hand the
+/// (platform-agnostic) installer/detection code, exactly as a Windows root. UT4's
+/// Lutris install sits at the standard Windows location inside `drive_c`, so this
+/// is `<prefix>/drive_c/Program Files/UnrealTournament`. Pure path join; pass it to
+/// [`crate::install::netcodeplus_dir`] / [`crate::install::check_install`] / the
+/// plugin installer unchanged. Useful when a Lutris config gives only the prefix
+/// (no `exe` to walk up from).
+#[must_use]
+pub fn ut4_root_from_prefix(prefix: &Path) -> PathBuf {
+    prefix
+        .join(DRIVE_C)
+        .join("Program Files")
+        .join("UnrealTournament")
+}
+
+/// Where the NetcodePlus plugin folder lives inside a Wine `prefix`:
+/// `<prefix>/drive_c/Program Files/UnrealTournament/UnrealTournament/Plugins/NetcodePlus`.
+/// Composed from [`ut4_root_from_prefix`] + [`crate::install::netcodeplus_dir`] so
+/// the plugin subpath stays single-sourced with the Windows path. The plugin
+/// installs as a whole-folder **copy** (Wine chokes on symlinks); [`crate::
+/// plugin_install`] already copies, so installing with
+/// `root = ut4_root_from_prefix(prefix)` is correct on Linux with no changes to
+/// the install path logic.
+#[must_use]
+pub fn plugin_install_path(prefix: &Path) -> PathBuf {
+    crate::install::netcodeplus_dir(&ut4_root_from_prefix(prefix))
+}
+
 // ── Lutris / Wine-prefix detection ──────────────────────────────────────────
 //
 // On Linux the UT4 install lives inside a Wine prefix, so the launcher can't use
@@ -270,6 +298,37 @@ mod tests {
     #[test]
     fn wine_plan_is_none_outside_a_prefix() {
         assert!(plan_wine_launch(Path::new("/home/x/foo.exe"), &[], None).is_none());
+    }
+
+    // ── in-prefix install paths ──────────────────────────────────────────────
+
+    #[test]
+    fn ut4_root_from_prefix_is_the_in_prefix_windows_location() {
+        assert_eq!(
+            ut4_root_from_prefix(Path::new("/home/barry/Games/ut")),
+            PathBuf::from("/home/barry/Games/ut/drive_c/Program Files/UnrealTournament")
+        );
+    }
+
+    #[test]
+    fn plugin_install_path_is_the_canonical_in_prefix_plugin_dir() {
+        let prefix = Path::new("/home/barry/Games/ut");
+        let plugin = plugin_install_path(prefix);
+        assert_eq!(
+            plugin,
+            PathBuf::from(
+                "/home/barry/Games/ut/drive_c/Program Files/UnrealTournament/UnrealTournament/Plugins/NetcodePlus"
+            )
+        );
+        // Genuinely inside the prefix (not an absolute path elsewhere).
+        assert!(plugin.starts_with(prefix));
+    }
+
+    #[test]
+    fn plugin_install_path_round_trips_back_to_the_prefix() {
+        // The plugin dir is inside the prefix, so wine_prefix_of recovers it.
+        let prefix = PathBuf::from("/p/games/ut4");
+        assert_eq!(wine_prefix_of(&plugin_install_path(&prefix)), Some(prefix));
     }
 
     // ── Lutris detection ────────────────────────────────────────────────────

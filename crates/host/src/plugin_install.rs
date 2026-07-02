@@ -501,6 +501,37 @@ mod tests {
         fs::write(path, &buf).unwrap();
     }
 
+    /// Linux (Wine-prefix) install: pointing the installer at the in-prefix UT4
+    /// root (`<prefix>/drive_c/Program Files/UnrealTournament`) lands the plugin at
+    /// the canonical in-prefix location as a real-file COPY — Wine chokes on
+    /// symlinks, and the installer already copies. Pure-fs, so it runs on the
+    /// Windows dev box + CI; the `linux` module is compiled here under `cfg(test)`.
+    #[test]
+    fn installs_into_a_wine_prefix_at_the_in_prefix_path() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let zip_path = tmp.path().join("NetcodePlus.zip");
+        make_plugin_zip(&zip_path, br#"{"VersionName":"2.0"}"#, b"DLL-bytes-v327");
+
+        // Install at the in-prefix UT4 root, exactly as the Linux launch path would.
+        let prefix = tmp.path().join("Games").join("ut4");
+        let root = crate::linux::ut4_root_from_prefix(&prefix);
+        install_plugin_zip(&zip_path, &root).unwrap();
+
+        // Landed at the canonical in-prefix plugin dir (single-sourced with Windows).
+        let plugin = crate::linux::plugin_install_path(&prefix);
+        assert_eq!(plugin, netcodeplus_dir(&root));
+        let uplugin = plugin.join("NetcodePlus.uplugin");
+        let dll = plugin.join("Binaries/Win64/UE4-NetcodePlus.dll");
+        assert!(uplugin.is_file(), "the .uplugin should exist in-prefix");
+        assert!(dll.is_file(), "the Win64 DLL should exist in-prefix");
+        assert_eq!(fs::read(&dll).unwrap(), b"DLL-bytes-v327");
+
+        // Real files, not symlinks (Wine requires copies).
+        assert!(!fs::symlink_metadata(&uplugin).unwrap().file_type().is_symlink());
+        assert!(!fs::symlink_metadata(&dll).unwrap().file_type().is_symlink());
+    }
+
     #[test]
     fn plugin_matches_zip_detects_a_manual_install_of_the_same_build() {
         use tempfile::TempDir;
