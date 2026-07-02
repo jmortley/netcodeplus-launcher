@@ -102,6 +102,93 @@ pub async fn game_installer_info(app: AppHandle) -> Result<GameInstallerInfo, St
     })
 }
 
+/// The integrity facts for the UT4 installer from the **signed** manifest, so a
+/// user who downloads it themselves (e.g. on Linux, from the third-party UT4Ever
+/// host) can trust the bytes. The SHA-256 here comes from the launcher's own
+/// minisign-verified manifest — not from the download host — so it's a trust
+/// anchor the host can't forge.
+#[derive(Debug, Serialize)]
+pub struct GameInstallerIntegrity {
+    /// Whether the signed manifest advertises a game installer at all.
+    pub available: bool,
+    /// Display version (e.g. `"1.1.0"`).
+    pub version: String,
+    /// The download URL the manifest points at (untrusted host — integrity is the
+    /// SHA-256, never the URL).
+    pub url: String,
+    /// Expected SHA-256, lowercase hex — pinned in the signed manifest.
+    pub sha256: String,
+    /// Expected size in bytes.
+    pub size_bytes: u64,
+}
+
+/// Expose the signed manifest's game-installer URL + SHA-256 + size, so the UI can
+/// show users exactly what to download and the hash to trust it against.
+#[tauri::command]
+pub async fn game_installer_integrity(app: AppHandle) -> Result<GameInstallerIntegrity, String> {
+    let (manifest, ..) = fetch_verify(&app).await?;
+    Ok(match manifest.game_installer {
+        Some(gi) => GameInstallerIntegrity {
+            available: true,
+            version: gi.version,
+            url: gi.url,
+            sha256: gi.sha256.to_string(),
+            size_bytes: gi.size_bytes,
+        },
+        None => GameInstallerIntegrity {
+            available: false,
+            version: String::new(),
+            url: String::new(),
+            sha256: String::new(),
+            size_bytes: 0,
+        },
+    })
+}
+
+/// Result of verifying a user-supplied file against the signed manifest's
+/// game-installer SHA-256.
+#[derive(Debug, Serialize)]
+pub struct VerifyDownloadResult {
+    /// True when the file's SHA-256 equals the manifest's pinned digest.
+    pub matched: bool,
+    /// The file's actual SHA-256 (lowercase hex).
+    pub sha256: String,
+    /// The expected SHA-256 from the signed manifest (lowercase hex).
+    pub expected: String,
+    /// The file's size in bytes.
+    pub size_bytes: u64,
+}
+
+/// Verify a file the user downloaded (the UT4 installer zip) against the signed
+/// manifest's pinned SHA-256. Streams the file through the same hasher the
+/// launcher's own download uses; the expected digest comes from the
+/// minisign-verified manifest, so a match means the bytes are exactly what the
+/// launcher author signed — regardless of where they were downloaded from.
+#[tauri::command]
+pub async fn verify_game_download(
+    app: AppHandle,
+    path: String,
+) -> Result<VerifyDownloadResult, String> {
+    let (manifest, ..) = fetch_verify(&app).await?;
+    let installer = manifest
+        .game_installer
+        .ok_or("the update manifest has no game installer to verify against")?;
+    let p = PathBuf::from(&path);
+    if !p.is_file() {
+        return Err("that file doesn't exist — pick the downloaded installer zip".into());
+    }
+    let size = std::fs::metadata(&p).map_err(|e| e.to_string())?.len();
+    let digest = ncp_net::hash_file(&p, |_, _| {})
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(VerifyDownloadResult {
+        matched: digest == installer.sha256,
+        sha256: digest.to_string(),
+        expected: installer.sha256.to_string(),
+        size_bytes: size,
+    })
+}
+
 /// Cancel an in-progress game-installer download. The partial file is kept so a
 /// later download resumes from it.
 #[tauri::command]

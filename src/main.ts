@@ -165,6 +165,24 @@ interface WineRunner {
   wine: string;
 }
 
+// Integrity facts for the UT4 installer, from the signed manifest (trust anchor
+// for a user-downloaded file from the third-party UT4Ever host).
+interface GameInstallerIntegrity {
+  available: boolean;
+  version: string;
+  url: string;
+  sha256: string;
+  size_bytes: number;
+}
+
+// Result of verifying a downloaded installer against the signed manifest hash.
+interface VerifyDownloadResult {
+  matched: boolean;
+  sha256: string;
+  expected: string;
+  size_bytes: number;
+}
+
 // (Linux) The resolved wine launch preview from resolve_linux_launch.
 interface ResolvedWineLaunch {
   program: string;
@@ -4892,16 +4910,64 @@ function renderLinuxGetGame(panel: HTMLElement): void {
       <div><strong>Don't have UT4 yet?</strong> On Linux the launcher manages NetcodePlus and launches UT4 through <strong>Wine/Proton</strong> — it doesn't install the base game itself. Install UT4 into a Wine/Proton prefix, then this launcher auto-detects it.</div>
       <ol class="linux-getgame" style="margin:0.6rem 0 0.4rem;padding-left:1.2rem;line-height:1.5">
         <li><strong>Get the game</strong> from <button class="card-link" data-extlink="https://ut4ever.org" type="button">ut4ever.org</button> — the community "UT4 Installer" (~10&nbsp;GB).</li>
-        <li><strong>Install it with Lutris:</strong> <em>Lutris → + → Install a game from an executable file</em>, point it at <code>UT4_Installer.exe</code>, and use a <strong>Proton</strong> runner (e.g. GE-Proton). The installer is a <strong>.NET&nbsp;6</strong> app, so add the runtime to that prefix first — <code>winetricks dotnetdesktop6</code> — or it fails with "You must install .NET".</li>
-        <li><em>Prefer to skip .NET?</em> The download is a zip: extract the inner <code>UnrealTournament&nbsp;(…).zip</code> into a folder and add <code>…/Engine/Binaries/Win64/UE4-Win64-Shipping.exe</code> to Lutris under a Proton runner. No installer, no .NET needed.</li>
+        <li><strong>Install it with Lutris:</strong> <em>Lutris → + → Install a game from an executable file</em>, point it at <code>UT4_Installer.exe</code>, and use a <strong>Proton</strong> runner (e.g. GE-Proton). It's a <strong>.NET&nbsp;6</strong> app, so the prefix needs two things (verified working): add the runtime with <code>winetricks dotnetdesktop6</code>, and launch with <code>DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1</code> set (otherwise it dies on a Wine ICU error).</li>
+        <li><em>Prefer to skip .NET entirely?</em> The download is just a zip: extract the inner <code>UnrealTournament&nbsp;(…).zip</code> into a folder and add <code>…/Engine/Binaries/Win64/UE4-Win64-Shipping.exe</code> to Lutris under a Proton runner. No installer, no .NET needed.</li>
         <li><strong>Come back and rescan</strong> — the launcher finds your Lutris game automatically. You can also point it at the prefix + runner yourself in <em>Settings → Wine&nbsp;/&nbsp;Proton</em>.</li>
       </ol>
+      <div class="ut4-integrity" style="margin:0.7rem 0;padding:0.55rem 0.7rem;border:1px solid var(--line,#333);border-radius:6px">
+        <div><strong>Trust what you download.</strong> ut4ever is a third-party host, but the launcher pins the installer's SHA-256 in its <em>signed</em> update manifest — so you can confirm your download is byte-for-byte what we signed, regardless of the host.</div>
+        <div id="ut4-hash" class="src" style="margin-top:0.35rem;font-family:monospace;word-break:break-all">Loading the expected hash…</div>
+        <div class="game-install-actions" style="margin-top:0.4rem">
+          <button id="ut4-verify-btn" type="button">Verify a downloaded file…</button>
+        </div>
+        <div id="ut4-verify-status" class="launch-status"></div>
+      </div>
       <div class="game-install-actions">
         <button class="card-link" data-extlink="https://ut4ever.org" type="button">Open ut4ever.org</button>
         <button id="linux-rescan-btn" type="button">Rescan for UT4</button>
       </div>
       <div id="game-install-status" class="launch-status"></div>
     </div>`;
+
+  // Show the signed-manifest hash so users can verify their ut4ever download.
+  void invoke<GameInstallerIntegrity>("game_installer_integrity")
+    .then((info) => {
+      const el = document.getElementById("ut4-hash");
+      if (!el) return;
+      if (!info.available) {
+        el.textContent = "";
+        return;
+      }
+      const gb = (info.size_bytes / 1e9).toFixed(2);
+      el.innerHTML = `SHA-256 (v${escape(info.version)}, ${gb}&nbsp;GB):<br>${escape(info.sha256)}`;
+    })
+    .catch(() => {
+      const el = document.getElementById("ut4-hash");
+      if (el) el.textContent = "";
+    });
+
+  document.getElementById("ut4-verify-btn")?.addEventListener("click", async () => {
+    const status = document.getElementById("ut4-verify-status");
+    let file: string | string[] | null;
+    try {
+      file = await open({ directory: false, multiple: false, title: "Select the downloaded UT4 installer zip" });
+    } catch (err) {
+      console.error("verify dialog open failed:", err);
+      return;
+    }
+    if (typeof file !== "string") return;
+    if (status) status.textContent = "Hashing the file… a ~10 GB file takes a moment.";
+    try {
+      const r = await invoke<VerifyDownloadResult>("verify_game_download", { path: file });
+      if (!status) return;
+      status.innerHTML = r.matched
+        ? `<span style="color:var(--ok,#4caf50)">✓ Verified — this file matches the hash the launcher signed. Safe to install.</span>`
+        : `<span class="warn">✗ Does NOT match the signed hash — don't use this file. Got <code>${escape(r.sha256.slice(0, 16))}…</code>, expected <code>${escape(r.expected.slice(0, 16))}…</code></span>`;
+    } catch (err) {
+      if (status) status.innerHTML = `<span class="warn">Verify failed: ${escape(String(err))}</span>`;
+    }
+  });
+
   document.getElementById("linux-rescan-btn")?.addEventListener("click", async () => {
     const status = document.getElementById("game-install-status");
     if (status) status.textContent = "Scanning for a UT4 install…";

@@ -113,6 +113,8 @@ pub fn run() {
             commands::save_linux_launch,
             commands::list_wine_runners,
             commands::resolve_linux_launch,
+            installer::game_installer_integrity,
+            installer::verify_game_download,
             commands::save_ut4stats_link,
             commands::ut4stats_search,
             commands::ut4stats_summary,
