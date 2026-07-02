@@ -228,6 +228,9 @@ pub enum DetectSource {
     /// Found by probing common install directories (fallback when no
     /// shortcut points at a shipping client).
     Probe,
+    /// Resolved from a Lutris game config (Linux) — high confidence: it carries
+    /// the exact exe, prefix, and Wine runner the user configured.
+    Lutris,
     /// Supplied directly by the user through the folder picker.
     Manual,
 }
@@ -322,6 +325,17 @@ pub fn detect_installs() -> Vec<DetectedInstall> {
 
     if !hits.is_empty() {
         return group_by_root(hits, DetectSource::DesktopShortcut);
+    }
+
+    // On Linux the high-confidence signal is the Lutris game config (exe + prefix
+    // + runner), not desktop shortcuts. Resolve those before falling back to the
+    // (empty, on non-Windows) directory probe.
+    #[cfg(not(windows))]
+    {
+        hits.extend(crate::linux::detect_lutris_hits(&mod_paks_dir));
+        if !hits.is_empty() {
+            return group_by_root(hits, DetectSource::Lutris);
+        }
     }
 
     // Fall back to probing ONLY when no shortcut pointed at a play

@@ -18,7 +18,7 @@ interface UtInstall {
 }
 
 type NetcodePlusStatus = "installed" | "missing" | "malformed";
-type DetectSource = "desktop_shortcut" | "probe" | "manual";
+type DetectSource = "desktop_shortcut" | "probe" | "lutris" | "manual";
 
 interface LaunchProfile {
   label: string;
@@ -344,6 +344,8 @@ function sourceText(source: DetectSource): string {
       return "found via your desktop shortcut(s)";
     case "probe":
       return "found by scanning common install locations";
+    case "lutris":
+      return "found in your Lutris config";
     case "manual":
       return "the folder you picked";
   }

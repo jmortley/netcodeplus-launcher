@@ -184,16 +184,45 @@ fn set_process_affinity(child: &std::process::Child, mask: u64) -> std::io::Resu
 pub fn launch(exe: &Path, args: &[String], _opts: &LaunchOptions) -> std::io::Result<()> {
     use std::process::Command;
 
-    if let Some(plan) = crate::linux::plan_wine_launch(exe, args, wine_binary().as_deref()) {
-        Command::new(&plan.program)
-            .args(&plan.args)
-            .env("WINEPREFIX", &plan.wineprefix)
-            .current_dir(&plan.cwd)
-            .spawn()?;
+    // 1. Prefer the game's Lutris config: it carries the explicit WINEPREFIX
+    //    (the game commonly lives OUTSIDE the prefix, so it can't be derived from
+    //    the exe), the configured runner (e.g. a GE-Proton build), its env, and a
+    //    prefix_command wrapper. 2. Else, if the exe lives inside a drive_c, run
+    //    it through system/`WINE` wine against that prefix. 3. Else direct spawn.
+    if let Some(plan) = crate::linux::find_lutris_launch(exe, args) {
+        spawn_wine(&plan)?;
+    } else if let Some(plan) = crate::linux::plan_wine_launch(exe, args, wine_binary().as_deref()) {
+        spawn_wine(&plan)?;
     } else {
         let cwd = exe.parent().unwrap_or(exe);
         Command::new(exe).args(args).current_dir(cwd).spawn()?;
     }
+    Ok(())
+}
+
+/// Spawn a resolved [`crate::linux::WineLaunch`], applying its `WINEPREFIX`, extra
+/// env vars (as literal `key=value` — never shell-expanded), working dir, and an
+/// optional command wrapper (`prefix_command`, e.g. `taskset …`). Fire-and-forget:
+/// the child is detached so the game outlives the launcher.
+#[cfg(not(windows))]
+fn spawn_wine(plan: &crate::linux::WineLaunch) -> std::io::Result<()> {
+    use std::process::Command;
+
+    let mut command = if plan.wrapper.is_empty() {
+        Command::new(&plan.program)
+    } else {
+        // `wrapper[0] wrapper[1..] <wine> <wine-args>`
+        let mut c = Command::new(&plan.wrapper[0]);
+        c.args(&plan.wrapper[1..]);
+        c.arg(&plan.program);
+        c
+    };
+    command
+        .args(&plan.args)
+        .env("WINEPREFIX", &plan.wineprefix)
+        .envs(plan.env.iter().map(|(k, v)| (k, v)))
+        .current_dir(&plan.cwd);
+    command.spawn()?;
     Ok(())
 }
 
