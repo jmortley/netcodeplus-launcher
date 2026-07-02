@@ -77,7 +77,15 @@ pub fn launch_game(
         },
         affinity_mask,
     };
-    ncp_host::launch(Path::new(&executable), &args, &opts).map_err(|e| e.to_string())?;
+    // Linux only: an explicit Wine/Proton override (prefix + runner) the user set
+    // in Settings takes precedence over Lutris auto-detection. `None` on Windows
+    // and for the auto-detect happy path.
+    let linux_launch = ncp_host::state::read(&state_path(&app)?)
+        .ok()
+        .flatten()
+        .and_then(|s| s.linux_launch);
+    ncp_host::launch(Path::new(&executable), &args, &opts, linux_launch.as_ref())
+        .map_err(|e| e.to_string())?;
 
     // Game launched — apply the user's window preference. Best-effort: a window
     // action must never fail an otherwise-successful launch. The game is spawned
@@ -208,6 +216,34 @@ pub(crate) fn state_path(app: &tauri::AppHandle) -> Result<PathBuf, String> {
     Ok(dir.join("state.json"))
 }
 
+/// Resolve the mod-paks directory for the active install.
+///
+/// On Linux the game runs under Wine and reads downloaded paks from INSIDE its
+/// prefix (`…/drive_c/users/<user>/Documents/UnrealTournament/Saved/Paks/
+/// DownloadedPaks`), not the Linux `~/Documents` that `default_mod_paks_dir`
+/// returns — so prefer the in-prefix dir (an explicit Wine/Proton override prefix
+/// wins, else the Lutris prefix for the saved install). Falls back to the global
+/// location on Windows, or when no prefix is discoverable.
+pub(crate) fn active_mod_paks_dir(app: &tauri::AppHandle) -> Option<PathBuf> {
+    #[cfg(not(windows))]
+    {
+        if let Ok(Some(state)) =
+            state_path(app).and_then(|p| ncp_host::state::read(&p).map_err(|e| e.to_string()))
+        {
+            let root = state.install_path.clone();
+            let override_prefix = state.linux_launch.as_ref().and_then(|l| l.prefix.clone());
+            if let Some(dir) =
+                ncp_host::linux::linux_mod_paks_dir(root.as_deref(), override_prefix.as_deref())
+            {
+                return Some(dir);
+            }
+        }
+    }
+    #[cfg(windows)]
+    let _ = app;
+    ncp_host::default_mod_paks_dir()
+}
+
 /// Load persisted launcher state (defaults on first run).
 #[tauri::command]
 pub fn load_state(app: tauri::AppHandle) -> Result<LauncherState, String> {
@@ -254,6 +290,73 @@ pub fn save_launch_prefs(
         _ => None,
     };
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
+/// (Linux) Save the explicit Wine/Proton launch override — the WINEPREFIX and the
+/// wine binary to launch through. Passing an empty/absent `prefix` clears the
+/// override (revert to Lutris auto-detection). `wine` empty/absent = system wine.
+#[tauri::command]
+pub fn save_linux_launch(
+    app: tauri::AppHandle,
+    prefix: Option<String>,
+    wine: Option<String>,
+) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    let prefix = prefix
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    state.linux_launch = prefix.map(|p| ncp_host::LinuxLaunchSettings {
+        prefix: Some(PathBuf::from(p)),
+        wine: wine
+            .map(|s| s.trim().to_string())
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from),
+    });
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
+/// (Linux) Wine/Proton runners installed on this machine (Lutris runners + Steam
+/// compatibilitytools.d), each resolved to its wine binary — for the settings
+/// dropdown. Empty on Windows / when none are found.
+#[tauri::command]
+pub fn list_wine_runners() -> Vec<ncp_host::linux::WineRunner> {
+    #[cfg(not(windows))]
+    {
+        ncp_host::linux::list_wine_runners()
+    }
+    #[cfg(windows)]
+    {
+        Vec::new()
+    }
+}
+
+/// (Linux) Resolve what the launcher WOULD spawn for `executable` + `args` under
+/// the current saved override (else Lutris auto-detect): returns the wine program,
+/// full argv, WINEPREFIX, and any wrapper — for the settings panel's "resolved
+/// command" preview and to pre-fill the fields with known-good values. `null` when
+/// nothing resolves (not a Wine setup) or on Windows.
+#[tauri::command]
+pub fn resolve_linux_launch(
+    app: tauri::AppHandle,
+    executable: String,
+    args: Vec<String>,
+) -> Option<ncp_host::linux::WineLaunch> {
+    #[cfg(not(windows))]
+    {
+        let linux_launch = ncp_host::state::read(&state_path(&app).ok()?)
+            .ok()
+            .flatten()
+            .and_then(|s| s.linux_launch);
+        ncp_host::launch::resolve_wine_launch(Path::new(&executable), &args, linux_launch.as_ref())
+    }
+    #[cfg(windows)]
+    {
+        let _ = (app, executable, args);
+        None
+    }
 }
 
 /// Save (or clear, by passing null) the linked ut4stats.com player.

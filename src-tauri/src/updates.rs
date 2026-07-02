@@ -32,7 +32,7 @@
 use serde::Serialize;
 use tauri::AppHandle;
 
-use crate::commands::state_path;
+use crate::commands::{active_mod_paks_dir, state_path};
 use crate::trust_root;
 
 /// Where the signed manifest and its detached signature live.
@@ -393,10 +393,7 @@ pub async fn pak_status(app: AppHandle) -> Result<PakStatusResult, String> {
     // Reflect what's actually on disk before planning: forget paks whose file
     // was deleted (so they re-offer) and adopt any present pak that already
     // matches the manifest (so they're not re-downloaded). Persist only on change.
-    if let (Some(ch), Some(dir)) = (
-        manifest.channels.get(&channel),
-        ncp_host::default_mod_paks_dir(),
-    ) {
+    if let (Some(ch), Some(dir)) = (manifest.channels.get(&channel), active_mod_paks_dir(&app)) {
         if reconcile_paks_with_disk(ch, &dir, &mut state) {
             let path = state_path(&app)?;
             ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
@@ -603,7 +600,7 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
         );
     }
 
-    let Some(mod_paks_dir) = ncp_host::default_mod_paks_dir() else {
+    let Some(mod_paks_dir) = active_mod_paks_dir(&app) else {
         return Err("Couldn't locate your Documents folder to install paks into.".into());
     };
     // Clear any leftover staging files from an interrupted prior install.
@@ -778,7 +775,7 @@ pub async fn remove_installed_pak(app: AppHandle, pak_id: String) -> Result<(), 
         return Err("Close UT4 to change content paks.".into());
     }
 
-    let Some(mod_paks_dir) = ncp_host::default_mod_paks_dir() else {
+    let Some(mod_paks_dir) = active_mod_paks_dir(&app) else {
         return Err("Couldn't locate your Documents folder to remove the pak from.".into());
     };
 

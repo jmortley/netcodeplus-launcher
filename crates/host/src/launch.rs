@@ -17,7 +17,7 @@
 //! the child handle only to set affinity, then drop it (the game keeps
 //! running after the launcher exits).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
@@ -31,6 +31,38 @@ pub enum Priority {
     /// High priority — `start /high` (what a competitive player's bat
     /// typically uses).
     High,
+}
+
+/// Linux-only explicit Wine/Proton launch override for setups where Lutris
+/// auto-detection can't supply the prefix/runner (a manually-picked install, an
+/// exotic prefix, etc.). Configured in the "Wine / Proton" settings panel and
+/// persisted in [`crate::state::LauncherState`]. When `prefix` is set it takes
+/// precedence over Lutris config at launch; `None`/empty means "auto-detect".
+#[derive(Debug, Clone, PartialEq, Eq, Default, Serialize, Deserialize)]
+pub struct LinuxLaunchSettings {
+    /// The `WINEPREFIX` — the directory that contains `drive_c`. Required for the
+    /// override to apply.
+    #[serde(default)]
+    pub prefix: Option<PathBuf>,
+    /// Path to the wine binary to run through (a runner's `files/bin/wine`, or a
+    /// system wine). `None` = use `wine` on `PATH`.
+    #[serde(default)]
+    pub wine: Option<PathBuf>,
+}
+
+#[cfg(not(windows))]
+impl LinuxLaunchSettings {
+    /// Build a launch plan from these settings, or `None` when no prefix is set
+    /// (so the caller falls through to auto-detection).
+    fn plan(&self, exe: &Path, args: &[String]) -> Option<crate::linux::WineLaunch> {
+        let prefix = self.prefix.as_deref()?;
+        Some(crate::linux::plan_manual_launch(
+            exe,
+            args,
+            prefix,
+            self.wine.as_deref(),
+        ))
+    }
 }
 
 /// How to launch the game.
@@ -127,7 +159,12 @@ pub fn parse_mask_hex(s: &str) -> Result<Option<u64>, std::num::ParseIntError> {
 /// Returns the spawn error if the game process cannot start, or the OS
 /// error if pinning CPU affinity fails.
 #[cfg(windows)]
-pub fn launch(exe: &Path, args: &[String], opts: &LaunchOptions) -> std::io::Result<()> {
+pub fn launch(
+    exe: &Path,
+    args: &[String],
+    opts: &LaunchOptions,
+    _linux: Option<&LinuxLaunchSettings>,
+) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     use std::process::Command;
 
@@ -181,23 +218,47 @@ fn set_process_affinity(child: &std::process::Child, mask: u64) -> std::io::Resu
 /// # Errors
 /// Returns the spawn error if the game (or Wine) cannot start.
 #[cfg(not(windows))]
-pub fn launch(exe: &Path, args: &[String], _opts: &LaunchOptions) -> std::io::Result<()> {
+pub fn launch(
+    exe: &Path,
+    args: &[String],
+    _opts: &LaunchOptions,
+    linux: Option<&LinuxLaunchSettings>,
+) -> std::io::Result<()> {
     use std::process::Command;
 
-    // 1. Prefer the game's Lutris config: it carries the explicit WINEPREFIX
-    //    (the game commonly lives OUTSIDE the prefix, so it can't be derived from
-    //    the exe), the configured runner (e.g. a GE-Proton build), its env, and a
-    //    prefix_command wrapper. 2. Else, if the exe lives inside a drive_c, run
-    //    it through system/`WINE` wine against that prefix. 3. Else direct spawn.
-    if let Some(plan) = crate::linux::find_lutris_launch(exe, args) {
-        spawn_wine(&plan)?;
-    } else if let Some(plan) = crate::linux::plan_wine_launch(exe, args, wine_binary().as_deref()) {
+    if let Some(plan) = resolve_wine_launch(exe, args, linux) {
         spawn_wine(&plan)?;
     } else {
+        // No prefix anywhere (not a Wine setup, or a genuine native build/test).
         let cwd = exe.parent().unwrap_or(exe);
         Command::new(exe).args(args).current_dir(cwd).spawn()?;
     }
     Ok(())
+}
+
+/// Resolve how the game should be launched on Linux, in precedence order:
+/// 1. an explicit user [`LinuxLaunchSettings`] override (prefix + runner);
+/// 2. the game's Lutris config (explicit WINEPREFIX + configured runner + env +
+///    `prefix_command` — the game commonly lives OUTSIDE the prefix, so it can't
+///    be derived from the exe);
+/// 3. an exe that lives inside a `drive_c`, run through system/`WINE` wine.
+///
+/// `None` means "not a Wine launch" — the caller should spawn the exe directly.
+/// Shared by [`launch`] and the settings UI's resolved-command preview.
+#[cfg(not(windows))]
+#[must_use]
+pub fn resolve_wine_launch(
+    exe: &Path,
+    args: &[String],
+    linux: Option<&LinuxLaunchSettings>,
+) -> Option<crate::linux::WineLaunch> {
+    if let Some(plan) = linux.and_then(|s| s.plan(exe, args)) {
+        return Some(plan);
+    }
+    if let Some(plan) = crate::linux::find_lutris_launch(exe, args) {
+        return Some(plan);
+    }
+    crate::linux::plan_wine_launch(exe, args, wine_binary().as_deref())
 }
 
 /// Spawn a resolved [`crate::linux::WineLaunch`], applying its `WINEPREFIX`, extra

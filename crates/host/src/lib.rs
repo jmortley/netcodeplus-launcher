@@ -48,7 +48,8 @@ pub use crate::install::{
     UtInstall,
 };
 pub use crate::launch::{
-    affinity_presets, launch, logical_cpus, parse_mask_hex, AffinityPreset, LaunchOptions, Priority,
+    affinity_presets, launch, logical_cpus, parse_mask_hex, AffinityPreset, LaunchOptions,
+    LinuxLaunchSettings, Priority,
 };
 pub use crate::pak_install::{
     install_pak, pak_file_stamp, pak_on_disk_digest, remove_pak, rename_pak,

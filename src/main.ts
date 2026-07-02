@@ -149,6 +149,30 @@ interface LauncherState {
   utpugs_launcher_token: string | null;
   unrealpugs_launcher_token: string | null;
   discord_presence_enabled?: boolean;
+  // Linux-only explicit Wine/Proton launch override; null/absent = auto-detect.
+  linux_launch?: LinuxLaunch | null;
+}
+
+// (Linux) Explicit Wine/Proton launch override the user set in Settings.
+interface LinuxLaunch {
+  prefix: string | null;
+  wine: string | null;
+}
+
+// (Linux) A Wine/Proton runner discovered on this machine, for the dropdown.
+interface WineRunner {
+  name: string;
+  wine: string;
+}
+
+// (Linux) The resolved wine launch preview from resolve_linux_launch.
+interface ResolvedWineLaunch {
+  program: string;
+  args: string[];
+  wineprefix: string;
+  cwd: string;
+  env: [string, string][];
+  wrapper: string[];
 }
 
 interface PlayerSearchResult {
@@ -1569,8 +1593,137 @@ function renderAdvanced() {
       <label class="discord-rpc-toggle"><input id="discord-rpc" type="checkbox"${
         state.discordPresence ? " checked" : ""
       } /> Show my PUG status on Discord (Rich Presence)</label>
-    </div>`;
+    </div>
+    ${platformOs === "linux" ? wineProtonPanel() : ""}`;
   wire();
+  if (platformOs === "linux") wireWineProton(di);
+}
+
+// (Linux) "Wine / Proton" settings panel: an explicit prefix + runner override
+// for setups where Lutris auto-detection can't supply them. Empty (Auto-detect)
+// is the default and the happy path.
+function wineProtonPanel(): string {
+  // Selection reflects the saved override: a matching runner, System wine, a
+  // custom path, or Auto-detect when there's no override.
+  const savedWine = linuxLaunch?.wine ?? null;
+  const matchByPath = savedWine ? wineRunners.find((r) => r.wine === savedWine) : undefined;
+  let sel = "__auto__";
+  if (linuxLaunch) sel = matchByPath ? matchByPath.wine : savedWine ? "__custom__" : "__system__";
+  const runnerOpts = wineRunners
+    .map((r) => `<option value="${escape(r.wine)}"${sel === r.wine ? " selected" : ""}>${escape(r.name)}</option>`)
+    .join("");
+  const custom = sel === "__custom__";
+  return `
+    <div class="controls wine-proton" id="wine-proton" style="margin-top:1rem;border-top:1px solid var(--line,#333);padding-top:0.8rem">
+      <div><strong>Wine / Proton (Linux)</strong></div>
+      <p class="src" style="margin-top:0">By default the launcher auto-detects your prefix and runner from Lutris. Override them here to launch your own way.</p>
+      <label>Runner
+        <select id="wine-runner-sel">
+          <option value="__auto__"${sel === "__auto__" ? " selected" : ""}>Auto-detect (Lutris)</option>
+          <option value="__system__"${sel === "__system__" ? " selected" : ""}>System wine</option>
+          ${runnerOpts}
+          <option value="__custom__"${custom ? " selected" : ""}>Custom path…</option>
+        </select>
+      </label>
+      <label id="wine-custom-wrap" style="display:${custom ? "" : "none"}">Wine binary path
+        <input id="wine-custom" type="text" spellcheck="false" placeholder="/path/to/wine" value="${
+          custom ? escape(savedWine ?? "") : ""
+        }" />
+      </label>
+      <label>WINEPREFIX (the folder containing <code>drive_c</code>)
+        <span style="display:flex;gap:0.4rem">
+          <input id="wine-prefix" type="text" spellcheck="false" style="flex:1" placeholder="/home/you/Games/ut4-prefix" value="${escape(
+            linuxLaunch?.prefix ?? "",
+          )}" />
+          <button id="wine-prefix-browse" type="button">Browse…</button>
+        </span>
+      </label>
+      <span style="display:flex;gap:0.4rem;align-items:center">
+        <button id="wine-save" type="button" class="launch-primary">Save override</button>
+        <button id="wine-clear" type="button"${linuxLaunch ? "" : " disabled"}>Clear (auto-detect)</button>
+      </span>
+      <div id="wine-resolved" class="src" style="white-space:pre-wrap;word-break:break-all"></div>
+    </div>`;
+}
+
+function wireWineProton(di: DetectedInstall) {
+  const runnerSel = document.getElementById("wine-runner-sel") as HTMLSelectElement | null;
+  const customWrap = document.getElementById("wine-custom-wrap");
+  const customInput = document.getElementById("wine-custom") as HTMLInputElement | null;
+  const prefixInput = document.getElementById("wine-prefix") as HTMLInputElement | null;
+  const browse = document.getElementById("wine-prefix-browse");
+  const saveBtn = document.getElementById("wine-save");
+  const clearBtn = document.getElementById("wine-clear");
+  const resolved = document.getElementById("wine-resolved");
+
+  const profile = di.profiles.find((p) => p.label === state.profileLabel) ?? di.profiles[selectedProfileIndex(di)];
+
+  const refreshResolved = async () => {
+    if (!resolved) return;
+    try {
+      const plan = await invoke<ResolvedWineLaunch | null>("resolve_linux_launch", {
+        executable: di.install.executable,
+        args: profile?.args ?? [],
+      });
+      if (!plan) {
+        resolved.textContent =
+          "No launch resolves yet — set a WINEPREFIX (and runner) above, or ensure this install has a Lutris config.";
+        return;
+      }
+      const argv = [...plan.wrapper, plan.program, ...plan.args];
+      resolved.textContent = `Will run:\nWINEPREFIX=${plan.wineprefix}\n${argv.join(" ")}`;
+    } catch (err) {
+      resolved.textContent = `Could not resolve launch: ${String(err)}`;
+    }
+  };
+  void refreshResolved();
+
+  runnerSel?.addEventListener("change", () => {
+    if (customWrap) customWrap.style.display = runnerSel.value === "__custom__" ? "" : "none";
+    if (runnerSel.value === "__custom__") customInput?.focus();
+  });
+
+  browse?.addEventListener("click", async () => {
+    try {
+      const dir = await open({ directory: true, multiple: false, title: "Select the Wine prefix (the folder containing drive_c)" });
+      if (typeof dir === "string" && prefixInput) prefixInput.value = dir;
+    } catch (err) {
+      console.error("prefix dialog open failed:", err);
+    }
+  });
+
+  saveBtn?.addEventListener("click", async () => {
+    const choice = runnerSel?.value ?? "__auto__";
+    if (choice === "__auto__") {
+      // Auto-detect = no override; same as Clear.
+      await saveLinuxLaunch(null, null);
+      return;
+    }
+    const prefix = prefixInput?.value.trim() ?? "";
+    if (!prefix) {
+      if (resolved) resolved.textContent = "A WINEPREFIX is required to override the launch. Pick the folder that contains drive_c.";
+      prefixInput?.focus();
+      return;
+    }
+    let wine: string | null = null;
+    if (choice === "__system__") wine = null;
+    else if (choice === "__custom__") wine = customInput?.value.trim() || null;
+    else wine = choice; // a runner's wine path
+    await saveLinuxLaunch(prefix, wine);
+  });
+
+  clearBtn?.addEventListener("click", () => saveLinuxLaunch(null, null));
+
+  async function saveLinuxLaunch(prefix: string | null, wine: string | null) {
+    try {
+      await invoke("save_linux_launch", { prefix, wine });
+      linuxLaunch = prefix ? { prefix, wine } : null;
+      renderAdvanced(); // re-render so selection + Clear-button state reflect the save
+    } catch (err) {
+      console.error("save_linux_launch failed:", err);
+      if (resolved) resolved.textContent = `Save failed: ${String(err)}`;
+    }
+  }
 }
 
 function wire() {
@@ -2257,6 +2410,7 @@ function applyPrefs(prefs: LauncherState) {
   state.utpugsToken = prefs.utpugs_launcher_token;
   state.unrealpugsToken = prefs.unrealpugs_launcher_token;
   state.discordPresence = prefs.discord_presence_enabled ?? false;
+  linuxLaunch = prefs.linux_launch ?? null;
   if (prefs.install_path) {
     const i = state.installs.findIndex((d) => d.install.root === prefs.install_path);
     if (i >= 0) state.selInstall = i;
@@ -2283,6 +2437,11 @@ interface PlatformInfo {
 // installer, .NET gate, admin/elevation, stray scan). Defaults to "windows" so a
 // (near-impossible) fetch failure preserves the desktop UI.
 let platformOs: PlatformInfo["os"] = "windows";
+
+// (Linux) Wine/Proton runners for the Settings dropdown, and the current saved
+// launch override (null = auto-detect via Lutris). Populated in loadAll on Linux.
+let wineRunners: WineRunner[] = [];
+let linuxLaunch: LinuxLaunch | null = null;
 
 async function loadAll() {
   try {
@@ -2312,6 +2471,10 @@ async function loadAll() {
     state.utpugsConfigured = utpugsConfigured;
     state.unrealpugsConfigured = unrealpugsConfigured;
     platformOs = platformInfo.os;
+    // (Linux) discover installed Wine/Proton runners for the Settings dropdown.
+    if (platformOs === "linux") {
+      wineRunners = await invoke<WineRunner[]>("list_wine_runners").catch(() => []);
+    }
     applyPrefs(prefs);
     // A manually-picked install that auto-detection doesn't find would otherwise
     // be lost on restart (detect_installs overwrote state.installs, so the saved

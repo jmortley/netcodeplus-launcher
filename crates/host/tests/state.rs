@@ -87,6 +87,13 @@ fn sample_state() -> LauncherState {
         installed_launcher_version: Some("0.2.0".to_string()),
         pending_old_launcher_path: Some("C:/Old/launcher-0.1.0.exe".to_string()),
         onboarding,
+        linux_launch: Some(ncp_host::LinuxLaunchSettings {
+            prefix: Some("/home/j/Games/ut4-prefix".into()),
+            wine: Some(
+                "/home/j/.local/share/Steam/compatibilitytools.d/GE-Proton10-34/files/bin/wine"
+                    .into(),
+            ),
+        }),
     }
 }
 

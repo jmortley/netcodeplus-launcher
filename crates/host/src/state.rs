@@ -22,7 +22,7 @@ use tempfile::NamedTempFile;
 use tracing::debug;
 
 use crate::error::{Result, StateError};
-use crate::launch::Priority;
+use crate::launch::{LinuxLaunchSettings, Priority};
 
 /// Default channel name selected on first run.
 pub const DEFAULT_CHANNEL: &str = "stable";
@@ -182,6 +182,12 @@ pub struct LauncherState {
     /// unresolved" so a missing/old state file behaves correctly.
     #[serde(default)]
     pub onboarding: OnboardingState,
+
+    /// Linux-only explicit Wine/Proton launch override (prefix + runner) for
+    /// setups where Lutris auto-detection can't supply them. `None` = auto-detect
+    /// (the default and the happy path). See [`LinuxLaunchSettings`].
+    #[serde(default)]
+    pub linux_launch: Option<LinuxLaunchSettings>,
 }
 
 /// Onboarding / feature-discovery persisted state. See [`LauncherState::onboarding`].
@@ -308,6 +314,7 @@ impl Default for LauncherState {
             installed_launcher_version: None,
             pending_old_launcher_path: None,
             onboarding: OnboardingState::default(),
+            linux_launch: None,
         }
     }
 }
