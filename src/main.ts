@@ -4880,13 +4880,57 @@ interface GameInstallerInfo {
 
 let gameDownloadUnlisten: UnlistenFn | null = null;
 
+// (Linux) "Getting UT4" guidance shown when no install is detected. On Linux the
+// launcher manages the plugin + launches through Wine/Proton, but does NOT install
+// the base game (the UT4Ever installer is a Windows .NET 6 WinForms app). This
+// panel points the user at the two working paths and offers a rescan. Verified on
+// the dogfooding box: the installer needs .NET 6 in the prefix, and the download's
+// inner "UnrealTournament (…).zip" extracts to the game tree (no installer needed).
+function renderLinuxGetGame(panel: HTMLElement): void {
+  panel.innerHTML = `
+    <div class="game-install">
+      <div><strong>Don't have UT4 yet?</strong> On Linux the launcher manages NetcodePlus and launches UT4 through <strong>Wine/Proton</strong> — it doesn't install the base game itself. Install UT4 into a Wine/Proton prefix, then this launcher auto-detects it.</div>
+      <ol class="linux-getgame" style="margin:0.6rem 0 0.4rem;padding-left:1.2rem;line-height:1.5">
+        <li><strong>Get the game</strong> from <button class="card-link" data-extlink="https://ut4ever.org" type="button">ut4ever.org</button> — the community "UT4 Installer" (~10&nbsp;GB).</li>
+        <li><strong>Install it with Lutris:</strong> <em>Lutris → + → Install a game from an executable file</em>, point it at <code>UT4_Installer.exe</code>, and use a <strong>Proton</strong> runner (e.g. GE-Proton). The installer is a <strong>.NET&nbsp;6</strong> app, so add the runtime to that prefix first — <code>winetricks dotnetdesktop6</code> — or it fails with "You must install .NET".</li>
+        <li><em>Prefer to skip .NET?</em> The download is a zip: extract the inner <code>UnrealTournament&nbsp;(…).zip</code> into a folder and add <code>…/Engine/Binaries/Win64/UE4-Win64-Shipping.exe</code> to Lutris under a Proton runner. No installer, no .NET needed.</li>
+        <li><strong>Come back and rescan</strong> — the launcher finds your Lutris game automatically. You can also point it at the prefix + runner yourself in <em>Settings → Wine&nbsp;/&nbsp;Proton</em>.</li>
+      </ol>
+      <div class="game-install-actions">
+        <button class="card-link" data-extlink="https://ut4ever.org" type="button">Open ut4ever.org</button>
+        <button id="linux-rescan-btn" type="button">Rescan for UT4</button>
+      </div>
+      <div id="game-install-status" class="launch-status"></div>
+    </div>`;
+  document.getElementById("linux-rescan-btn")?.addEventListener("click", async () => {
+    const status = document.getElementById("game-install-status");
+    if (status) status.textContent = "Scanning for a UT4 install…";
+    try {
+      await refetchInstallsPreservingManual();
+      if (state.installs.length > 0) {
+        render(); // found it — re-render swaps this panel out for the real UI
+      } else if (status) {
+        status.innerHTML = `<span class="warn">Still no UT4 install found. Make sure it's added in Lutris (or set the prefix + runner in Settings → Wine / Proton).</span>`;
+      }
+    } catch (err) {
+      if (status) status.innerHTML = `<span class="warn">Rescan failed: ${escape(String(err))}</span>`;
+    }
+  });
+}
+
 async function renderGameInstall(): Promise<void> {
   const panel = document.getElementById("game-install-panel");
   if (!panel) return;
-  // The bundled UT4 installer is a Windows .exe/.zip flow — hidden on Linux
-  // (Lutris/Wine users already have the game).
+  // The bundled UT4 installer is a Windows-only .NET 6 flow. On Linux we can't run
+  // it, so instead of a blank surface, guide the user to install UT4 into a Wine/
+  // Proton prefix (which this launcher then auto-detects). Only shown when no
+  // install is detected yet — once UT4 is found there's nothing to get.
   if (platformOs !== "windows") {
-    panel.innerHTML = "";
+    if (state.installs.length > 0) {
+      panel.innerHTML = "";
+      return;
+    }
+    renderLinuxGetGame(panel);
     return;
   }
   let info: GameInstallerInfo;
