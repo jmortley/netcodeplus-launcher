@@ -349,7 +349,7 @@ pub async fn install_game(app: AppHandle) -> Result<InstallGameResult, String> {
         if free < needed {
             return Err(format!(
                 "not enough free space to unpack the installer — need ~{:.1} GB more on that drive, have {:.1} GB. Free up space (you can delete the downloaded .zip once UT4 is installed) and try again.",
-                total as f64 / 1e9,
+                needed.saturating_sub(free) as f64 / 1e9,
                 free as f64 / 1e9,
             ));
         }
@@ -418,6 +418,33 @@ pub fn default_download_dir() -> Option<String> {
 /// Set by [`cancel_editor_download`], polled by the editor download loop.
 static EDITOR_CANCEL: AtomicBool = AtomicBool::new(false);
 
+/// Single-flight latch for [`download_editor`]: a second concurrent invoke
+/// would share the same `.part` file and reset [`EDITOR_CANCEL`], corrupting a
+/// multi-hour download. Claimed by compare-exchange; released by
+/// [`EditorDownloadSlot`]'s `Drop` on every exit path.
+static EDITOR_DOWNLOAD_ACTIVE: AtomicBool = AtomicBool::new(false);
+
+/// RAII release for [`EDITOR_DOWNLOAD_ACTIVE`].
+struct EditorDownloadSlot;
+
+impl EditorDownloadSlot {
+    fn claim() -> Result<Self, String> {
+        if EDITOR_DOWNLOAD_ACTIVE
+            .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            return Err("the editor download is already running".into());
+        }
+        Ok(Self)
+    }
+}
+
+impl Drop for EditorDownloadSlot {
+    fn drop(&mut self) {
+        EDITOR_DOWNLOAD_ACTIVE.store(false, Ordering::Release);
+    }
+}
+
 /// Path of the most recently downloaded **and verified** editor zip, recorded by
 /// [`download_editor`] and consumed by [`install_editor`] — same
 /// no-frontend-supplied-path defense as [`VERIFIED_INSTALLER`].
@@ -476,6 +503,7 @@ pub fn cancel_editor_download() {
 /// free-space guard covers the zip **plus** the unpacked tree.
 #[tauri::command]
 pub async fn download_editor(app: AppHandle, dir: String) -> Result<String, String> {
+    let _slot = EditorDownloadSlot::claim()?;
     let (manifest, ..) = fetch_verify(&app).await?;
     let editor = manifest
         .editor_installer
@@ -494,19 +522,42 @@ pub async fn download_editor(app: AppHandle, dir: String) -> Result<String, Stri
     let final_path = dir.join(format!("UT4-Editor-{}.zip", safe_version(&editor.version)));
     let part = PathBuf::from(format!("{}.part", final_path.to_string_lossy()));
 
+    // A finished zip from an earlier session (or a re-picked folder) is reused
+    // if its bytes still match the signed digest — re-hashing ~31 GB beats
+    // re-downloading it, and it repopulates the in-memory verified record a
+    // launcher restart cleared.
+    if final_path.is_file() {
+        let app_v = app.clone();
+        let digest = ncp_net::hash_file(&final_path, move |done, total| {
+            emit_editor(&app_v, "verify", done, total)
+        })
+        .await
+        .map_err(|e| e.to_string())?;
+        if digest == editor.sha256 {
+            *VERIFIED_EDITOR.lock().unwrap() = Some(final_path.clone());
+            return Ok(final_path.to_string_lossy().into_owned());
+        }
+        // Stale/corrupt leftover with the same name — replace it.
+        std::fs::remove_file(&final_path).map_err(|e| e.to_string())?;
+    }
+
     // Free-space guard: the drive needs the zip AND the unpacked tree (the
     // editor archive is compressed — the tree is ~1.25× the download), so
-    // require ~2.25× the download plus headroom. `install_editor` re-checks
-    // the exact uncompressed size before extracting.
+    // require ~2.25× the download plus headroom — minus what an existing
+    // `.part` already put on the drive, so a resume after a mid-download
+    // failure isn't refused for space the finished download won't need.
+    // `install_editor` re-checks the exact uncompressed size before extracting.
     if let Some(free) = ncp_host::disk::available_space(&dir) {
+        let part_len = std::fs::metadata(&part).map(|m| m.len()).unwrap_or(0);
         let needed = editor
             .size_bytes
             .saturating_mul(9)
             .saturating_div(4)
-            .saturating_add(512 * 1024 * 1024);
+            .saturating_add(512 * 1024 * 1024)
+            .saturating_sub(part_len.min(editor.size_bytes));
         if free < needed {
             return Err(format!(
-                "not enough free space on that drive — downloading and unpacking the editor needs ~{:.0} GB, have {:.1} GB",
+                "not enough free space on that drive — downloading and unpacking the editor needs ~{:.0} GB more, have {:.1} GB",
                 needed as f64 / 1e9,
                 free as f64 / 1e9,
             ));
@@ -584,6 +635,11 @@ pub async fn install_editor(app: AppHandle) -> Result<InstallEditorResult, Strin
     if !zip.is_file() {
         return Err("the downloaded editor zip is missing — download it again".into());
     }
+    // A re-run overwrites the tree's files in place — refuse while a running
+    // editor holds them open (a sharing violation would abort mid-extract).
+    if crate::commands::is_game_running("UE4Editor.exe".to_string()) {
+        return Err("Close the UT4 editor first — unpacking replaces files it keeps open.".into());
+    }
     let dest = zip
         .parent()
         .ok_or("the editor zip has no containing folder")?
@@ -595,7 +651,7 @@ pub async fn install_editor(app: AppHandle) -> Result<InstallEditorResult, Strin
         if free < needed {
             return Err(format!(
                 "not enough free space to unpack the editor — need ~{:.1} GB more on that drive, have {:.1} GB. Free up space (you can delete the downloaded .zip once it's unpacked) and try again.",
-                total as f64 / 1e9,
+                needed.saturating_sub(free) as f64 / 1e9,
                 free as f64 / 1e9,
             ));
         }
@@ -610,21 +666,21 @@ pub async fn install_editor(app: AppHandle) -> Result<InstallEditorResult, Strin
             })
             .map_err(|e| e.to_string())?;
 
-            // The known top-level folder first; fall back to scanning the picked
-            // dir in case a future re-rolled archive renames it.
+            // Resolve the launch target strictly INSIDE the just-extracted tree:
+            // the canonical path first, then a scan limited to that tree. The
+            // user-picked folder itself is deliberately never scanned — a
+            // pre-existing foreign `UE4Editor.exe` sitting beside the zip must
+            // not become the thing [`launch_editor`] starts.
             let known = dest.join("UnrealTournamentEditor");
-            let exe = if known.is_dir() {
+            let canonical = known.join("Engine/Binaries/Win64/UE4Editor.exe");
+            let exe = if canonical.is_file() {
+                Some(canonical)
+            } else if known.is_dir() {
                 ncp_host::find_editor_exe(&known)
             } else {
-                ncp_host::find_editor_exe(&dest)
+                None
             };
-            let editor_dir = exe
-                .as_deref()
-                .and_then(|e| {
-                    // …/Engine/Binaries/Win64/UE4Editor.exe → the tree root, 4 up.
-                    e.ancestors().nth(4).map(Path::to_path_buf)
-                })
-                .unwrap_or(known);
+            let editor_dir = if known.is_dir() { known } else { dest };
             *EDITOR_EXE.lock().unwrap() = exe.clone();
             Ok(InstallEditorResult {
                 editor_dir: editor_dir.to_string_lossy().into_owned(),
@@ -721,6 +777,13 @@ pub async fn install_openal(
                 .into(),
         );
     }
+    // Defense-in-depth (matching the plugin flow): re-validate the frontend-
+    // supplied root as a genuine UT4 tree, so even an injected IPC call can
+    // only ever overlay a real install — never an arbitrary UE4-shaped folder.
+    let mod_paks_dir =
+        ncp_host::default_mod_paks_dir().ok_or("could not locate your mod paks directory")?;
+    let install = ncp_host::check_install(Path::new(&root), mod_paks_dir)
+        .ok_or("that folder isn't a UT4 install")?;
     let config_dir = ncp_host::openal_install::roaming_config_dir()
         .ok_or("couldn't resolve the roaming config folder (%AppData%)")?;
 
@@ -739,7 +802,7 @@ pub async fn install_openal(
         return Err(format!("UT4-OpenAL download/verify failed: {e}"));
     }
 
-    let root_pb = PathBuf::from(&root);
+    let root_pb = install.root;
     let zip_bg = zip_path.clone();
     let handle = tauri::async_runtime::spawn_blocking(move || {
         ncp_host::install_openal_zip(&zip_bg, &root_pb, &config_dir, sample_rate)

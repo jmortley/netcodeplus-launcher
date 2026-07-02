@@ -4753,7 +4753,6 @@ async function renderAddons(): Promise<void> {
   let addons = `<p class="src">Detect a UT4 install to see recommended add-ons.</p>`;
   let hasUlti = false;
   let hasOpenal = false;
-  let openalInfo: AddonEntryInfo | null = null;
   if (root) {
     try {
       hasUlti = await invoke<boolean>("ulticross_status", { root });
@@ -4765,35 +4764,15 @@ async function renderAddons(): Promise<void> {
     } catch (err) {
       console.error("openal_status failed:", err);
     }
-    if (!hasOpenal && platformOs === "windows") {
-      openalInfo = await invoke<AddonEntryInfo>("openal_info").catch(() => null);
-    }
     const ulti = hasUlti
       ? `<div class="ok">✓ UltiCross detected — fully customizable crosshairs (type <code>ulticross</code> in the console).</div>`
       : `<p class="src">UltiCross not detected — get <button id="get-ulticross" type="button" class="link-btn">UltiCross</button> for fully customizable crosshairs, then unzip it into your <button id="open-plugins" type="button" class="link-btn">Plugins folder</button> and relaunch.</p>`;
-    let openal: string;
-    if (hasOpenal) {
-      openal = `<div class="ok">✓ UT4-OpenAL detected — HRTF positional audio. Enable it via <strong>Settings → Apply competitive config</strong>.</div>`;
-    } else if (openalInfo?.available) {
-      const mb = (openalInfo.size_bytes / 1e6).toFixed(0);
-      openal = `
-        <div class="game-install">
-          <div><strong>UT4-OpenAL</strong> — HRTF positional audio by Main.exe (hear exactly where sounds come from). The launcher downloads the release (${mb} MB), verifies it against the signed manifest, puts the audio module into this install, and stages the OpenAL config for your sound card's sample rate. Your existing <code>alsoft.ini</code> tuning is kept.</div>
-          <div class="game-install-actions">
-            <label>Sample rate
-              <select id="openal-rate">
-                <option value="48000" selected>48,000 Hz (Windows default)</option>
-                <option value="44100">44,100 Hz</option>
-              </select>
-            </label>
-            <button id="openal-install-btn" type="button">Install UT4-OpenAL</button>
-            <button id="get-openal-manual" type="button" class="link-btn">Project page</button>
-          </div>
-          <div id="openal-install-status" class="launch-status"></div>
-        </div>`;
-    } else {
-      openal = `<p class="src">UT4-OpenAL not detected — get <button id="get-openal-manual" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio, then drop its DLLs into <code>Engine\\Binaries\\Win64</code> and relaunch.</p>`;
-    }
+    // Paint the manual-install fallback immediately; upgradeOpenalSection swaps
+    // in the one-click installer once the manifest answers (that's a network
+    // round-trip — the panel must not block on it).
+    const openal = hasOpenal
+      ? `<div id="openal-detected" class="ok">✓ UT4-OpenAL detected — HRTF positional audio. Enable it via <strong>Settings → Apply competitive config</strong>.</div>`
+      : `<div id="openal-section"><p class="src">UT4-OpenAL not detected — get <button id="get-openal-manual" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio, then drop its DLLs into <code>Engine\\Binaries\\Win64</code> and relaunch.</p></div>`;
     addons = `
       <p>Optional community add-ons for this install.</p>
       ${ulti}
@@ -4812,11 +4791,41 @@ async function renderAddons(): Promise<void> {
     document
       .getElementById("get-openal-manual")
       ?.addEventListener("click", () => openExternal("https://github.com/main-exe/UT4-OpenAL/"));
-    document
-      .getElementById("openal-install-btn")
-      ?.addEventListener("click", () => void installOpenal(root));
+    if (!hasOpenal && platformOs === "windows") void upgradeOpenalSection(root);
   }
   void renderEditorInstall();
+}
+
+// Swap the manual OpenAL fallback for the one-click installer once the signed
+// manifest confirms it advertises the release. No-ops (leaving the working
+// fallback in place) when the fetch fails, the manifest lacks the entry, or
+// the panel re-rendered meanwhile.
+async function upgradeOpenalSection(root: string): Promise<void> {
+  const info = await invoke<AddonEntryInfo>("openal_info").catch(() => null);
+  const section = document.getElementById("openal-section");
+  if (!section || !info?.available) return;
+  const mb = (info.size_bytes / 1e6).toFixed(0);
+  section.innerHTML = `
+    <div class="game-install">
+      <div><strong>UT4-OpenAL</strong> — HRTF positional audio by Main.exe (hear exactly where sounds come from). The launcher downloads the release (${mb} MB), verifies it against the signed manifest, puts the audio module into this install, and stages the OpenAL config for your sound card's sample rate. Your existing <code>alsoft.ini</code> tuning is kept.</div>
+      <div class="game-install-actions">
+        <label>Sample rate
+          <select id="openal-rate">
+            <option value="48000" selected>48,000 Hz (Windows default)</option>
+            <option value="44100">44,100 Hz</option>
+          </select>
+        </label>
+        <button id="openal-install-btn" type="button">Install UT4-OpenAL</button>
+        <button id="get-openal-manual" type="button" class="link-btn">Project page</button>
+      </div>
+      <div id="openal-install-status" class="launch-status"></div>
+    </div>`;
+  document
+    .getElementById("get-openal-manual")
+    ?.addEventListener("click", () => openExternal("https://github.com/main-exe/UT4-OpenAL/"));
+  document
+    .getElementById("openal-install-btn")
+    ?.addEventListener("click", () => void installOpenal(root));
 }
 
 // One-click UT4-OpenAL install: download + verify + place, then re-render so
@@ -4839,22 +4848,18 @@ async function installOpenal(root: string): Promise<void> {
     const kept = s.alsoft_ini_kept
       ? " Your existing alsoft.ini tuning was kept."
       : "";
-    // Re-render both surfaces; report into the fresh addons panel.
+    // Re-render both surfaces; report under the fresh ✓-detected line.
     await renderAddons();
     await renderConfig({
       text: "UT4-OpenAL installed — apply the config to enable its audio module.",
       cls: "ok",
     });
-    const fresh = document.getElementById("addons-panel");
-    if (fresh) {
-      const ok = fresh.querySelector(".ok");
-      if (ok) {
-        ok.insertAdjacentHTML(
-          "afterend",
-          `<div class="ok">Installed ${s.binaries_files} audio files + ${s.hrtf_files} HRTF profiles.${kept} Now click <strong>Apply competitive config</strong> in Settings so the game loads it.</div>`,
-        );
-      }
-    }
+    document
+      .getElementById("openal-detected")
+      ?.insertAdjacentHTML(
+        "afterend",
+        `<div class="ok">Installed ${s.binaries_files} audio files + ${s.hrtf_files} HRTF profiles.${kept} Now click <strong>Apply competitive config</strong> in Settings so the game loads it.</div>`,
+      );
   } catch (err) {
     if (btn) btn.disabled = false;
     const st = document.getElementById("openal-install-status");
@@ -4896,7 +4901,7 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
   const audioLine = openal
     ? `<div class="ok">✓ UT4-OpenAL detected — its audio module will be enabled.</div>`
     : platformOs === "windows" && root
-      ? `<p class="src">OpenAL not detected — one-click install <button class="link-btn" data-nav-to="addons" type="button">UT4-OpenAL on the Add-ons tab</button> for HRTF positional audio. The audio override is skipped without it.</p>`
+      ? `<p class="src">OpenAL not detected — get <button class="link-btn" data-nav-to="addons" type="button">UT4-OpenAL on the Add-ons tab</button> for HRTF positional audio. The audio override is skipped without it.</p>`
       : `<p class="src">OpenAL not detected — get <button id="get-openal" type="button" class="link-btn">UT4-OpenAL</button> for HRTF positional audio, then drop its DLL into ${openalDest} and relaunch. The audio override is skipped without it.</p>`;
 
   const t = cfg.tweaks;
@@ -5389,6 +5394,10 @@ async function renderEditorInstall(): Promise<void> {
 
 async function startEditorDownload(): Promise<void> {
   const status = document.getElementById("editor-install-status");
+  // In-flight guard: a second click during the multi-hour download would
+  // re-open the picker and race the backend (which also single-flights).
+  const btn = document.getElementById("editor-download-btn") as HTMLButtonElement | null;
+  if (btn?.disabled) return;
   const defaultDir = await invoke<string | null>("default_download_dir").catch(() => null);
   const dir = await open({
     directory: true,
@@ -5397,6 +5406,7 @@ async function startEditorDownload(): Promise<void> {
   });
   if (typeof dir !== "string") return; // folder picker cancelled
 
+  if (btn) btn.disabled = true;
   if (status) status.innerHTML = editorProgressSkeleton(true);
   document
     .getElementById("editor-cancel-btn")
@@ -5420,6 +5430,8 @@ async function startEditorDownload(): Promise<void> {
         : `<span class="warn">${escape(msg)}</span>`;
     }
   } finally {
+    const b = document.getElementById("editor-download-btn") as HTMLButtonElement | null;
+    if (b) b.disabled = false;
     if (editorDownloadUnlisten) {
       editorDownloadUnlisten();
       editorDownloadUnlisten = null;
@@ -5447,22 +5459,27 @@ async function startEditorInstall(): Promise<void> {
         ? `<button id="editor-launch-btn" type="button">Launch the editor</button>`
         : "";
       status.innerHTML = `<span class="ok">✓ UT4 Editor installed.</span>
-        You can delete the downloaded .zip next to it to reclaim ~31 GB. First startup takes a while (it compiles shaders).
+        You can delete the downloaded .zip next to it to get the download's disk space back. First startup takes a while (it compiles shaders).
         <div class="game-install-actions">
           ${launchBtn}
           <button id="editor-open-btn" type="button" class="link-btn">Open folder</button>
         </div>`;
     }
+    const reportErr = (err: unknown) => {
+      const s = document.getElementById("editor-install-status");
+      if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    };
     document
       .getElementById("editor-launch-btn")
-      ?.addEventListener("click", () => void invoke("launch_editor").catch((err) => {
-        const s = document.getElementById("editor-install-status");
-        if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
-      }));
+      ?.addEventListener("click", () => void invoke("launch_editor").catch(reportErr));
     document
       .getElementById("editor-open-btn")
       ?.addEventListener("click", () =>
-        void invoke("reveal_path", { path: res.exe_path ?? `${res.editor_dir}\\x` }),
+        // reveal_path opens the PARENT of the given path — the exe's folder,
+        // or (via the joined dummy leaf) the editor dir itself.
+        void invoke("reveal_path", { path: res.exe_path ?? `${res.editor_dir}\\x` }).catch(
+          reportErr,
+        ),
       );
   } catch (err) {
     if (status) {

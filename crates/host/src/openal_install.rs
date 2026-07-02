@@ -97,9 +97,11 @@ pub fn roaming_config_dir() -> Option<std::path::PathBuf> {
 /// files the game holds open).
 ///
 /// # Errors
-/// See [`OpenalInstallError`]. Placement is not transactional: on error, files
-/// already written stay (they're inert without the Engine.ini `[Audio]` line,
-/// which only [`crate::config::apply`] writes once detection succeeds).
+/// See [`OpenalInstallError`]. Layout problems (missing `Win64/` payload or
+/// config zip) are detected **before** anything is written; mid-write I/O
+/// errors are not transactional — files already placed stay (they're inert
+/// without the Engine.ini `[Audio]` line, which only [`crate::config::apply`]
+/// writes once detection succeeds).
 pub fn install_openal_zip(
     zip_path: &Path,
     root: &Path,
@@ -116,6 +118,21 @@ pub fn install_openal_zip(
 
     let file = fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
+
+    // Read + parse the nested per-sample-rate config zip up front, BEFORE any
+    // write: if the archive doesn't carry the requested config (a re-rolled
+    // release with a new layout), the install must fail with nothing placed —
+    // otherwise the DLL overlay would land, detection would turn true, and the
+    // Engine.ini [Audio] line could be enabled with no OpenAL config staged.
+    let inner_name = format!("OpenAL-{sample_rate}Hz.zip");
+    let mut inner_bytes = Vec::new();
+    {
+        let mut inner_entry = archive.by_name(&inner_name).map_err(|_| {
+            OpenalInstallError::MissingPayload(format!("no {inner_name} in the archive"))
+        })?;
+        inner_entry.read_to_end(&mut inner_bytes)?;
+    }
+    let mut inner = zip::ZipArchive::new(io::Cursor::new(inner_bytes))?;
 
     // Pass 1: the Win64/ overlay → <root>/Engine/Binaries/Win64/.
     let mut binaries_files = 0usize;
@@ -151,17 +168,7 @@ pub fn install_openal_zip(
         ));
     }
 
-    // Pass 2: the nested per-sample-rate config zip → the roaming config dir.
-    let inner_name = format!("OpenAL-{sample_rate}Hz.zip");
-    let mut inner_bytes = Vec::new();
-    {
-        let mut inner_entry = archive.by_name(&inner_name).map_err(|_| {
-            OpenalInstallError::MissingPayload(format!("no {inner_name} in the archive"))
-        })?;
-        inner_entry.read_to_end(&mut inner_bytes)?;
-    }
-    let mut inner = zip::ZipArchive::new(io::Cursor::new(inner_bytes))?;
-
+    // Pass 2: the (pre-validated) config zip → the roaming config dir.
     let existing_alsoft = config_dir.join("alsoft.ini").is_file();
     let mut alsoft_ini_written = false;
     let mut hrtf_files = 0usize;
@@ -348,13 +355,59 @@ mod tests {
     #[test]
     fn rejects_zip_slip_in_win64_tree() {
         let tmp = TempDir::new().unwrap();
-        let evil = zip_bytes(&[("Win64/../../evil.dll", b"x")]);
+        // A valid config zip so the up-front layout check passes and the walk
+        // reaches the hostile Win64/ entry.
+        let inner = zip_bytes(&[("alsoft.ini", b"hrtf = true\n")]);
+        let evil = zip_bytes(&[
+            ("Win64/../../evil.dll", b"x"),
+            ("OpenAL-48000Hz.zip", &inner),
+        ]);
         let path = tmp.path().join("evil.zip");
         fs::write(&path, evil).unwrap();
         let root = ut4_root(tmp.path());
         let err = install_openal_zip(&path, &root, tmp.path(), 48_000).unwrap_err();
-        assert!(matches!(err, OpenalInstallError::UnsafeEntry(_)));
+        assert!(matches!(err, OpenalInstallError::UnsafeEntry(_)), "{err}");
         assert!(!tmp.path().join("evil.dll").exists());
+    }
+
+    #[test]
+    fn rejects_zip_slip_in_nested_config_zip() {
+        let tmp = TempDir::new().unwrap();
+        let inner = zip_bytes(&[("../evil.ini", b"x")]);
+        let outer = zip_bytes(&[
+            ("Win64/OpenAL32.dll", b"openal32"),
+            ("OpenAL-48000Hz.zip", &inner),
+        ]);
+        let path = tmp.path().join("evil-inner.zip");
+        fs::write(&path, outer).unwrap();
+        let root = ut4_root(tmp.path());
+        let cfg = tmp.path().join("Roaming");
+        fs::create_dir_all(&cfg).unwrap();
+        let err = install_openal_zip(&path, &root, &cfg, 48_000).unwrap_err();
+        assert!(matches!(err, OpenalInstallError::UnsafeEntry(_)), "{err}");
+        assert!(!tmp.path().join("evil.ini").exists());
+    }
+
+    #[test]
+    fn missing_config_zip_places_nothing() {
+        // The layout check runs BEFORE any write: asking for a rate the
+        // archive doesn't ship must leave the install root untouched (a
+        // half-applied overlay would flip detection true with no config).
+        let tmp = TempDir::new().unwrap();
+        let zip = sample_release_zip(tmp.path()); // only ships 48000
+        let root = ut4_root(tmp.path());
+        let cfg = tmp.path().join("Roaming");
+        fs::create_dir_all(&cfg).unwrap();
+        let err = install_openal_zip(&zip, &root, &cfg, 44_100).unwrap_err();
+        assert!(
+            matches!(err, OpenalInstallError::MissingPayload(_)),
+            "{err}"
+        );
+        assert!(
+            !root.join("Engine/Binaries/Win64/OpenAL32.dll").exists(),
+            "overlay must not be placed when the config zip is missing"
+        );
+        assert!(!crate::config::openal_installed(&root));
     }
 
     #[test]
