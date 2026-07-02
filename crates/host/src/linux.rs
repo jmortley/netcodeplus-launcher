@@ -66,6 +66,33 @@ pub struct WineLaunch {
     pub wrapper: Vec<String>,
 }
 
+/// DLL overrides that make Wine load the **DXVK** d3d/dxgi DLLs (Direct3D → Vulkan)
+/// that Lutris installs into the prefix, instead of Wine's built-in **wined3d**
+/// (Direct3D → OpenGL) path. DXVK is a large performance + compatibility win on a
+/// modern GPU; without this override, launching the game through raw Wine (as we
+/// do — not through the Lutris/Proton wrapper) silently falls back to wined3d.
+///
+/// `=n,b` = prefer **n**ative (the DXVK DLLs) and fall back to **b**uiltin
+/// (wined3d) when the prefix has no DXVK — so it is always safe to set: a prefix
+/// without DXVK just keeps the old behavior.
+const DXVK_DLL_OVERRIDES: &str = "d3d11,d3d10core,dxgi,d3d9=n,b";
+
+/// Ensure the child env engages DXVK, unless the caller (a Lutris `system.env`, or
+/// a user) already set `WINEDLLOVERRIDES` — in which case their value is respected.
+#[must_use]
+fn with_dxvk_default(mut env: Vec<(String, String)>) -> Vec<(String, String)> {
+    if !env
+        .iter()
+        .any(|(k, _)| k.eq_ignore_ascii_case("WINEDLLOVERRIDES"))
+    {
+        env.push((
+            "WINEDLLOVERRIDES".to_string(),
+            DXVK_DLL_OVERRIDES.to_string(),
+        ));
+    }
+    env
+}
+
 /// Build a Wine launch plan for a Windows `exe` that lives inside a Wine prefix.
 ///
 /// `wine_bin` overrides the default `wine` on `PATH` (so a caller can point at a
@@ -89,7 +116,7 @@ pub fn plan_wine_launch(exe: &Path, args: &[String], wine_bin: Option<&str>) -> 
         args: argv,
         wineprefix,
         cwd,
-        env: Vec::new(),
+        env: with_dxvk_default(Vec::new()),
         wrapper: Vec::new(),
     })
 }
@@ -495,7 +522,7 @@ pub fn plan_lutris_launch(
         args: argv,
         wineprefix,
         cwd,
-        env: cfg.env.clone(),
+        env: with_dxvk_default(cfg.env.clone()),
         wrapper: cfg.prefix_command.clone(),
     }
 }
@@ -1153,8 +1180,43 @@ wine:
         assert_eq!(plan.wineprefix, PathBuf::from("/my/prefix"));
         assert_eq!(plan.args[0], exe.to_string_lossy());
         assert_eq!(&plan.args[1..], &args[..]);
-        assert!(plan.wrapper.is_empty() && plan.env.is_empty());
+        assert!(plan.wrapper.is_empty());
+        // env carries the DXVK override default (no Lutris system.env to inherit).
+        assert!(plan
+            .env
+            .iter()
+            .any(|(k, v)| k == "WINEDLLOVERRIDES" && v == DXVK_DLL_OVERRIDES));
         assert_eq!(plan.cwd, exe.parent().unwrap());
+    }
+
+    #[test]
+    fn launch_enables_dxvk_by_default_but_respects_an_explicit_override() {
+        // No WINEDLLOVERRIDES in system.env → we add the DXVK default.
+        let cfg = parse_lutris_launch(REAL_LUTRIS_YML);
+        let plan = plan_lutris_launch(&cfg, Path::new("/g/UE4.exe"), &[], None);
+        assert_eq!(
+            plan.env
+                .iter()
+                .find(|(k, _)| k == "WINEDLLOVERRIDES")
+                .map(|(_, v)| v.as_str()),
+            Some(DXVK_DLL_OVERRIDES)
+        );
+
+        // A config that sets WINEDLLOVERRIDES itself → we DON'T clobber it.
+        let yml = "game:\n  exe: /g/UE4.exe\n  prefix: /p\nsystem:\n  env:\n    WINEDLLOVERRIDES: 'd3d11=b'\n";
+        let cfg2 = parse_lutris_launch(yml);
+        let plan2 = plan_lutris_launch(&cfg2, Path::new("/g/UE4.exe"), &[], None);
+        let overrides: Vec<&String> = plan2
+            .env
+            .iter()
+            .filter(|(k, _)| k == "WINEDLLOVERRIDES")
+            .map(|(_, v)| v)
+            .collect();
+        assert_eq!(
+            overrides,
+            vec![&"d3d11=b".to_string()],
+            "user's value wins, not duplicated"
+        );
     }
 
     #[test]
