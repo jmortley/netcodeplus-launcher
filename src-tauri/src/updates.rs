@@ -1563,10 +1563,16 @@ pub async fn launcher_update_status(app: AppHandle) -> Result<LauncherUpdateResu
             // enforces. Either missing ⇒ notify-only.
             let can_auto_update = entry.sha256.is_some() && entry.size_bytes.is_some();
             // On Linux it additionally requires running AS an AppImage — the
-            // in-place swap's target. A deb install (or a dev run) has no
-            // swappable file the launcher owns, so it stays notify-only.
+            // in-place swap's target — in a writable directory (AppImages in
+            // root-owned spots like /opt can't be swapped without elevation).
+            // A deb install, a dev run, or an unwritable home stay notify-only
+            // rather than advertising a one-click flow that would fail.
             #[cfg(not(windows))]
-            let can_auto_update = can_auto_update && running_appimage().is_some();
+            let can_auto_update = can_auto_update
+                && running_appimage()
+                    .as_deref()
+                    .and_then(std::path::Path::parent)
+                    .is_some_and(ncp_host::dir_writable);
             LauncherUpdateResult {
                 update_available: true,
                 current_version: current.to_string(),
@@ -1652,8 +1658,9 @@ async fn download_verified_launcher(
     let part = std::path::PathBuf::from(format!("{}.part", dest.to_string_lossy()));
     let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
 
-    // Download — size-enforced, progress-reported (resume-capable, though the
-    // launcher is small). Not cancellable: a launcher binary is a few MB.
+    // Download — size-enforced, progress-reported. Not cancellable, and any
+    // failure discards the partial rather than resuming it later: a launcher
+    // binary is a few MB, so re-downloading beats managing stale partials.
     let app_dl = app.clone();
     static NEVER_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
     ncp_net::download_resumable(&client, url, expected_size, &part, &NEVER_CANCEL, {
@@ -1793,32 +1800,26 @@ pub async fn download_and_apply_launcher_update(app: AppHandle) -> Result<(), St
         let appimage = running_appimage().ok_or(
             "this launcher isn't running as an AppImage — download the new version manually instead",
         )?;
-        let (update_path, old_path) = ncp_host::linux::appimage_swap_paths(&appimage);
+        // Mirror can_auto_update's writability gate — the UI never offers the
+        // button for an unwritable dir, but a stale frontend could still invoke
+        // this; fail with the friendly answer before downloading anything.
+        if !appimage.parent().is_some_and(ncp_host::dir_writable) {
+            return Err(
+                "the folder holding this AppImage isn't writable — download the new version manually instead"
+                    .into(),
+            );
+        }
+        let (update_path, _) = ncp_host::linux::appimage_swap_paths(&appimage);
 
         download_verified_launcher(&app, &entry.url, expected_size, expected_sha, &update_path)
             .await?;
 
-        // The verified file must be executable before it takes over the path.
-        {
-            use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(&update_path, std::fs::Permissions::from_mode(0o755))
-                .map_err(|e| {
-                    let _ = std::fs::remove_file(&update_path);
-                    format!("couldn't make the new launcher executable: {e}")
-                })?;
-        }
-
-        // The swap. Renaming the running AppImage is safe — its FUSE mount holds
-        // the open inode — and both renames are same-directory (atomic). If the
-        // second rename fails, put the old build back so the path never dangles.
-        std::fs::rename(&appimage, &old_path)
-            .map_err(|e| format!("couldn't move the current AppImage aside: {e}"))?;
-        if let Err(e) = std::fs::rename(&update_path, &appimage) {
-            let _ = std::fs::rename(&old_path, &appimage);
-            return Err(format!(
-                "couldn't move the new launcher into place (the old build was restored): {e}"
-            ));
-        }
+        // The swap (exec bit → current aside to .old → verified file into
+        // place, rollback + staging cleanup on failure) lives in ncp_host so
+        // the Linux CI job exercises it for real. Renaming the running
+        // AppImage is safe — its FUSE mount holds the open inode — and the
+        // renames are same-directory, so each step is atomic.
+        ncp_host::linux::apply_appimage_swap(&appimage, &update_path).map_err(|e| e.to_string())?;
 
         // Hand off, same contract as Windows: the new instance waits for this
         // pid to release the single-instance lock. A failed spawn is surfaced,

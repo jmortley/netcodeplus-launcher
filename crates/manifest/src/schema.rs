@@ -103,11 +103,12 @@ pub struct Manifest {
     /// The latest **Linux** launcher build — an AppImage. Counterpart to
     /// [`Self::launcher`] (which stays the Windows exe): each platform's build
     /// reads only its own entry, so a Linux launcher is never offered a Windows
-    /// exe or vice versa. Same shape and trust model: with [`LauncherEntry::
-    /// sha256`] + [`LauncherEntry::size_bytes`] the Linux launcher downloads,
-    /// verifies against the signed digest, and swaps the AppImage **in place**
-    /// (Linux allows replacing a running file — no sibling-filename dance);
-    /// without them, notify-only. `#[serde(default)]` → `None` for back-compat.
+    /// exe or vice versa. Same shape and trust model: when the entry carries
+    /// [`LauncherEntry::sha256`] + [`LauncherEntry::size_bytes`], the Linux
+    /// launcher downloads, verifies against the signed digest, and swaps the
+    /// AppImage **in place** (Linux allows replacing a running file — no
+    /// sibling-filename dance); without them, notify-only. `#[serde(default)]`
+    /// → `None` for back-compat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launcher_linux: Option<LauncherEntry>,
 }

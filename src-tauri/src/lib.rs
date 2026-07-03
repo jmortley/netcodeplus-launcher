@@ -50,6 +50,27 @@ fn wait_for_predecessor_exit() {
     }
 }
 
+/// (Linux) Sweep in-place self-update leftovers beside the running AppImage:
+/// `<AppImage>.old` (the swapped-out previous build) and the `.update` /
+/// `.update.part` staging files an interrupted apply can leave. Best-effort;
+/// runs here in `run()` — not in a frontend-invoked command — so a stale or
+/// hostile webview can't keep a stale runnable binary around by simply never
+/// asking. No-op when not running as an AppImage.
+#[cfg(not(windows))]
+fn sweep_appimage_update_leftovers() {
+    let Some(appimage) = ncp_host::linux::appimage_path(std::env::var("APPIMAGE").ok().as_deref())
+    else {
+        return;
+    };
+    let (update, old) = ncp_host::linux::appimage_swap_paths(&appimage);
+    let part = std::path::PathBuf::from(format!("{}.part", update.to_string_lossy()));
+    for stale in [old, update, part] {
+        if stale.is_file() {
+            let _ = std::fs::remove_file(&stale);
+        }
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     // WebView2 is what renders our entire UI on Windows. If the runtime is missing
@@ -62,6 +83,11 @@ pub fn run() {
     // lock first — wait for it before building anything.
     #[cfg(desktop)]
     wait_for_predecessor_exit();
+
+    // Then tidy that predecessor's swapped-out build (and any stale staging
+    // files) — after the wait, so the handoff has fully settled.
+    #[cfg(not(windows))]
+    sweep_appimage_update_leftovers();
 
     let mut builder = tauri::Builder::default();
 

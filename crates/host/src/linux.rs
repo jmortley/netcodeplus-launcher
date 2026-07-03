@@ -917,6 +917,72 @@ pub fn appimage_swap_paths(appimage: &Path) -> (PathBuf, PathBuf) {
     )
 }
 
+/// Failure modes for [`apply_appimage_swap`]. Every variant leaves the
+/// original AppImage path holding a runnable launcher (the old build), except
+/// [`Self::IntoPlaceNotRestored`] — the double-fault where even putting the
+/// old build back failed, which names where the old file still lives.
+#[cfg(unix)]
+#[derive(Debug, thiserror::Error)]
+pub enum AppimageSwapError {
+    /// Setting the exec bit on the verified download failed.
+    #[error("couldn't make the new launcher executable: {0}")]
+    MakeExecutable(std::io::Error),
+    /// Moving the current AppImage aside to `.old` failed.
+    #[error("couldn't move the current AppImage aside: {0}")]
+    MoveAside(std::io::Error),
+    /// Moving the new build into place failed; the old build WAS restored.
+    #[error("couldn't move the new launcher into place (the old build was restored): {0}")]
+    IntoPlaceRestored(std::io::Error),
+    /// Moving the new build into place failed AND the restore failed too —
+    /// the launcher path is empty; the old build survives at `old`.
+    #[error(
+        "couldn't move the new launcher into place, and putting the old build back failed too — your launcher is still at {old:?} (rename it back): {swap}"
+    )]
+    IntoPlaceNotRestored {
+        /// Where the old (still runnable) build sits.
+        old: PathBuf,
+        /// The error that failed the swap.
+        swap: std::io::Error,
+    },
+}
+
+/// The in-place AppImage swap: make the (already hash-verified) `update` file
+/// executable, move the current `appimage` aside to `<AppImage>.old`, and
+/// rename `update` onto the original path.
+///
+/// Failure handling: the staged `update` is removed on every failure path (a
+/// verified-but-unapplied executable must not linger), and if the final rename
+/// fails the old build is put back so the launcher path never dangles — the
+/// error says whether that restore worked.
+///
+/// `update` normally comes from [`appimage_swap_paths`] (a same-directory
+/// sibling, so the renames are atomic); it is a parameter so tests can stage
+/// it elsewhere (e.g. on another filesystem to force the rename to fail).
+#[cfg(unix)]
+pub fn apply_appimage_swap(
+    appimage: &Path,
+    update: &Path,
+) -> std::result::Result<(), AppimageSwapError> {
+    use std::os::unix::fs::PermissionsExt;
+    let (_, old) = appimage_swap_paths(appimage);
+    if let Err(e) = std::fs::set_permissions(update, std::fs::Permissions::from_mode(0o755)) {
+        let _ = std::fs::remove_file(update);
+        return Err(AppimageSwapError::MakeExecutable(e));
+    }
+    if let Err(e) = std::fs::rename(appimage, &old) {
+        let _ = std::fs::remove_file(update);
+        return Err(AppimageSwapError::MoveAside(e));
+    }
+    if let Err(e) = std::fs::rename(update, appimage) {
+        let _ = std::fs::remove_file(update);
+        return match std::fs::rename(&old, appimage) {
+            Ok(()) => Err(AppimageSwapError::IntoPlaceRestored(e)),
+            Err(_) => Err(AppimageSwapError::IntoPlaceNotRestored { old, swap: e }),
+        };
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -942,6 +1008,90 @@ mod tests {
         assert_eq!(old, Path::new("/home/j/Apps/Launcher.AppImage.old"));
         assert_eq!(update.parent(), ai.parent());
         assert_eq!(old.parent(), ai.parent());
+    }
+
+    // The swap itself is unix-only (exec bits); these run on the Linux CI job —
+    // the closest thing to a dogfood the swap gets before a live AppImage run.
+    #[cfg(unix)]
+    mod swap {
+        use super::*;
+        use std::fs;
+        use std::os::unix::fs::{MetadataExt, PermissionsExt};
+        use tempfile::TempDir;
+
+        fn stage(dir: &Path) -> (PathBuf, PathBuf) {
+            let appimage = dir.join("Launcher.AppImage");
+            fs::write(&appimage, b"old-build").unwrap();
+            let (update, _) = appimage_swap_paths(&appimage);
+            fs::write(&update, b"new-build").unwrap();
+            (appimage, update)
+        }
+
+        #[test]
+        fn happy_path_swaps_and_keeps_rollback() {
+            let tmp = TempDir::new().unwrap();
+            let (appimage, update) = stage(tmp.path());
+            apply_appimage_swap(&appimage, &update).unwrap();
+            assert_eq!(fs::read(&appimage).unwrap(), b"new-build");
+            let mode = fs::metadata(&appimage).unwrap().permissions().mode();
+            assert_ne!(mode & 0o111, 0, "exec bit must be set, got {mode:o}");
+            let (_, old) = appimage_swap_paths(&appimage);
+            assert_eq!(fs::read(&old).unwrap(), b"old-build");
+            assert!(!update.exists());
+        }
+
+        #[test]
+        fn stale_old_from_a_prior_swap_is_overwritten() {
+            let tmp = TempDir::new().unwrap();
+            let (appimage, update) = stage(tmp.path());
+            let (_, old) = appimage_swap_paths(&appimage);
+            fs::write(&old, b"stale-old").unwrap();
+            apply_appimage_swap(&appimage, &update).unwrap();
+            assert_eq!(fs::read(&old).unwrap(), b"old-build");
+        }
+
+        #[test]
+        fn missing_update_leaves_the_launcher_untouched() {
+            let tmp = TempDir::new().unwrap();
+            let appimage = tmp.path().join("Launcher.AppImage");
+            fs::write(&appimage, b"old-build").unwrap();
+            let (update, _) = appimage_swap_paths(&appimage);
+            let err = apply_appimage_swap(&appimage, &update).unwrap_err();
+            assert!(matches!(err, AppimageSwapError::MakeExecutable(_)), "{err}");
+            assert_eq!(fs::read(&appimage).unwrap(), b"old-build");
+        }
+
+        #[test]
+        fn failed_final_rename_restores_the_old_build() {
+            // Force rename #2 to fail with EXDEV by staging the update on a
+            // different filesystem (tmpfs). Skip quietly where /dev/shm isn't
+            // a usable tmpfs (macOS) — the Linux CI runner has it.
+            let shm = Path::new("/dev/shm");
+            if !shm.is_dir() {
+                return;
+            }
+            let tmp = TempDir::new().unwrap();
+            let appimage = tmp.path().join("Launcher.AppImage");
+            fs::write(&appimage, b"old-build").unwrap();
+            let update = shm.join(format!("ncp-swap-test-{}.update", std::process::id()));
+            fs::write(&update, b"new-build").unwrap();
+
+            let result = apply_appimage_swap(&appimage, &update);
+            let _ = fs::remove_file(&update);
+            if tmp.path().metadata().unwrap().dev() == shm.metadata().unwrap().dev() {
+                return; // same filesystem after all — EXDEV can't be forced here
+            }
+            let err = result.unwrap_err();
+            assert!(
+                matches!(err, AppimageSwapError::IntoPlaceRestored(_)),
+                "{err}"
+            );
+            // The rollback put the old build back and cleared the .old sibling.
+            assert_eq!(fs::read(&appimage).unwrap(), b"old-build");
+            let (_, old) = appimage_swap_paths(&appimage);
+            assert!(!old.exists());
+            assert!(!update.exists());
+        }
     }
 
     #[test]
