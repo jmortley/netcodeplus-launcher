@@ -176,46 +176,59 @@ pub fn create_desktop_shortcut_with(
 
 /// File name (without the `.lnk` extension) of the canonical Desktop shortcut the
 /// launcher manages — shared by the writer (the caller of
-/// [`create_desktop_shortcut`]) and the staleness check below, so the two can't
-/// drift apart.
+/// [`create_desktop_shortcut`]) and the repoint below, so the two can't drift
+/// apart.
 pub const LAUNCHER_SHORTCUT_NAME: &str = "UT4 Community Launcher";
 
-/// Whether the canonical Desktop shortcut (`UT4 Community Launcher.lnk`) exists
-/// but points somewhere other than `current_exe` — i.e. it went stale after a
-/// notify-update and is worth offering to repoint.
-///
-/// Returns `false` when there is no such shortcut (the user launches the exe
-/// directly, or named their shortcut differently — we must not nag them to make
-/// one), when it already points here, or when its target can't be read. The
-/// repoint itself is [`create_desktop_shortcut`], which overwrites that same name.
-#[cfg(windows)]
-#[must_use]
-pub fn desktop_shortcut_is_stale(current_exe: &Path) -> bool {
-    use lnk::encoding::WINDOWS_1252;
-    use lnk::ShellLink;
+/// Outcome of [`repoint_launcher_shortcut_if_present`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ShortcutRepoint {
+    /// No canonical `UT4 Community Launcher.lnk` on the Desktop — the user
+    /// launches the exe directly (or named their shortcut differently), so
+    /// there is nothing to touch and no icon is created.
+    NoShortcut,
+    /// The canonical shortcut existed and was (re)written to point at the exe
+    /// running now — overwriting the same file, never a second icon.
+    Repointed,
+    /// The canonical shortcut existed but couldn't be rewritten (e.g. it's
+    /// locked or the Desktop isn't writable). The caller may surface a manual
+    /// "update shortcut" affordance.
+    Failed,
+}
 
+/// Keep the canonical Desktop shortcut (`UT4 Community Launcher.lnk`) pointing at
+/// the exe running now — but only if it already exists.
+///
+/// Deliberately does NOT read the existing shortcut's target: the `.lnk` the
+/// launcher writes (via `mslnk`) stores its target in the ID-list / relative
+/// path, which the read-side `lnk` crate can't resolve, so a target-comparison
+/// is unreliable. Instead this overwrites the *same* file in place when present
+/// — idempotent (the target is stable across in-place updates, so a rewrite is
+/// usually a no-op change) and structurally incapable of creating a second
+/// icon. A user with no canonical shortcut is left alone ([`Self::NoShortcut`]).
+///
+/// This heals a shortcut left stale by the old versioned-sibling update scheme
+/// (its target exe was deleted); with the in-place swap the target no longer
+/// moves, so future launches just rewrite the same path.
+#[cfg(windows)]
+pub fn repoint_launcher_shortcut_if_present(current_exe: &Path) -> ShortcutRepoint {
     let Some(desktop) = dirs::desktop_dir() else {
-        return false;
+        return ShortcutRepoint::NoShortcut;
     };
     let lnk = desktop.join(format!("{LAUNCHER_SHORTCUT_NAME}.lnk"));
     if !lnk.is_file() {
-        return false;
+        return ShortcutRepoint::NoShortcut;
     }
-    let Ok(link) = ShellLink::open(&lnk, WINDOWS_1252) else {
-        return false;
-    };
-    let Some(target) = link.link_target() else {
-        return false;
-    };
-    // Stale = the shortcut points at a different exe than the one running now.
-    paths_differ(&PathBuf::from(target), current_exe)
+    match create_desktop_shortcut(current_exe, LAUNCHER_SHORTCUT_NAME) {
+        Ok(_) => ShortcutRepoint::Repointed,
+        Err(_) => ShortcutRepoint::Failed,
+    }
 }
 
-/// Non-Windows stub: there are no `.lnk` shortcuts to evaluate.
+/// Non-Windows stub: there are no `.lnk` shortcuts to repoint.
 #[cfg(not(windows))]
-#[must_use]
-pub fn desktop_shortcut_is_stale(_current_exe: &Path) -> bool {
-    false
+pub fn repoint_launcher_shortcut_if_present(_current_exe: &Path) -> ShortcutRepoint {
+    ShortcutRepoint::NoShortcut
 }
 
 /// Schedule `path` for deletion on the next reboot.

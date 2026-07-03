@@ -207,8 +207,8 @@ mod tests {
         fs::write(&update, b"new-build").unwrap();
 
         let result = apply_binary_swap(&binary, &update, false);
-        let _ = fs::remove_file(&update);
         if tmp.path().metadata().unwrap().dev() == shm.metadata().unwrap().dev() {
+            let _ = fs::remove_file(&update);
             return; // same filesystem after all — EXDEV can't be forced here
         }
         let err = result.unwrap_err();
@@ -216,5 +216,7 @@ mod tests {
         assert_eq!(fs::read(&binary).unwrap(), b"old-build");
         let (_, old) = swap_paths(&binary);
         assert!(!old.exists());
+        // The rollback removed the staged, verified-but-unapplied update file.
+        assert!(!update.exists(), "swap must clean up the staged update");
     }
 }

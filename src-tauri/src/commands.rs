@@ -1333,24 +1333,19 @@ pub fn launcher_update_housekeeping(app: tauri::AppHandle) -> Result<Housekeepin
     state.installed_launcher_version = Some(current_version.to_string());
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
 
-    // Heal a stale canonical shortcut IN PLACE: if "UT4 Community Launcher.lnk"
-    // exists but points at a different (older, pre-in-place-swap) exe, repoint
-    // it at the exe running now by overwriting that same .lnk — never creating
-    // a second icon. `desktop_shortcut_is_stale` only returns true when such a
-    // canonical shortcut exists and is stale, so this never fabricates one for
-    // a user who launches the exe directly. With the in-place swap the exe path
-    // no longer changes across updates, so this is a one-time fix for shortcuts
-    // left stale by the old versioned-sibling scheme.
-    if ncp_host::desktop_shortcut_is_stale(&current_path) {
-        let _ = ncp_host::create_desktop_shortcut(&current_path, ncp_host::LAUNCHER_SHORTCUT_NAME);
-    }
+    // Keep the canonical "UT4 Community Launcher.lnk" pointed at the exe running
+    // now — overwriting that same file in place (never a second icon), and only
+    // if it already exists (a direct-exe user is left alone). This heals a
+    // shortcut left stale by the old versioned-sibling scheme; with the in-place
+    // swap the target no longer moves, so it's an idempotent rewrite thereafter.
+    let repoint = ncp_host::repoint_launcher_shortcut_if_present(&current_path);
 
     Ok(HousekeepingResult {
         old_launcher_path: state.pending_old_launcher_path,
         current_version: current_version.to_string(),
-        // False after the auto-repoint above (re-checked): the manual "Update
-        // desktop shortcut" button only ever shows if the repoint failed.
-        shortcut_needs_update: ncp_host::desktop_shortcut_is_stale(&current_path),
+        // The manual "Update desktop shortcut" button only shows if the in-place
+        // repoint above actually failed (locked file / unwritable Desktop).
+        shortcut_needs_update: repoint == ncp_host::ShortcutRepoint::Failed,
     })
 }
 

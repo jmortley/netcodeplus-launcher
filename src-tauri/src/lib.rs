@@ -74,11 +74,15 @@ fn sweep_update_leftovers() {
     let part = std::path::PathBuf::from(format!("{}.part", update.to_string_lossy()));
     for stale in [&old, &update, &part] {
         if stale.is_file() && std::fs::remove_file(stale).is_err() {
-            // A locked `.old` (the just-exited predecessor's image not yet
-            // released) — queue it for deletion on the next reboot so it can't
-            // linger as a stale runnable binary.
+            // Only `.old` can be persistently image-locked (the just-exited
+            // predecessor's exe not yet released) — queue THAT for a reboot-time
+            // delete so it can't linger as a stale runnable binary. A failed
+            // delete of `.update`/`.update.part` is transient (e.g. an AV
+            // scan); leave those for the next start.
             #[cfg(windows)]
-            let _ = ncp_host::schedule_delete_on_reboot(stale);
+            if **stale == old {
+                let _ = ncp_host::schedule_delete_on_reboot(stale);
+            }
         }
     }
 }

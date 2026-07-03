@@ -1562,14 +1562,24 @@ pub async fn launcher_update_status(app: AppHandle) -> Result<LauncherUpdateResu
             // the digest and the size — the integrity material the download path
             // enforces. Either missing ⇒ notify-only.
             let can_auto_update = entry.sha256.is_some() && entry.size_bytes.is_some();
-            // On Linux it additionally requires running AS an AppImage — the
-            // in-place swap's target — in a writable directory (AppImages in
-            // root-owned spots like /opt can't be swapped without elevation).
-            // A deb install, a dev run, or an unwritable home stay notify-only
-            // rather than advertising a one-click flow that would fail.
+            // It also requires a writable install dir — the in-place swap can't
+            // rename+replace the binary otherwise. Matches the backend gate in
+            // the apply path (which errors on an unwritable dir), so the button
+            // is hidden (notify-only) instead of offered-then-failing.
+            // - Linux: the target is the AppImage; a deb install, dev run, or an
+            //   AppImage in a root-owned spot like /opt stays notify-only.
+            // - Windows: the target is the exe; a relocated install under
+            //   Program Files stays notify-only.
             #[cfg(not(windows))]
             let can_auto_update = can_auto_update
                 && running_appimage()
+                    .as_deref()
+                    .and_then(std::path::Path::parent)
+                    .is_some_and(ncp_host::dir_writable);
+            #[cfg(windows)]
+            let can_auto_update = can_auto_update
+                && std::env::current_exe()
+                    .ok()
                     .as_deref()
                     .and_then(std::path::Path::parent)
                     .is_some_and(ncp_host::dir_writable);
@@ -1629,9 +1639,9 @@ fn running_appimage() -> Option<std::path::PathBuf> {
 
 /// Stream `url` to `<dest>.part` (size-enforced, progress on the
 /// `launcher-download-progress` channel), hash the result against the SIGNED
-/// digest, and commit the verified bytes to `dest`. Shared by both apply paths
-/// — the Windows sibling-exe flow and the Linux in-place AppImage swap. On any
-/// failure the partial/unverified file is removed and nothing is run.
+/// digest, and commit the verified bytes to `dest`. Shared by both platforms'
+/// in-place swap apply paths (`dest` is `<binary>.update`). On any failure the
+/// partial/unverified file is removed and nothing is run.
 async fn download_verified_launcher(
     app: &AppHandle,
     url: &str,
