@@ -454,6 +454,22 @@ static VERIFIED_EDITOR: Mutex<Option<PathBuf>> = Mutex::new(None);
 /// the only exe [`launch_editor`] will start (never a frontend-supplied path).
 static EDITOR_EXE: Mutex<Option<PathBuf>> = Mutex::new(None);
 
+/// UE4Editor.exe launch arguments for the UT4 editor — the community's
+/// long-standing shortcut convention: the project name (without it the editor
+/// opens a project browser instead of UT4), a log window, no shared DDC
+/// (community boxes have none to reach), and the D3D11/SM5 path this
+/// 4.15-era editor is happiest on.
+const EDITOR_ARGS: [&str; 5] = [
+    "UnrealTournament",
+    "-log",
+    "-ddc=noshared",
+    "-d3d11",
+    "-sm5",
+];
+
+/// Desktop shortcut name for the editor (`<name>.lnk`).
+const EDITOR_SHORTCUT_NAME: &str = "UT4 Editor";
+
 fn emit_editor(app: &AppHandle, phase: &'static str, done: u64, total: u64) {
     let _ = app.emit("editor-download-progress", Progress { phase, done, total });
 }
@@ -613,6 +629,9 @@ pub struct InstallEditorResult {
     pub editor_dir: String,
     /// `UE4Editor.exe`, when it was located (used by [`launch_editor`]).
     pub exe_path: Option<String>,
+    /// Whether the "UT4 Editor" Desktop shortcut was created (best-effort —
+    /// a failure here never fails the install).
+    pub shortcut_created: bool,
 }
 
 /// Extract the previously downloaded + verified editor zip beside itself. The
@@ -682,9 +701,23 @@ pub async fn install_editor(app: AppHandle) -> Result<InstallEditorResult, Strin
             };
             let editor_dir = if known.is_dir() { known } else { dest };
             *EDITOR_EXE.lock().unwrap() = exe.clone();
+
+            // Desktop shortcut with the full launch shape (matching the
+            // community's editor shortcuts) — best-effort, never fatal.
+            let shortcut_created = exe.as_deref().is_some_and(|e| {
+                ncp_host::create_desktop_shortcut_with(
+                    e,
+                    EDITOR_SHORTCUT_NAME,
+                    Some(&EDITOR_ARGS.join(" ")),
+                    e.parent(),
+                )
+                .is_ok()
+            });
+
             Ok(InstallEditorResult {
                 editor_dir: editor_dir.to_string_lossy().into_owned(),
                 exe_path: exe.map(|e| e.to_string_lossy().into_owned()),
+                shortcut_created,
             })
         });
 
@@ -694,9 +727,11 @@ pub async fn install_editor(app: AppHandle) -> Result<InstallEditorResult, Strin
     }
 }
 
-/// Start `UE4Editor.exe` from the tree [`install_editor`] just unpacked. Acts
-/// only on the backend-recorded exe (never a frontend-supplied path). No
-/// elevation — the editor is a normal user-level program.
+/// Start `UE4Editor.exe` from the tree [`install_editor`] just unpacked, with
+/// the standard UT4 editor arguments ([`EDITOR_ARGS`] — bare UE4Editor.exe
+/// would open a project browser, not UT4). Acts only on the backend-recorded
+/// exe (never a frontend-supplied path). No elevation — the editor is a
+/// normal user-level program.
 #[tauri::command]
 pub fn launch_editor() -> Result<(), String> {
     let exe = EDITOR_EXE
@@ -711,7 +746,12 @@ pub fn launch_editor() -> Result<(), String> {
         .parent()
         .ok_or("the editor exe has no containing folder")?
         .to_path_buf();
-    ncp_host::shell_launch(&exe, &work).map_err(|e| e.to_string())
+    std::process::Command::new(&exe)
+        .args(EDITOR_ARGS)
+        .current_dir(&work)
+        .spawn()
+        .map_err(|e| format!("couldn't start the editor: {e}"))?;
+    Ok(())
 }
 
 // ---- UT4-OpenAL -------------------------------------------------------------

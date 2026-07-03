@@ -5453,12 +5453,19 @@ async function startEditorInstall(): Promise<void> {
   editorDownloadUnlisten = await attachEditorProgress();
 
   try {
-    const res = await invoke<{ editor_dir: string; exe_path: string | null }>("install_editor");
+    const res = await invoke<{
+      editor_dir: string;
+      exe_path: string | null;
+      shortcut_created: boolean;
+    }>("install_editor");
     if (status) {
       const launchBtn = res.exe_path
         ? `<button id="editor-launch-btn" type="button">Launch the editor</button>`
         : "";
-      status.innerHTML = `<span class="ok">✓ UT4 Editor installed.</span>
+      const shortcut = res.shortcut_created
+        ? ` A <strong>UT4 Editor</strong> shortcut was added to your desktop.`
+        : "";
+      status.innerHTML = `<span class="ok">✓ UT4 Editor installed.</span>${shortcut}
         You can delete the downloaded .zip next to it to get the download's disk space back. First startup takes a while (it compiles shaders).
         <div class="game-install-actions">
           ${launchBtn}

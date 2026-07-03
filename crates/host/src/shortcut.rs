@@ -118,8 +118,24 @@ pub fn is_stale_pending(
 /// [`ShortcutError::NonUtf8Path`] for a non-UTF-8 target/shortcut path,
 /// [`ShortcutError::Write`] on a write failure, and
 /// [`ShortcutError::Unsupported`] on non-Windows platforms.
-#[cfg(windows)]
 pub fn create_desktop_shortcut(target: &Path, name: &str) -> Result<PathBuf, ShortcutError> {
+    create_desktop_shortcut_with(target, name, None, None)
+}
+
+/// [`create_desktop_shortcut`] with the full shortcut shape: launch
+/// `arguments` and a `working_dir`, both written into the `.lnk`. Needed for
+/// targets that don't run bare — UE4Editor.exe without its project argument
+/// opens a project browser instead of the UT4 editor.
+///
+/// # Errors
+/// Same as [`create_desktop_shortcut`].
+#[cfg(windows)]
+pub fn create_desktop_shortcut_with(
+    target: &Path,
+    name: &str,
+    arguments: Option<&str>,
+    working_dir: Option<&Path>,
+) -> Result<PathBuf, ShortcutError> {
     if !target.is_file() {
         return Err(ShortcutError::TargetMissing(target.to_path_buf()));
     }
@@ -131,7 +147,17 @@ pub fn create_desktop_shortcut(target: &Path, name: &str) -> Result<PathBuf, Sho
     let lnk_str = lnk
         .to_str()
         .ok_or_else(|| ShortcutError::NonUtf8Path(lnk.clone()))?;
-    let sl = mslnk::ShellLink::new(target_str).map_err(|e| ShortcutError::Write(e.to_string()))?;
+    let mut sl =
+        mslnk::ShellLink::new(target_str).map_err(|e| ShortcutError::Write(e.to_string()))?;
+    if let Some(args) = arguments {
+        sl.set_arguments(Some(args.to_string()));
+    }
+    if let Some(dir) = working_dir {
+        let dir_str = dir
+            .to_str()
+            .ok_or_else(|| ShortcutError::NonUtf8Path(dir.to_path_buf()))?;
+        sl.set_working_dir(Some(dir_str.to_string()));
+    }
     sl.create_lnk(lnk_str)
         .map_err(|e| ShortcutError::Write(e.to_string()))?;
     Ok(lnk)
@@ -139,7 +165,12 @@ pub fn create_desktop_shortcut(target: &Path, name: &str) -> Result<PathBuf, Sho
 
 /// Non-Windows stub: there are no `.lnk` shortcuts to create.
 #[cfg(not(windows))]
-pub fn create_desktop_shortcut(_target: &Path, _name: &str) -> Result<PathBuf, ShortcutError> {
+pub fn create_desktop_shortcut_with(
+    _target: &Path,
+    _name: &str,
+    _arguments: Option<&str>,
+    _working_dir: Option<&Path>,
+) -> Result<PathBuf, ShortcutError> {
     Err(ShortcutError::Unsupported)
 }
 
