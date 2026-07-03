@@ -34,12 +34,15 @@ ignore = [
     # Tauri pulls in a fixed glib.
     "RUSTSEC-2024-0429",
 
-    # ---- proc-macro-error: unmaintained ----
+    # ---- proc-macro-error / proc-macro-error2: unmaintained ----
     #
-    # Deep transitive (via tauri-codegen's macro stack). Author
-    # archived the repo. Replacement (`proc-macro-error2`) exists
-    # but Tauri hasn't migrated yet.
+    # Deep transitive (via tauri-codegen's macro stack). The original
+    # was archived (0370); its fork proc-macro-error2 is now ALSO
+    # unmaintained (0173, published 2026-06-07). Tauri hasn't migrated
+    # off either yet. Same posture — a build-time macro dep, no runtime
+    # surface. Re-check when Tauri updates its macro stack.
     "RUSTSEC-2024-0370",
+    "RUSTSEC-2026-0173",
 
     # ---- fxhash: unmaintained ----
     #
