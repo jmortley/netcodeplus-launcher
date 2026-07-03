@@ -79,6 +79,7 @@ fn sample_manifest(now: DateTime<Utc>) -> Manifest {
         game_installer: None,
         editor_installer: None,
         openal: None,
+        launcher_linux: None,
     }
 }
 

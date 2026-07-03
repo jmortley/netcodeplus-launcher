@@ -70,6 +70,7 @@ fn manifest_with_channel(name: &str, paks: HashMap<String, ManifestPak>) -> Mani
         game_installer: None,
         editor_installer: None,
         openal: None,
+        launcher_linux: None,
     }
 }
 

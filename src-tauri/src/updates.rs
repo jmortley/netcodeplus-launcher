@@ -1491,11 +1491,14 @@ pub fn remove_stray_plugin(root: String, kind: String, path: String) -> Result<(
 }
 
 // ===================================================================
-// Launcher self-update — NOTIFY ONLY. Compares the manifest's
-// advertised launcher version to this build and, when newer, hands the
-// UI a download URL. No download, no exe swap (that needs code signing
-// to dodge AV/SmartScreen quarantine); the user fetches + runs the new
-// launcher themselves — the same trust path as their first install.
+// Launcher self-update. Compares the platform's advertised launcher
+// version (Windows: `launcher`, the exe; Linux: `launcher_linux`, the
+// AppImage) to this build. When the entry carries the signed SHA-256 +
+// size, the launcher downloads, verifies, and relaunches itself
+// (sibling exe on Windows, in-place AppImage swap on Linux); otherwise
+// it is NOTIFY-ONLY — the UI hands the user a download URL and they
+// fetch + run the new launcher themselves, the same trust path as
+// their first install.
 // ===================================================================
 
 /// Whether a newer launcher is available, summarised for the UI banner.
@@ -1544,12 +1547,26 @@ pub async fn launcher_update_status(app: AppHandle) -> Result<LauncherUpdateResu
         .map_err(|e| format!("launcher version is not valid semver: {e}"))?;
     let (manifest, _state, _, _) = fetch_verify(&app).await?;
 
-    Ok(match manifest.launcher {
+    // Each platform reads only its OWN entry: `launcher` is the Windows exe,
+    // `launcher_linux` the AppImage. Selecting here means a Linux build is
+    // never offered a Windows exe (or vice versa) — a manifest with only the
+    // Windows entry is simply silent on Linux.
+    #[cfg(windows)]
+    let advertised = manifest.launcher;
+    #[cfg(not(windows))]
+    let advertised = manifest.launcher_linux;
+
+    Ok(match advertised {
         Some(entry) if entry.version > current => {
             // Verified self-update is possible only when the entry carries BOTH
             // the digest and the size — the integrity material the download path
             // enforces. Either missing ⇒ notify-only.
             let can_auto_update = entry.sha256.is_some() && entry.size_bytes.is_some();
+            // On Linux it additionally requires running AS an AppImage — the
+            // in-place swap's target. A deb install (or a dev run) has no
+            // swappable file the launcher owns, so it stays notify-only.
+            #[cfg(not(windows))]
+            let can_auto_update = can_auto_update && running_appimage().is_some();
             LauncherUpdateResult {
                 update_available: true,
                 current_version: current.to_string(),
@@ -1594,7 +1611,9 @@ fn emit_progress(app: &AppHandle, phase: &'static str, done: u64, total: u64) {
 }
 
 /// Sanitise a manifest-supplied version into a filename-safe fragment (the new
-/// exe is named after it). Mirrors the installer's `safe_version`.
+/// exe is named after it). Mirrors the installer's `safe_version`. Windows-only:
+/// the Linux swap reuses the existing AppImage filename.
+#[cfg(windows)]
 fn safe_version(v: &str) -> String {
     v.chars()
         .map(|c| {
@@ -1605,6 +1624,68 @@ fn safe_version(v: &str) -> String {
             }
         })
         .collect()
+}
+
+/// (Linux) The on-disk AppImage this process is running from, when it is one —
+/// the only valid in-place self-update target. Comes from the `APPIMAGE` env
+/// var the AppImage runtime sets (`current_exe()` would resolve into the
+/// transient FUSE mount instead). `None` on a deb install or a dev run.
+#[cfg(not(windows))]
+fn running_appimage() -> Option<std::path::PathBuf> {
+    let env = std::env::var("APPIMAGE").ok();
+    let p = ncp_host::linux::appimage_path(env.as_deref())?;
+    p.is_file().then_some(p)
+}
+
+/// Stream `url` to `<dest>.part` (size-enforced, progress on the
+/// `launcher-download-progress` channel), hash the result against the SIGNED
+/// digest, and commit the verified bytes to `dest`. Shared by both apply paths
+/// — the Windows sibling-exe flow and the Linux in-place AppImage swap. On any
+/// failure the partial/unverified file is removed and nothing is run.
+async fn download_verified_launcher(
+    app: &AppHandle,
+    url: &str,
+    expected_size: u64,
+    expected_sha: ncp_manifest::Sha256Digest,
+    dest: &std::path::Path,
+) -> Result<(), String> {
+    let part = std::path::PathBuf::from(format!("{}.part", dest.to_string_lossy()));
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+
+    // Download — size-enforced, progress-reported (resume-capable, though the
+    // launcher is small). Not cancellable: a launcher binary is a few MB.
+    let app_dl = app.clone();
+    static NEVER_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    ncp_net::download_resumable(&client, url, expected_size, &part, &NEVER_CANCEL, {
+        move |done, total| emit_progress(&app_dl, "download", done, total)
+    })
+    .await
+    .map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        format!("couldn't download the new launcher: {e}")
+    })?;
+
+    // Final verification against the SIGNED digest. A mismatch ⇒ a swapped or
+    // corrupted binary; discard it and refuse to run anything.
+    let app_v = app.clone();
+    let digest = ncp_net::hash_file(&part, move |done, total| {
+        emit_progress(&app_v, "verify", done, total)
+    })
+    .await
+    .map_err(|e| e.to_string())?;
+    if digest != expected_sha {
+        let _ = std::fs::remove_file(&part);
+        return Err(
+            "the downloaded launcher failed verification (its contents don't match the signed manifest) — it was discarded, nothing was run"
+                .into(),
+        );
+    }
+
+    // Verified — commit the `.part` to its final name.
+    std::fs::rename(&part, dest).map_err(|e| {
+        let _ = std::fs::remove_file(&part);
+        format!("couldn't finalize the downloaded launcher: {e}")
+    })
 }
 
 /// Download the manifest's advertised launcher exe, verify it against the
@@ -1629,16 +1710,32 @@ fn safe_version(v: &str) -> String {
 ///    instance then runs the existing post-update housekeeping, which detects
 ///    this now-outdated exe and offers to remove it.
 ///
-/// Windows can't overwrite a running image, which is exactly why the new exe is
-/// a *sibling* (new version → new filename) rather than an in-place swap.
+/// Per platform:
+///
+/// - **Windows** can't overwrite a running image, which is exactly why the new
+///   exe is a *sibling* (new version → new filename) rather than an in-place
+///   swap; the next start's housekeeping offers to remove the old copy.
+/// - **Linux** (AppImage) CAN replace a running file, so the update swaps the
+///   AppImage **in place**: verified download to `<AppImage>.update`, exec bit
+///   set, running file moved to `<AppImage>.old` (rollback point, tidied by the
+///   next start), `.update` renamed onto the original path. Same-directory
+///   renames — each step atomic, and shortcuts/`.desktop` entries keep pointing
+///   at a valid path throughout. Requires running AS an AppImage (`$APPIMAGE`);
+///   a deb install is notify-only.
+///
+/// Both paths hand off the same way: spawn the new binary with
+/// `--post-update-wait <our-pid>` and exit.
 #[tauri::command]
 pub async fn download_and_apply_launcher_update(app: AppHandle) -> Result<(), String> {
     let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
         .map_err(|e| format!("launcher version is not valid semver: {e}"))?;
     let (manifest, _state, _, _) = fetch_verify(&app).await?;
-    let entry = manifest
-        .launcher
-        .ok_or("the update manifest advertises no launcher")?;
+    // Same per-platform entry selection as `launcher_update_status`.
+    #[cfg(windows)]
+    let advertised = manifest.launcher;
+    #[cfg(not(windows))]
+    let advertised = manifest.launcher_linux;
+    let entry = advertised.ok_or("the update manifest advertises no launcher for this platform")?;
     if entry.version <= current {
         return Err("this launcher is already up to date".into());
     }
@@ -1652,78 +1749,96 @@ pub async fn download_and_apply_launcher_update(app: AppHandle) -> Result<(), St
         );
     };
 
-    // Stage the new exe beside the running one: a new version means a new
-    // filename, so it never collides with the locked, running image.
-    let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-    let dir = current_exe
-        .parent()
-        .ok_or("can't locate the launcher's folder")?
-        .to_path_buf();
-    let dest = dir.join(format!(
-        "UT4-Community-Launcher-{}.exe",
-        safe_version(&entry.version.to_string())
-    ));
-    // Guard: never target the exe currently running (would be a no-op update and
-    // an unwritable, locked target anyway).
-    if dest == current_exe {
-        return Err("the new launcher resolves to the file already running".into());
-    }
-    let part = std::path::PathBuf::from(format!("{}.part", dest.to_string_lossy()));
+    #[cfg(windows)]
+    {
+        // Stage the new exe beside the running one: a new version means a new
+        // filename, so it never collides with the locked, running image.
+        let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
+        let dir = current_exe
+            .parent()
+            .ok_or("can't locate the launcher's folder")?
+            .to_path_buf();
+        let dest = dir.join(format!(
+            "UT4-Community-Launcher-{}.exe",
+            safe_version(&entry.version.to_string())
+        ));
+        // Guard: never target the exe currently running (would be a no-op update
+        // and an unwritable, locked target anyway).
+        if dest == current_exe {
+            return Err("the new launcher resolves to the file already running".into());
+        }
 
-    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+        download_verified_launcher(&app, &entry.url, expected_size, expected_sha, &dest).await?;
 
-    // Download — size-enforced, progress-reported (resume-capable, though the
-    // exe is small). Not cancellable: a launcher exe is a few MB, not ~10 GB.
-    let app_dl = app.clone();
-    static NEVER_CANCEL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
-    ncp_net::download_resumable(
-        &client,
-        &entry.url,
-        expected_size,
-        &part,
-        &NEVER_CANCEL,
-        move |done, total| emit_progress(&app_dl, "download", done, total),
-    )
-    .await
-    .map_err(|e| {
-        let _ = std::fs::remove_file(&part);
-        format!("couldn't download the new launcher: {e}")
-    })?;
+        // Hand off: start the verified new exe, telling it to wait for THIS
+        // process (single-instance lock holder) to exit first, then quit. If the
+        // spawn itself fails we must NOT exit — surface the error so the user can
+        // fall back to the manual download.
+        let pid = std::process::id();
+        std::process::Command::new(&dest)
+            .arg("--post-update-wait")
+            .arg(pid.to_string())
+            .current_dir(&dir)
+            .spawn()
+            .map_err(|e| {
+                format!("downloaded and verified the update, but couldn't start it: {e}")
+            })?;
 
-    // Final verification against the SIGNED digest. A mismatch ⇒ a swapped or
-    // corrupted exe; discard it and refuse to run anything.
-    let app_v = app.clone();
-    let digest = ncp_net::hash_file(&part, move |done, total| {
-        emit_progress(&app_v, "verify", done, total)
-    })
-    .await
-    .map_err(|e| e.to_string())?;
-    if digest != expected_sha {
-        let _ = std::fs::remove_file(&part);
-        return Err(
-            "the downloaded launcher failed verification (its contents don't match the signed manifest) — it was discarded, nothing was run"
-                .into(),
-        );
+        app.exit(0);
+        Ok(())
     }
 
-    // Verified — commit the `.part` to the final `.exe`.
-    std::fs::rename(&part, &dest).map_err(|e| {
-        let _ = std::fs::remove_file(&part);
-        format!("couldn't finalize the downloaded launcher: {e}")
-    })?;
+    #[cfg(not(windows))]
+    {
+        let appimage = running_appimage().ok_or(
+            "this launcher isn't running as an AppImage — download the new version manually instead",
+        )?;
+        let (update_path, old_path) = ncp_host::linux::appimage_swap_paths(&appimage);
 
-    // Hand off: start the verified new exe, telling it to wait for THIS process
-    // (single-instance lock holder) to exit first, then quit. If the spawn
-    // itself fails we must NOT exit — surface the error so the user can fall back
-    // to the manual download.
-    let pid = std::process::id();
-    std::process::Command::new(&dest)
-        .arg("--post-update-wait")
-        .arg(pid.to_string())
-        .current_dir(&dir)
-        .spawn()
-        .map_err(|e| format!("downloaded and verified the update, but couldn't start it: {e}"))?;
+        download_verified_launcher(&app, &entry.url, expected_size, expected_sha, &update_path)
+            .await?;
 
-    app.exit(0);
-    Ok(())
+        // The verified file must be executable before it takes over the path.
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&update_path, std::fs::Permissions::from_mode(0o755))
+                .map_err(|e| {
+                    let _ = std::fs::remove_file(&update_path);
+                    format!("couldn't make the new launcher executable: {e}")
+                })?;
+        }
+
+        // The swap. Renaming the running AppImage is safe — its FUSE mount holds
+        // the open inode — and both renames are same-directory (atomic). If the
+        // second rename fails, put the old build back so the path never dangles.
+        std::fs::rename(&appimage, &old_path)
+            .map_err(|e| format!("couldn't move the current AppImage aside: {e}"))?;
+        if let Err(e) = std::fs::rename(&update_path, &appimage) {
+            let _ = std::fs::rename(&old_path, &appimage);
+            return Err(format!(
+                "couldn't move the new launcher into place (the old build was restored): {e}"
+            ));
+        }
+
+        // Hand off, same contract as Windows: the new instance waits for this
+        // pid to release the single-instance lock. A failed spawn is surfaced,
+        // not exited on — the swap already happened, so the user just starts
+        // the (updated) launcher themselves.
+        let pid = std::process::id();
+        let dir = appimage
+            .parent()
+            .map(std::path::Path::to_path_buf)
+            .unwrap_or_else(|| std::path::PathBuf::from("."));
+        std::process::Command::new(&appimage)
+            .arg("--post-update-wait")
+            .arg(pid.to_string())
+            .current_dir(&dir)
+            .spawn()
+            .map_err(|e| {
+                format!("the update was applied, but the new launcher couldn't be started automatically — start it yourself: {e}")
+            })?;
+
+        app.exit(0);
+        Ok(())
+    }
 }

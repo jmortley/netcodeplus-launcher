@@ -1285,6 +1285,24 @@ pub struct HousekeepingResult {
 /// next update is detectable and the prompt doesn't re-fire for this build.
 #[tauri::command]
 pub fn launcher_update_housekeeping(app: tauri::AppHandle) -> Result<HousekeepingResult, String> {
+    // (Linux) The in-place AppImage self-update leaves the replaced build at
+    // `<AppImage>.old`, and an interrupted apply can leave `.update` /
+    // `.update.part` staging files. Sweep them best-effort on startup — the
+    // update is a few MB, nothing worth resuming, and a stale verified-but-
+    // unapplied `.update` shouldn't linger as a runnable binary.
+    #[cfg(not(windows))]
+    if let Some(appimage) =
+        ncp_host::linux::appimage_path(std::env::var("APPIMAGE").ok().as_deref())
+    {
+        let (update, old) = ncp_host::linux::appimage_swap_paths(&appimage);
+        let part = std::path::PathBuf::from(format!("{}.part", update.to_string_lossy()));
+        for stale in [old, update, part] {
+            if stale.is_file() {
+                let _ = std::fs::remove_file(&stale);
+            }
+        }
+    }
+
     let current_path = std::env::current_exe().map_err(|e| e.to_string())?;
     let current_version = env!("CARGO_PKG_VERSION");
     let current_semver = semver::Version::parse(current_version).map_err(|e| e.to_string())?;

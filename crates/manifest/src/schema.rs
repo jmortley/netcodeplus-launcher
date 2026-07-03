@@ -99,6 +99,17 @@ pub struct Manifest {
     /// `#[serde(default)]` → `None` for back-compat in both directions.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub openal: Option<GameInstaller>,
+
+    /// The latest **Linux** launcher build — an AppImage. Counterpart to
+    /// [`Self::launcher`] (which stays the Windows exe): each platform's build
+    /// reads only its own entry, so a Linux launcher is never offered a Windows
+    /// exe or vice versa. Same shape and trust model: with [`LauncherEntry::
+    /// sha256`] + [`LauncherEntry::size_bytes`] the Linux launcher downloads,
+    /// verifies against the signed digest, and swaps the AppImage **in place**
+    /// (Linux allows replacing a running file — no sibling-filename dance);
+    /// without them, notify-only. `#[serde(default)]` → `None` for back-compat.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub launcher_linux: Option<LauncherEntry>,
 }
 
 /// The latest launcher build advertised by a [`Manifest`].
@@ -565,6 +576,33 @@ mod tests {
         let m: Manifest = serde_json::from_str(json).unwrap();
         assert!(m.editor_installer.is_none());
         assert!(m.openal.is_none());
+        assert!(m.launcher_linux.is_none());
+    }
+
+    #[test]
+    fn manifest_with_linux_launcher_round_trips() {
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-07-02T00:00:00Z",
+            "expires_at": "2027-07-02T00:00:00Z",
+            "sequence": 37,
+            "min_launcher_version": "0.1.0",
+            "channels": {},
+            "launcher_linux": {
+                "version": "1.6.0",
+                "url": "https://example.invalid/UT4-Community-Launcher-1.6.0.AppImage",
+                "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "size_bytes": 91679551
+            }
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let linux = m.launcher_linux.as_ref().expect("linux entry present");
+        assert_eq!(linux.version, semver::Version::new(1, 6, 0));
+        assert!(linux.sha256.is_some());
+        // The Windows entry stays independent — absent here.
+        assert!(m.launcher.is_none());
+        let reparsed: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(reparsed, m);
     }
 
     #[test]

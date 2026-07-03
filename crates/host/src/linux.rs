@@ -883,9 +883,66 @@ pub fn detect_lutris_hits(
     hits
 }
 
+/// The running launcher's on-disk AppImage path, from the `APPIMAGE` env var
+/// the AppImage runtime sets (pass `std::env::var("APPIMAGE").ok()`).
+///
+/// `std::env::current_exe()` is NOT this — inside an AppImage it resolves into
+/// the transient FUSE mount (`/tmp/.mount_…`), which vanishes on exit and must
+/// never be the self-update target. `None` when the launcher isn't running as
+/// an AppImage (a deb install or a dev run) or the value is empty — the caller
+/// then stays notify-only.
+#[must_use]
+pub fn appimage_path(env_value: Option<&str>) -> Option<PathBuf> {
+    let v = env_value?.trim();
+    if v.is_empty() {
+        return None;
+    }
+    Some(PathBuf::from(v))
+}
+
+/// Sibling paths for the in-place AppImage self-update swap:
+/// `(<AppImage>.update, <AppImage>.old)`.
+///
+/// The verified download is committed to `.update`, the running file is moved
+/// aside to `.old` (rollback point; startup housekeeping removes it), and
+/// `.update` is renamed onto the original path — all three in the same
+/// directory, so each step is an atomic rename and the user's `.desktop`
+/// entries keep pointing at a valid file throughout.
+#[must_use]
+pub fn appimage_swap_paths(appimage: &Path) -> (PathBuf, PathBuf) {
+    let base = appimage.as_os_str().to_string_lossy();
+    (
+        PathBuf::from(format!("{base}.update")),
+        PathBuf::from(format!("{base}.old")),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn appimage_path_requires_a_real_value() {
+        assert_eq!(appimage_path(None), None);
+        assert_eq!(appimage_path(Some("")), None);
+        assert_eq!(appimage_path(Some("   ")), None);
+        assert_eq!(
+            appimage_path(Some("/home/j/Apps/UT4-Community-Launcher-1.6.0.AppImage")),
+            Some(PathBuf::from(
+                "/home/j/Apps/UT4-Community-Launcher-1.6.0.AppImage"
+            ))
+        );
+    }
+
+    #[test]
+    fn appimage_swap_paths_are_same_dir_siblings() {
+        let ai = Path::new("/home/j/Apps/Launcher.AppImage");
+        let (update, old) = appimage_swap_paths(ai);
+        assert_eq!(update, Path::new("/home/j/Apps/Launcher.AppImage.update"));
+        assert_eq!(old, Path::new("/home/j/Apps/Launcher.AppImage.old"));
+        assert_eq!(update.parent(), ai.parent());
+        assert_eq!(old.parent(), ai.parent());
+    }
 
     #[test]
     fn finds_prefix_from_exe_under_drive_c() {
