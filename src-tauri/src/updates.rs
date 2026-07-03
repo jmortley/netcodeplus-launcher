@@ -1616,22 +1616,6 @@ fn emit_progress(app: &AppHandle, phase: &'static str, done: u64, total: u64) {
     );
 }
 
-/// Sanitise a manifest-supplied version into a filename-safe fragment (the new
-/// exe is named after it). Mirrors the installer's `safe_version`. Windows-only:
-/// the Linux swap reuses the existing AppImage filename.
-#[cfg(windows)]
-fn safe_version(v: &str) -> String {
-    v.chars()
-        .map(|c| {
-            if c.is_ascii_alphanumeric() || matches!(c, '.' | '-' | '_') {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect()
-}
-
 /// (Linux) The on-disk AppImage this process is running from, when it is one —
 /// the only valid in-place self-update target. Comes from the `APPIMAGE` env
 /// var the AppImage runtime sets (`current_exe()` would resolve into the
@@ -1708,30 +1692,23 @@ async fn download_verified_launcher(
 /// 1. Re-verify the manifest in Rust (never trust a round-tripped value), and
 ///    require an advertised launcher that is strictly newer than this build and
 ///    carries both `sha256` and `size_bytes`.
-/// 2. Stream `url` to `<current-exe-dir>/UT4-Community-Launcher-<ver>.exe.part`
-///    with size enforcement + progress events, then hash it in a final pass and
-///    reject anything whose digest ≠ the signed one. Commit the verified bytes
-///    to the `.exe` name.
-/// 3. Spawn the new exe with `--post-update-wait <our-pid>` (so it waits for us
-///    to release the single-instance lock before taking over) and exit. The new
-///    instance then runs the existing post-update housekeeping, which detects
-///    this now-outdated exe and offers to remove it.
+/// 2. Stream `url` to `<binary>.update.part` with size enforcement + progress
+///    events, then hash it in a final pass and reject anything whose digest ≠
+///    the signed one. Commit the verified bytes to `<binary>.update`.
+/// 3. Swap it **in place** ([`ncp_host::apply_binary_swap`]): rename the running
+///    binary aside to `<binary>.old`, rename `<binary>.update` onto the original
+///    path. Both platforms do this — Windows allows renaming a running image
+///    (the lock blocks overwriting its bytes, not moving the directory entry),
+///    and an AppImage's FUSE mount holds the open inode across the rename. The
+///    binary keeps its own on-disk path, so a shortcut / taskbar pin /
+///    `.desktop` entry never goes stale and no duplicate icon is ever created.
+/// 4. Spawn the swapped-in binary with `--post-update-wait <our-pid>` (so it
+///    waits for us to release the single-instance lock) and exit. The next
+///    start sweeps the `.old` rollback file.
 ///
-/// Per platform:
-///
-/// - **Windows** can't overwrite a running image, which is exactly why the new
-///   exe is a *sibling* (new version → new filename) rather than an in-place
-///   swap; the next start's housekeeping offers to remove the old copy.
-/// - **Linux** (AppImage) CAN replace a running file, so the update swaps the
-///   AppImage **in place**: verified download to `<AppImage>.update`, exec bit
-///   set, running file moved to `<AppImage>.old` (rollback point, tidied by the
-///   next start), `.update` renamed onto the original path. Same-directory
-///   renames — each step atomic, and shortcuts/`.desktop` entries keep pointing
-///   at a valid path throughout. Requires running AS an AppImage (`$APPIMAGE`);
-///   a deb install is notify-only.
-///
-/// Both paths hand off the same way: spawn the new binary with
-/// `--post-update-wait <our-pid>` and exit.
+/// Notify-only fallbacks (the button isn't offered, re-checked here for a stale
+/// frontend): an AppImage in a non-writable dir like `/opt`, or a launcher not
+/// running as an AppImage on Linux (a deb install).
 #[tauri::command]
 pub async fn download_and_apply_launcher_update(app: AppHandle) -> Result<(), String> {
     let current = semver::Version::parse(env!("CARGO_PKG_VERSION"))
@@ -1756,90 +1733,60 @@ pub async fn download_and_apply_launcher_update(app: AppHandle) -> Result<(), St
         );
     };
 
+    // The self-update target: the running binary's own on-disk path. Windows
+    // can rename a running image (the lock blocks overwriting its bytes, not
+    // moving the directory entry), so BOTH platforms swap in place — the path
+    // never changes, so a shortcut / pin / .desktop entry never goes stale.
     #[cfg(windows)]
-    {
-        // Stage the new exe beside the running one: a new version means a new
-        // filename, so it never collides with the locked, running image.
-        let current_exe = std::env::current_exe().map_err(|e| e.to_string())?;
-        let dir = current_exe
-            .parent()
-            .ok_or("can't locate the launcher's folder")?
-            .to_path_buf();
-        let dest = dir.join(format!(
-            "UT4-Community-Launcher-{}.exe",
-            safe_version(&entry.version.to_string())
-        ));
-        // Guard: never target the exe currently running (would be a no-op update
-        // and an unwritable, locked target anyway).
-        if dest == current_exe {
-            return Err("the new launcher resolves to the file already running".into());
-        }
-
-        download_verified_launcher(&app, &entry.url, expected_size, expected_sha, &dest).await?;
-
-        // Hand off: start the verified new exe, telling it to wait for THIS
-        // process (single-instance lock holder) to exit first, then quit. If the
-        // spawn itself fails we must NOT exit — surface the error so the user can
-        // fall back to the manual download.
-        let pid = std::process::id();
-        std::process::Command::new(&dest)
-            .arg("--post-update-wait")
-            .arg(pid.to_string())
-            .current_dir(&dir)
-            .spawn()
-            .map_err(|e| {
-                format!("downloaded and verified the update, but couldn't start it: {e}")
-            })?;
-
-        app.exit(0);
-        Ok(())
-    }
-
+    let target = std::env::current_exe().map_err(|e| e.to_string())?;
     #[cfg(not(windows))]
-    {
-        let appimage = running_appimage().ok_or(
-            "this launcher isn't running as an AppImage — download the new version manually instead",
-        )?;
-        // Mirror can_auto_update's writability gate — the UI never offers the
-        // button for an unwritable dir, but a stale frontend could still invoke
-        // this; fail with the friendly answer before downloading anything.
-        if !appimage.parent().is_some_and(ncp_host::dir_writable) {
-            return Err(
-                "the folder holding this AppImage isn't writable — download the new version manually instead"
-                    .into(),
-            );
-        }
-        let (update_path, _) = ncp_host::linux::appimage_swap_paths(&appimage);
+    let target = running_appimage().ok_or(
+        "this launcher isn't running as an AppImage — download the new version manually instead",
+    )?;
 
-        download_verified_launcher(&app, &entry.url, expected_size, expected_sha, &update_path)
-            .await?;
-
-        // The swap (exec bit → current aside to .old → verified file into
-        // place, rollback + staging cleanup on failure) lives in ncp_host so
-        // the Linux CI job exercises it for real. Renaming the running
-        // AppImage is safe — its FUSE mount holds the open inode — and the
-        // renames are same-directory, so each step is atomic.
-        ncp_host::linux::apply_appimage_swap(&appimage, &update_path).map_err(|e| e.to_string())?;
-
-        // Hand off, same contract as Windows: the new instance waits for this
-        // pid to release the single-instance lock. A failed spawn is surfaced,
-        // not exited on — the swap already happened, so the user just starts
-        // the (updated) launcher themselves.
-        let pid = std::process::id();
-        let dir = appimage
-            .parent()
-            .map(std::path::Path::to_path_buf)
-            .unwrap_or_else(|| std::path::PathBuf::from("."));
-        std::process::Command::new(&appimage)
-            .arg("--post-update-wait")
-            .arg(pid.to_string())
-            .current_dir(&dir)
-            .spawn()
-            .map_err(|e| {
-                format!("the update was applied, but the new launcher couldn't be started automatically — start it yourself: {e}")
-            })?;
-
-        app.exit(0);
-        Ok(())
+    // The install dir must be writable to stage + swap. On Windows this is
+    // usually true (the launcher installs to a user folder); an AppImage in a
+    // root-owned dir like /opt is notify-only (the UI never offers the button
+    // there, but re-check for a stale frontend).
+    if !target.parent().is_some_and(ncp_host::dir_writable) {
+        return Err(
+            "the folder holding this launcher isn't writable — download the new version manually instead"
+                .into(),
+        );
     }
+    let dir = target
+        .parent()
+        .ok_or("can't locate the launcher's folder")?
+        .to_path_buf();
+    let (update_path, _old_path) = ncp_host::swap_paths(&target);
+
+    download_verified_launcher(&app, &entry.url, expected_size, expected_sha, &update_path).await?;
+
+    // The in-place swap (optional exec bit → current aside to `.old` → verified
+    // file onto the original path, rollback + staging cleanup on failure) lives
+    // in ncp_host so both CI runners exercise it for real. `executable` only
+    // applies on unix (the AppImage); it's a no-op on Windows.
+    #[cfg(windows)]
+    let executable = false;
+    #[cfg(not(windows))]
+    let executable = true;
+    ncp_host::apply_binary_swap(&target, &update_path, executable).map_err(|e| e.to_string())?;
+
+    // Hand off: start the swapped-in binary (same path as before), telling it to
+    // wait for THIS process to release the single-instance lock, then exit. A
+    // failed spawn is surfaced, not exited on — the swap already happened, so
+    // the user just starts the (updated) launcher themselves; the old build sits
+    // at `.old` until the next start's sweep tidies it.
+    let pid = std::process::id();
+    std::process::Command::new(&target)
+        .arg("--post-update-wait")
+        .arg(pid.to_string())
+        .current_dir(&dir)
+        .spawn()
+        .map_err(|e| {
+            format!("the update was applied, but the new launcher couldn't be started automatically — start it yourself: {e}")
+        })?;
+
+    app.exit(0);
+    Ok(())
 }

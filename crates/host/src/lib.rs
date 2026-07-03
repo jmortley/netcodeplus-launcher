@@ -35,6 +35,7 @@ pub mod plugin_install;
 pub mod shortcut;
 pub mod state;
 pub mod stray;
+pub mod swap;
 mod zip_safety;
 
 pub use crate::dotnet::windowsdesktop_runtime_present;
@@ -72,3 +73,4 @@ pub use crate::shortcut::{
 };
 pub use crate::state::{LauncherState, OnboardingState, PakStamp, DEFAULT_CHANNEL};
 pub use crate::stray::{remove_stray, scan_strays, StrayKind, StrayPlugin, StrayRemoveError};
+pub use crate::swap::{apply_binary_swap, swap_paths, SwapError};

@@ -50,23 +50,35 @@ fn wait_for_predecessor_exit() {
     }
 }
 
-/// (Linux) Sweep in-place self-update leftovers beside the running AppImage:
-/// `<AppImage>.old` (the swapped-out previous build) and the `.update` /
+/// Sweep in-place self-update leftovers beside the running launcher binary:
+/// `<binary>.old` (the swapped-out previous build) and the `.update` /
 /// `.update.part` staging files an interrupted apply can leave. Best-effort;
 /// runs here in `run()` — not in a frontend-invoked command — so a stale or
 /// hostile webview can't keep a stale runnable binary around by simply never
-/// asking. No-op when not running as an AppImage.
-#[cfg(not(windows))]
-fn sweep_appimage_update_leftovers() {
-    let Some(appimage) = ncp_host::linux::appimage_path(std::env::var("APPIMAGE").ok().as_deref())
-    else {
+/// asking.
+///
+/// The binary is `$APPIMAGE` on Linux (the real on-disk path, not the FUSE
+/// mount) and `current_exe()` on Windows. On Windows the swapped-out `.old`
+/// exe may still be image-locked immediately after the handoff; if a plain
+/// delete fails, fall back to a reboot-time delete so it can't linger.
+#[cfg(desktop)]
+fn sweep_update_leftovers() {
+    #[cfg(not(windows))]
+    let binary = ncp_host::linux::appimage_path(std::env::var("APPIMAGE").ok().as_deref());
+    #[cfg(windows)]
+    let binary = std::env::current_exe().ok();
+    let Some(binary) = binary else {
         return;
     };
-    let (update, old) = ncp_host::linux::appimage_swap_paths(&appimage);
+    let (update, old) = ncp_host::swap_paths(&binary);
     let part = std::path::PathBuf::from(format!("{}.part", update.to_string_lossy()));
-    for stale in [old, update, part] {
-        if stale.is_file() {
-            let _ = std::fs::remove_file(&stale);
+    for stale in [&old, &update, &part] {
+        if stale.is_file() && std::fs::remove_file(stale).is_err() {
+            // A locked `.old` (the just-exited predecessor's image not yet
+            // released) — queue it for deletion on the next reboot so it can't
+            // linger as a stale runnable binary.
+            #[cfg(windows)]
+            let _ = ncp_host::schedule_delete_on_reboot(stale);
         }
     }
 }
@@ -86,8 +98,8 @@ pub fn run() {
 
     // Then tidy that predecessor's swapped-out build (and any stale staging
     // files) — after the wait, so the handoff has fully settled.
-    #[cfg(not(windows))]
-    sweep_appimage_update_leftovers();
+    #[cfg(desktop)]
+    sweep_update_leftovers();
 
     let mut builder = tauri::Builder::default();
 
