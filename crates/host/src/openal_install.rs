@@ -51,6 +51,17 @@ pub enum OpenalInstallError {
     #[error("unsupported sample rate {0} Hz — expected 44100 or 48000")]
     UnsupportedSampleRate(u32),
 
+    /// The ZIP's bytes don't match the signed manifest's digest. Raised by
+    /// [`install_openal_binaries_verified`] — the elevated worker re-checks
+    /// integrity itself rather than trusting the unelevated parent's verdict.
+    #[error("UT4-OpenAL archive hash mismatch: expected {expected}, got {got}")]
+    HashMismatch {
+        /// The hex digest from the signed manifest.
+        expected: String,
+        /// The hex digest actually computed from the ZIP on disk.
+        got: String,
+    },
+
     /// The install root has no `Engine/Binaries/Win64` — not a UT4 tree.
     #[error("not a UT4 install: {0:?} has no Engine/Binaries/Win64")]
     NotAnInstall(std::path::PathBuf),
@@ -108,6 +119,46 @@ pub fn install_openal_zip(
     config_dir: &Path,
     sample_rate: u32,
 ) -> Result<OpenalInstallSummary> {
+    let binaries_files = install_openal_binaries(zip_path, root, sample_rate)?;
+    let config = install_openal_config(zip_path, config_dir, sample_rate)?;
+    Ok(OpenalInstallSummary {
+        binaries_files,
+        alsoft_ini_written: config.alsoft_ini_written,
+        alsoft_ini_kept: config.alsoft_ini_kept,
+        hrtf_files: config.hrtf_files,
+    })
+}
+
+/// Read + parse the nested per-sample-rate config zip. Called BEFORE any write
+/// (in both halves): if the archive doesn't carry the requested config (a
+/// re-rolled release with a new layout), the install must fail with nothing
+/// placed — otherwise the DLL overlay would land, detection would turn true,
+/// and the Engine.ini [Audio] line could be enabled with no OpenAL config
+/// staged.
+fn read_config_zip(
+    archive: &mut zip::ZipArchive<fs::File>,
+    sample_rate: u32,
+) -> Result<zip::ZipArchive<io::Cursor<Vec<u8>>>> {
+    let inner_name = format!("OpenAL-{sample_rate}Hz.zip");
+    let mut inner_bytes = Vec::new();
+    {
+        let mut inner_entry = archive.by_name(&inner_name).map_err(|_| {
+            OpenalInstallError::MissingPayload(format!("no {inner_name} in the archive"))
+        })?;
+        inner_entry.read_to_end(&mut inner_bytes)?;
+    }
+    Ok(zip::ZipArchive::new(io::Cursor::new(inner_bytes))?)
+}
+
+/// The **install-root half** of the OpenAL install: overlay `Win64/**` onto
+/// `<root>/Engine/Binaries/Win64/`. Returns the number of files placed.
+///
+/// Split out from [`install_openal_zip`] so the elevated worker (a UT4 install
+/// in `Program Files` is not user-writable) can run exactly this half with
+/// admin rights while the `%AppData%` config half stays in the unelevated
+/// parent. Validates the nested config zip for `sample_rate` exists before
+/// writing anything — the no-half-apply invariant holds on both paths.
+pub fn install_openal_binaries(zip_path: &Path, root: &Path, sample_rate: u32) -> Result<usize> {
     if !matches!(sample_rate, 44_100 | 48_000) {
         return Err(OpenalInstallError::UnsupportedSampleRate(sample_rate));
     }
@@ -118,23 +169,9 @@ pub fn install_openal_zip(
 
     let file = fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
+    // Validate-only: the config for this rate must exist before the overlay.
+    let _ = read_config_zip(&mut archive, sample_rate)?;
 
-    // Read + parse the nested per-sample-rate config zip up front, BEFORE any
-    // write: if the archive doesn't carry the requested config (a re-rolled
-    // release with a new layout), the install must fail with nothing placed —
-    // otherwise the DLL overlay would land, detection would turn true, and the
-    // Engine.ini [Audio] line could be enabled with no OpenAL config staged.
-    let inner_name = format!("OpenAL-{sample_rate}Hz.zip");
-    let mut inner_bytes = Vec::new();
-    {
-        let mut inner_entry = archive.by_name(&inner_name).map_err(|_| {
-            OpenalInstallError::MissingPayload(format!("no {inner_name} in the archive"))
-        })?;
-        inner_entry.read_to_end(&mut inner_bytes)?;
-    }
-    let mut inner = zip::ZipArchive::new(io::Cursor::new(inner_bytes))?;
-
-    // Pass 1: the Win64/ overlay → <root>/Engine/Binaries/Win64/.
     let mut binaries_files = 0usize;
     for i in 0..archive.len() {
         let mut entry = archive.by_index(i)?;
@@ -167,8 +204,78 @@ pub fn install_openal_zip(
             "no Win64/ entries (DLLs + AL_Sounds) in the archive".into(),
         ));
     }
+    Ok(binaries_files)
+}
 
-    // Pass 2: the (pre-validated) config zip → the roaming config dir.
+/// [`install_openal_binaries`] with the ZIP re-hashed against
+/// `expected_sha256_hex` first. This is what the **elevated** worker calls: it
+/// must not trust that the (unelevated) parent already verified the bytes — it
+/// re-hashes the file itself, closing the window between the parent's verify
+/// and the privileged write. The expected digest originates from the signed
+/// manifest, re-verified by the worker.
+pub fn install_openal_binaries_verified(
+    zip_path: &Path,
+    root: &Path,
+    sample_rate: u32,
+    expected_sha256_hex: &str,
+) -> Result<usize> {
+    let got = crate::plugin_install::file_sha256_hex(zip_path)?;
+    if !got.eq_ignore_ascii_case(expected_sha256_hex) {
+        return Err(OpenalInstallError::HashMismatch {
+            expected: expected_sha256_hex.to_string(),
+            got,
+        });
+    }
+    install_openal_binaries(zip_path, root, sample_rate)
+}
+
+/// Number of files the `Win64/**` overlay carries — central-directory scan
+/// only, nothing extracted. Used for reporting when the overlay ran in the
+/// elevated worker, which can only return an exit code.
+pub fn openal_binaries_file_count(zip_path: &Path) -> Result<usize> {
+    let file = fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut count = 0usize;
+    for i in 0..archive.len() {
+        let entry = archive.by_index(i)?;
+        let name = entry.name();
+        if let Some(rest) = name.strip_prefix("Win64/") {
+            if !rest.is_empty() && !entry.is_dir() && !rest.ends_with('/') {
+                count += 1;
+            }
+        }
+    }
+    Ok(count)
+}
+
+/// What the **config half** placed (see [`install_openal_config`]).
+#[derive(Debug, Clone, Copy, serde::Serialize)]
+pub struct OpenalConfigSummary {
+    /// Whether a fresh `alsoft.ini` was written to the config dir.
+    pub alsoft_ini_written: bool,
+    /// Whether an existing `alsoft.ini` was found and deliberately kept.
+    pub alsoft_ini_kept: bool,
+    /// HRTF (`.mhr`) files placed under the config dir.
+    pub hrtf_files: usize,
+}
+
+/// The **config half** of the OpenAL install: extract the nested
+/// `OpenAL-<sample_rate>Hz.zip` (`alsoft.ini` + `OpenAL/HRTF/*.mhr`) into
+/// `config_dir`, keeping any existing `alsoft.ini`. Always runs unelevated —
+/// the roaming config dir is user-writable by definition.
+pub fn install_openal_config(
+    zip_path: &Path,
+    config_dir: &Path,
+    sample_rate: u32,
+) -> Result<OpenalConfigSummary> {
+    if !matches!(sample_rate, 44_100 | 48_000) {
+        return Err(OpenalInstallError::UnsupportedSampleRate(sample_rate));
+    }
+    let file = fs::File::open(zip_path)?;
+    let mut archive = zip::ZipArchive::new(file)?;
+    let mut inner = read_config_zip(&mut archive, sample_rate)?;
+    let inner_name = format!("OpenAL-{sample_rate}Hz.zip");
+
     let existing_alsoft = config_dir.join("alsoft.ini").is_file();
     let mut alsoft_ini_written = false;
     let mut hrtf_files = 0usize;
@@ -206,8 +313,7 @@ pub fn install_openal_zip(
         )));
     }
 
-    Ok(OpenalInstallSummary {
-        binaries_files,
+    Ok(OpenalConfigSummary {
         alsoft_ini_written,
         alsoft_ini_kept: existing_alsoft,
         hrtf_files,
@@ -368,6 +474,53 @@ mod tests {
         let err = install_openal_zip(&path, &root, tmp.path(), 48_000).unwrap_err();
         assert!(matches!(err, OpenalInstallError::UnsafeEntry(_)), "{err}");
         assert!(!tmp.path().join("evil.dll").exists());
+    }
+
+    #[test]
+    fn binaries_half_overlays_without_touching_config() {
+        let tmp = TempDir::new().unwrap();
+        let zip = sample_release_zip(tmp.path());
+        let root = ut4_root(tmp.path());
+        let cfg = tmp.path().join("Roaming");
+        fs::create_dir_all(&cfg).unwrap();
+
+        let n = install_openal_binaries(&zip, &root, 48_000).unwrap();
+        assert_eq!(n, 3);
+        assert!(crate::config::openal_installed(&root));
+        assert!(!cfg.join("alsoft.ini").exists(), "config half must not run");
+
+        // The config half then completes the install.
+        let c = install_openal_config(&zip, &cfg, 48_000).unwrap();
+        assert!(c.alsoft_ini_written);
+        assert_eq!(c.hrtf_files, 2);
+    }
+
+    #[test]
+    fn verified_binaries_reject_a_wrong_digest() {
+        let tmp = TempDir::new().unwrap();
+        let zip = sample_release_zip(tmp.path());
+        let root = ut4_root(tmp.path());
+        let err =
+            install_openal_binaries_verified(&zip, &root, 48_000, &"0".repeat(64)).unwrap_err();
+        assert!(
+            matches!(err, OpenalInstallError::HashMismatch { .. }),
+            "{err}"
+        );
+        assert!(
+            !crate::config::openal_installed(&root),
+            "nothing may be placed on a hash mismatch"
+        );
+    }
+
+    #[test]
+    fn verified_binaries_accept_the_real_digest() {
+        let tmp = TempDir::new().unwrap();
+        let zip = sample_release_zip(tmp.path());
+        let root = ut4_root(tmp.path());
+        let sha = crate::plugin_install::file_sha256_hex(&zip).unwrap();
+        let n = install_openal_binaries_verified(&zip, &root, 48_000, &sha).unwrap();
+        assert_eq!(n, 3);
+        assert_eq!(openal_binaries_file_count(&zip).unwrap(), 3);
     }
 
     #[test]

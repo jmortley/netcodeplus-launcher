@@ -16,6 +16,10 @@ fn main() {
     if args.iter().any(|a| a == "--elevated-install") {
         std::process::exit(netcodeplus_launcher_lib::run_elevated_install(&args));
     }
+    // Same pattern for the UT4-OpenAL binaries overlay into a protected install.
+    if args.iter().any(|a| a == "--elevated-install-openal") {
+        std::process::exit(netcodeplus_launcher_lib::run_elevated_install_openal(&args));
+    }
 
     netcodeplus_launcher_lib::run()
 }

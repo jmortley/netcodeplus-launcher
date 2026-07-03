@@ -1,9 +1,11 @@
-//! Headless privileged worker that installs the NetcodePlus plugin into a
-//! protected location (e.g. `Program Files`). The unelevated parent relaunches
-//! the launcher via `runas` (one UAC prompt) with `--elevated-install`, and
-//! `main` intercepts that BEFORE Tauri starts so this runs headless and does
-//! ONLY the privileged extract — never the GUI or the game (which must not run
-//! as admin).
+//! Headless privileged workers that write into a protected UT4 install
+//! location (e.g. `Program Files`): the NetcodePlus plugin
+//! (`--elevated-install`) and the UT4-OpenAL binaries overlay
+//! (`--elevated-install-openal`). The unelevated parent relaunches the
+//! launcher via `runas` (one UAC prompt), and `main` intercepts the flag
+//! BEFORE Tauri starts so the elevated instance is headless and does ONLY the
+//! privileged extract — never the GUI or the game (which must not run as
+//! admin).
 //!
 //! # Trust boundary (why this re-verifies everything)
 //!
@@ -207,4 +209,132 @@ pub fn run_elevated_install(args: &[String]) -> i32 {
     }
     log.push_str(&format!("done: {failed} failed\n"));
     finish(&log_path, &log, failed.min(125))
+}
+
+/// Run the elevated UT4-OpenAL worker: the **binaries overlay only**
+/// (`Win64/**` → `<root>/Engine/Binaries/Win64/`). The `%AppData%` config half
+/// stays in the unelevated parent — the roaming dir is user-writable, and
+/// keeping the elevated surface to the one write that needs it is the point.
+///
+/// Args: `--zip <path>`, `--manifest <path>`, `--sig <path>`, `--root <path>`,
+/// `--rate <44100|48000>`. Same trust boundary as the plugin worker: the
+/// manifest + signature are re-verified against the compiled-in trust root
+/// (with the persisted replay floor), the expected ZIP hash comes from the
+/// VERIFIED manifest's `openal` entry (never a caller argument), the ZIP is
+/// re-hashed, and the root must be a genuine UT4 install. Exit `0` = installed.
+pub fn run_elevated_install_openal(args: &[String]) -> i32 {
+    let mut zip: Option<String> = None;
+    let mut manifest_path: Option<String> = None;
+    let mut sig_path: Option<String> = None;
+    let mut root: Option<String> = None;
+    let mut rate: Option<u32> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--zip" => {
+                zip = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--manifest" => {
+                manifest_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--sig" => {
+                sig_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--root" => {
+                root = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--rate" => {
+                rate = args.get(i + 1).and_then(|r| r.parse().ok());
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+
+    let log_path = std::env::temp_dir().join("ncp-elevated-openal.log");
+    let mut log = String::new();
+
+    let (Some(zip), Some(manifest_path), Some(sig_path), Some(root), Some(rate)) =
+        (zip, manifest_path, sig_path, root, rate)
+    else {
+        log.push_str("elevated-install-openal: missing --zip/--manifest/--sig/--root/--rate\n");
+        return finish(&log_path, &log, 125);
+    };
+    log.push_str(&format!(
+        "elevated-install-openal: zip={zip} root={root} rate={rate}\n"
+    ));
+
+    // (1) Re-verify the manifest + signature against the compiled-in trust
+    // root; the expected hash comes from the VERIFIED manifest's openal entry.
+    let json = match std::fs::read(&manifest_path) {
+        Ok(b) => b,
+        Err(e) => {
+            log.push_str(&format!("cannot read manifest {manifest_path}: {e}\n"));
+            return finish(&log_path, &log, 125);
+        }
+    };
+    let sig = match std::fs::read_to_string(&sig_path) {
+        Ok(s) => s,
+        Err(e) => {
+            log.push_str(&format!("cannot read signature {sig_path}: {e}\n"));
+            return finish(&log_path, &log, 125);
+        }
+    };
+    let current_version = match semver::Version::parse(env!("CARGO_PKG_VERSION")) {
+        Ok(v) => v,
+        Err(e) => {
+            log.push_str(&format!("launcher version is not valid semver: {e}\n"));
+            return finish(&log_path, &log, 125);
+        }
+    };
+    let manifest = match ncp_manifest::Manifest::load_and_verify(
+        &json,
+        &sig,
+        &crate::trust_root::public_key(),
+        chrono::Utc::now(),
+        &current_version,
+        persisted_replay_floor(),
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            log.push_str(&format!("manifest verification FAILED: {e}\n"));
+            return finish(&log_path, &log, 125);
+        }
+    };
+    let Some(openal) = manifest.openal.as_ref() else {
+        log.push_str("verified manifest advertises no openal entry\n");
+        return finish(&log_path, &log, 125);
+    };
+    let expected_sha = openal.sha256.to_string();
+    log.push_str(&format!(
+        "verified manifest seq={} openal {} sha={expected_sha}\n",
+        manifest.sequence, openal.version
+    ));
+
+    // (2) Only ever write into a genuine UT4 install root.
+    let mod_paks = ncp_host::default_mod_paks_dir().unwrap_or_default();
+    let root_path = Path::new(&root);
+    if ncp_host::check_install(root_path, mod_paks).is_none() {
+        log.push_str(&format!("REJECTED (not a UT4 install root): {root}\n"));
+        return finish(&log_path, &log, 125);
+    }
+    match ncp_host::install_openal_binaries_verified(
+        Path::new(&zip),
+        root_path,
+        rate,
+        &expected_sha,
+    ) {
+        Ok(n) => {
+            log.push_str(&format!("ok: {n} files into {root}\n"));
+            finish(&log_path, &log, 0)
+        }
+        Err(e) => {
+            log.push_str(&format!("FAILED: {e}\n"));
+            finish(&log_path, &log, 1)
+        }
+    }
 }

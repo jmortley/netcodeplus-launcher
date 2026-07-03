@@ -92,8 +92,9 @@ fn sweep_leftovers(plugins_dir: &Path) {
 }
 
 /// Compute the lowercase hex SHA-256 of the file at `path`, streaming so a
-/// large ZIP is not fully buffered.
-fn file_sha256_hex(path: &Path) -> io::Result<String> {
+/// large ZIP is not fully buffered. Shared with the OpenAL elevated-install
+/// path, which re-verifies its ZIP the same way.
+pub(crate) fn file_sha256_hex(path: &Path) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     let mut file = fs::File::open(path)?;
     let mut hasher = Sha256::new();

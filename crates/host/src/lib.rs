@@ -53,7 +53,11 @@ pub use crate::launch::{
     affinity_presets, launch, logical_cpus, parse_mask_hex, AffinityPreset, LaunchOptions,
     LinuxLaunchSettings, Priority,
 };
-pub use crate::openal_install::{install_openal_zip, OpenalInstallError, OpenalInstallSummary};
+pub use crate::openal_install::{
+    install_openal_binaries, install_openal_binaries_verified, install_openal_config,
+    install_openal_zip, openal_binaries_file_count, OpenalConfigSummary, OpenalInstallError,
+    OpenalInstallSummary,
+};
 pub use crate::pak_install::{
     install_pak, pak_file_stamp, pak_on_disk_digest, remove_pak, rename_pak,
 };

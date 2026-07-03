@@ -806,7 +806,7 @@ pub async fn install_openal(
         // ~/.config — supporting that needs the in-prefix resolver first.
         return Err("UT4-OpenAL install isn't supported on Linux yet — install it into the Wine prefix by hand for now".into());
     }
-    let (manifest, ..) = fetch_verify(&app).await?;
+    let (manifest, _state, manifest_json, manifest_sig) = fetch_verify(&app).await?;
     let entry = manifest
         .openal
         .ok_or("the update manifest has no UT4-OpenAL entry")?;
@@ -844,16 +844,121 @@ pub async fn install_openal(
 
     let root_pb = install.root;
     let zip_bg = zip_path.clone();
+    let cfg_bg = config_dir.clone();
     let handle = tauri::async_runtime::spawn_blocking(move || {
-        ncp_host::install_openal_zip(&zip_bg, &root_pb, &config_dir, sample_rate)
-            .map_err(|e| e.to_string())
+        ncp_host::install_openal_zip(&zip_bg, &root_pb, &cfg_bg, sample_rate)
     });
     let result = match handle.await {
-        Ok(res) => res,
+        Ok(Ok(summary)) => Ok(summary),
+        // Access denied = the install lives in a protected location (Program
+        // Files — the common installer-era default). Same answer as the plugin
+        // flow: one UAC prompt runs a headless elevated worker that re-verifies
+        // the signed manifest + ZIP itself and does ONLY the Binaries overlay;
+        // the %AppData% config half then runs back here, unelevated.
+        Ok(Err(e)) if openal_permission_denied(&e) => {
+            elevated_openal_install(
+                &zip_path,
+                &manifest_json,
+                &manifest_sig,
+                Path::new(&root),
+                &config_dir,
+                sample_rate,
+            )
+            .await
+        }
+        Ok(Err(e)) => Err(e.to_string()),
         Err(e) => Err(format!("the install step failed to run: {e}")),
     };
     let _ = std::fs::remove_file(&zip_path);
     result
+}
+
+/// Whether an OpenAL install failure means "protected location, needs
+/// elevation". Checks the portable kind AND the raw Windows
+/// `ERROR_ACCESS_DENIED` (5), mirroring the plugin flow's classifier.
+fn openal_permission_denied(e: &ncp_host::OpenalInstallError) -> bool {
+    const ERROR_ACCESS_DENIED: i32 = 5;
+    matches!(
+        e,
+        ncp_host::OpenalInstallError::Io(io)
+            if io.kind() == std::io::ErrorKind::PermissionDenied
+                || io.raw_os_error() == Some(ERROR_ACCESS_DENIED)
+    )
+}
+
+/// The elevated fallback for [`install_openal`]: stage the verified manifest +
+/// signature as files, relaunch this exe elevated (`--elevated-install-openal`,
+/// one UAC prompt) to run the Binaries overlay, then finish the `%AppData%`
+/// config half unelevated and assemble the summary (the elevated child can
+/// only return an exit code, so the binaries count comes from a local
+/// central-directory scan of the same verified ZIP).
+async fn elevated_openal_install(
+    zip_path: &Path,
+    manifest_json: &str,
+    manifest_sig: &str,
+    root: &Path,
+    config_dir: &Path,
+    sample_rate: u32,
+) -> Result<ncp_host::OpenalInstallSummary, String> {
+    let tmp = std::env::temp_dir();
+    let pid = std::process::id();
+    let manifest_path = tmp.join(format!("ncp-elev-oal-{pid}.json"));
+    let sig_path = tmp.join(format!("ncp-elev-oal-{pid}.json.minisig"));
+    std::fs::write(&manifest_path, manifest_json.as_bytes())
+        .and_then(|()| std::fs::write(&sig_path, manifest_sig.as_bytes()))
+        .map_err(|e| format!("could not stage the manifest for the administrator install: {e}"))?;
+
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate launcher exe: {e}"));
+    let elevate_result = exe.and_then(|exe| {
+        let args = vec![
+            "--elevated-install-openal".to_string(),
+            "--zip".to_string(),
+            zip_path.to_string_lossy().into_owned(),
+            "--manifest".to_string(),
+            manifest_path.to_string_lossy().into_owned(),
+            "--sig".to_string(),
+            sig_path.to_string_lossy().into_owned(),
+            "--root".to_string(),
+            root.to_string_lossy().into_owned(),
+            "--rate".to_string(),
+            sample_rate.to_string(),
+        ];
+        match ncp_host::run_elevated(&exe, &args) {
+            Ok(0) => Ok(()),
+            Ok(_) => Err(
+                "the administrator install failed — close Unreal Tournament and any File \
+                 Explorer window showing the game folder, then try again"
+                    .to_string(),
+            ),
+            Err(ncp_host::ElevateError::Cancelled) => Err(
+                "you declined the administrator prompt — UT4-OpenAL wasn't installed (your UT4 \
+                 lives in a protected folder, so placing its audio files needs admin once)"
+                    .to_string(),
+            ),
+            Err(e) => Err(e.to_string()),
+        }
+    });
+    let _ = std::fs::remove_file(&manifest_path);
+    let _ = std::fs::remove_file(&sig_path);
+    elevate_result?;
+
+    // Binaries are in (admin); the config half is user-writable by definition.
+    let zip_c = zip_path.to_path_buf();
+    let cfg_c = config_dir.to_path_buf();
+    let config = tauri::async_runtime::spawn_blocking(move || {
+        ncp_host::install_openal_config(&zip_c, &cfg_c, sample_rate)
+    })
+    .await
+    .map_err(|e| format!("the config step failed to run: {e}"))?
+    .map_err(|e| e.to_string())?;
+
+    let binaries_files = ncp_host::openal_binaries_file_count(zip_path).unwrap_or(0);
+    Ok(ncp_host::OpenalInstallSummary {
+        binaries_files,
+        alsoft_ini_written: config.alsoft_ini_written,
+        alsoft_ini_kept: config.alsoft_ini_kept,
+        hrtf_files: config.hrtf_files,
+    })
 }
 
 /// Reveal a downloaded file by opening its containing folder (the user runs the
