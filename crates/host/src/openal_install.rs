@@ -147,7 +147,24 @@ fn read_config_zip(
         })?;
         inner_entry.read_to_end(&mut inner_bytes)?;
     }
-    Ok(zip::ZipArchive::new(io::Cursor::new(inner_bytes))?)
+    let mut inner = zip::ZipArchive::new(io::Cursor::new(inner_bytes))?;
+    // Confirm the config actually carries alsoft.ini up front, so the
+    // "nothing placed on a bad layout" invariant holds even for
+    // `install_openal_binaries` called in isolation (the elevated worker) —
+    // not just for the config half that would otherwise discover it late.
+    let mut has_alsoft = false;
+    for i in 0..inner.len() {
+        if inner.by_index(i)?.name().eq_ignore_ascii_case("alsoft.ini") {
+            has_alsoft = true;
+            break;
+        }
+    }
+    if !has_alsoft {
+        return Err(OpenalInstallError::MissingPayload(format!(
+            "{inner_name} carried no alsoft.ini"
+        )));
+    }
+    Ok(inner)
 }
 
 /// The **install-root half** of the OpenAL install: overlay `Win64/**` onto
@@ -526,7 +543,9 @@ mod tests {
     #[test]
     fn rejects_zip_slip_in_nested_config_zip() {
         let tmp = TempDir::new().unwrap();
-        let inner = zip_bytes(&[("../evil.ini", b"x")]);
+        // A valid alsoft.ini so the layout pre-check passes and the walk reaches
+        // the hostile traversal entry in pass 2.
+        let inner = zip_bytes(&[("alsoft.ini", b"hrtf = true\n"), ("../evil.ini", b"x")]);
         let outer = zip_bytes(&[
             ("Win64/OpenAL32.dll", b"openal32"),
             ("OpenAL-48000Hz.zip", &inner),
@@ -539,6 +558,33 @@ mod tests {
         let err = install_openal_zip(&path, &root, &cfg, 48_000).unwrap_err();
         assert!(matches!(err, OpenalInstallError::UnsafeEntry(_)), "{err}");
         assert!(!tmp.path().join("evil.ini").exists());
+    }
+
+    #[test]
+    fn config_zip_without_alsoft_ini_places_nothing() {
+        // A nested config zip that parses but carries no alsoft.ini must fail
+        // the up-front layout check — before the binaries overlay lands.
+        let tmp = TempDir::new().unwrap();
+        let inner = zip_bytes(&[("OpenAL/HRTF/x.mhr", b"m")]);
+        let outer = zip_bytes(&[
+            ("Win64/OpenAL32.dll", b"openal32"),
+            ("OpenAL-48000Hz.zip", &inner),
+        ]);
+        let path = tmp.path().join("no-alsoft.zip");
+        fs::write(&path, outer).unwrap();
+        let root = ut4_root(tmp.path());
+        let cfg = tmp.path().join("Roaming");
+        fs::create_dir_all(&cfg).unwrap();
+        // Both halves must refuse, and the overlay must not have landed.
+        assert!(matches!(
+            install_openal_binaries(&path, &root, 48_000).unwrap_err(),
+            OpenalInstallError::MissingPayload(_)
+        ));
+        assert!(matches!(
+            install_openal_config(&path, &cfg, 48_000).unwrap_err(),
+            OpenalInstallError::MissingPayload(_)
+        ));
+        assert!(!crate::config::openal_installed(&root));
     }
 
     #[test]
