@@ -98,9 +98,13 @@ jobs:
 
   build-linux:
     name: build (AppImage + deb)
-    # webkit2gtk-4.1 requires Ubuntu >= 22.04 (jammy/noble). Do not
-    # downgrade this runner to 20.04.
-    runs-on: ubuntu-latest
+    # webkit2gtk-4.1 requires Ubuntu >= 22.04 (jammy/noble), so do not
+    # downgrade below 22.04. Pinned AT 22.04 (not ubuntu-latest, which
+    # floats to 24.04+) so the AppImage links against jammy's older
+    # glibc: a bundle built on a newer runner raises the glibc floor and
+    # then refuses to start on older host distros. This runner version
+    # gates the shipped bundle's portability — keep it explicit.
+    runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
