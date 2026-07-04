@@ -455,10 +455,23 @@ pub fn parse_lutris_launch(contents: &str) -> LutrisLaunch {
 pub fn runner_search_dirs(home: &Path) -> Vec<PathBuf> {
     [
         ".local/share/lutris/runners/wine",
+        // Flatpak Lutris keeps its runners inside its sandbox home (field
+        // report: flatpak-Lutris user whose runner resolved to nothing).
+        ".var/app/net.lutris.Lutris/data/lutris/runners/wine",
         ".local/share/Steam/compatibilitytools.d",
         ".steam/root/compatibilitytools.d",
         ".steam/steam/compatibilitytools.d",
         ".var/app/com.valvesoftware.Steam/data/Steam/compatibilitytools.d",
+        // Official Proton builds ("Proton - Experimental", "Proton 9.0") are
+        // Steam APPS, not compat tools — they live in steamapps/common, and
+        // compatibilitytools.d only holds third-party builds like GE-Proton.
+        // Without these a Lutris config pinned to official Proton silently
+        // fell back to system wine, which mangles the Proton prefix ("wine
+        // configuration is being updated") and the game never starts.
+        ".local/share/Steam/steamapps/common",
+        ".steam/root/steamapps/common",
+        ".steam/steam/steamapps/common",
+        ".var/app/com.valvesoftware.Steam/data/Steam/steamapps/common",
     ]
     .iter()
     .map(|rel| home.join(rel))
@@ -1209,6 +1222,39 @@ wine:
         assert!(dirs.contains(&PathBuf::from(
             "/home/j/.local/share/Steam/compatibilitytools.d"
         )));
+    }
+
+    #[test]
+    fn runner_search_dirs_include_flatpak_lutris_and_official_proton() {
+        // Field report (flatpak Lutris + "Proton - Experimental"): official
+        // Proton lives in steamapps/common, NOT compatibilitytools.d, and
+        // flatpak Lutris keeps runners in its sandbox home. Both must be
+        // searched or the launch falls back to system wine.
+        let dirs = runner_search_dirs(Path::new("/home/b"));
+        assert!(dirs.contains(&PathBuf::from(
+            "/home/b/.var/app/net.lutris.Lutris/data/lutris/runners/wine"
+        )));
+        assert!(dirs.contains(&PathBuf::from(
+            "/home/b/.local/share/Steam/steamapps/common"
+        )));
+        assert!(dirs.contains(&PathBuf::from(
+            "/home/b/.var/app/com.valvesoftware.Steam/data/Steam/steamapps/common"
+        )));
+    }
+
+    #[test]
+    fn locate_runner_wine_finds_official_proton_in_steamapps_common() {
+        // "Proton - Experimental" (spaces and all) is the runner name Lutris
+        // records AND the directory name Steam installs — the same
+        // files/bin/wine layout as GE-Proton.
+        let dirs = runner_search_dirs(Path::new("/home/b"));
+        let wanted = PathBuf::from(
+            "/home/b/.local/share/Steam/steamapps/common/Proton - Experimental/files/bin/wine",
+        );
+        assert_eq!(
+            locate_runner_wine("Proton - Experimental", &dirs, |p| p == wanted),
+            Some(wanted)
+        );
     }
 
     #[test]
