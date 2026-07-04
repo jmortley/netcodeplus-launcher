@@ -154,6 +154,9 @@ interface LauncherState {
   // Linux-only: true = use GPU (DMABUF) webview rendering; false/absent = the
   // launcher disables it (WEBKIT_DISABLE_DMABUF_RENDERER=1) to avoid a white screen.
   linux_gpu_accel?: boolean | null;
+  // Linux-only: true = "gaming mode" — while the game runs, a detached watchdog
+  // keeps its window fullscreen+focused and temporarily hides the Ubuntu dock.
+  linux_gaming_mode?: boolean | null;
 }
 
 // (Linux) Explicit Wine/Proton launch override the user set in Settings.
@@ -1672,6 +1675,12 @@ function wineProtonPanel(): string {
           <span class="src" style="display:block">Faster, but uncheck it if the launcher opens to a blank / white window (a WebKitGTK issue on some AMD/Wayland setups). Restart the launcher to apply.</span>
         </span>
       </label>
+      <label style="display:flex;align-items:flex-start;gap:0.5rem;margin-top:0.9rem;cursor:pointer">
+        <input id="linux-gaming-mode" type="checkbox"${linuxGamingMode ? " checked" : ""} style="margin-top:0.2rem" />
+        <span>Gaming mode: keep UT4 fullscreen, hide the dock
+          <span class="src" style="display:block">While the game runs, a helper keeps the game's window truly fullscreen and focused (stops the GNOME top bar / dock drawing over the game and restores full performance) and temporarily disables the Ubuntu dock, bringing it back when you quit. GNOME on X11; applies from the next game launch. You can still close the launcher after launching.</span>
+        </span>
+      </label>
     </div>`;
 }
 
@@ -1753,6 +1762,19 @@ function wireWineProton(di: DetectedInstall) {
     } catch (err) {
       console.error("save_linux_gpu_accel failed:", err);
       gpuAccel.checked = linuxGpuAccel; // revert the UI to the persisted value
+    }
+  });
+
+  // Gaming-mode toggle (persisted to state; read at game-launch time).
+  const gamingMode = document.getElementById("linux-gaming-mode") as HTMLInputElement | null;
+  gamingMode?.addEventListener("change", async () => {
+    const enabled = gamingMode.checked;
+    try {
+      await invoke("save_linux_gaming_mode", { enabled });
+      linuxGamingMode = enabled;
+    } catch (err) {
+      console.error("save_linux_gaming_mode failed:", err);
+      gamingMode.checked = linuxGamingMode; // revert the UI to the persisted value
     }
   });
 
@@ -2475,6 +2497,7 @@ function applyPrefs(prefs: LauncherState) {
   state.discordPresence = prefs.discord_presence_enabled ?? false;
   linuxLaunch = prefs.linux_launch ?? null;
   linuxGpuAccel = prefs.linux_gpu_accel ?? false;
+  linuxGamingMode = prefs.linux_gaming_mode ?? false;
   if (prefs.install_path) {
     const i = state.installs.findIndex((d) => d.install.root === prefs.install_path);
     if (i >= 0) state.selInstall = i;
@@ -2510,6 +2533,9 @@ let linuxLaunch: LinuxLaunch | null = null;
 // WEBKIT_DISABLE_DMABUF_RENDERER=1 (safe default); true = user opted into the GPU
 // path. Applied at startup, so a change needs a launcher restart to take effect.
 let linuxGpuAccel = false;
+// Linux-only: mirrors LauncherState.linux_gaming_mode — the fullscreen/dock
+// watchdog toggle. Read at game-launch time, so no restart is needed.
+let linuxGamingMode = false;
 
 async function loadAll() {
   try {

@@ -8,6 +8,7 @@
 mod auth;
 mod commands;
 mod elevated;
+mod gaming_mode;
 mod installer;
 mod presence;
 mod trust_root;
@@ -89,6 +90,12 @@ fn sweep_update_leftovers() {
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // A `--gaming-mode-watchdog` invocation is a headless helper process, not a
+    // launcher start — it runs its watch loop and exits here, before Tauri (and
+    // its single-instance plugin, which would otherwise defer to the running
+    // launcher and kill the helper) is ever touched. No-op off Linux.
+    gaming_mode::handle_watchdog_flag();
+
     // WebView2 is what renders our entire UI on Windows. If the runtime is missing
     // (debloated images strip it), Tauri would fail to create the window and exit
     // silently with no error — show a native dialog with the download link instead.
@@ -117,6 +124,10 @@ pub fn run() {
     // some AMD/Wayland stacks) unless the user set the env var or opted into GPU
     // rendering in Settings. Must run before the webview forks; no-op off Linux.
     ncp_host::apply_webview_dmabuf_default("org.netcodeplus.launcher");
+
+    // Linux: if a crashed gaming-mode session left the dock disabled (its marker
+    // file survives), restore it — the watchdog normally does this on game exit.
+    gaming_mode::startup_recovery();
 
     let mut builder = tauri::Builder::default();
 
@@ -167,6 +178,7 @@ pub fn run() {
             commands::save_launch_prefs,
             commands::save_linux_launch,
             commands::save_linux_gpu_accel,
+            commands::save_linux_gaming_mode,
             commands::list_wine_runners,
             commands::resolve_linux_launch,
             installer::game_installer_integrity,

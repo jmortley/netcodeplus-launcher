@@ -81,3 +81,15 @@ windows-sys = { version = "0.59", features = [
     "Win32_UI_WindowsAndMessaging",
 ] }
 
+# Gaming-mode watchdog (src/gaming_mode.rs): pure-Rust X11 client used to keep
+# the Wine game window fullscreen-and-focused via EWMH ClientMessages (GNOME on
+# X11 can leave it unfocused/HIDDEN with the top bar drawn over the game). No
+# libX11 linkage — RustConnection speaks the wire protocol directly. `dirs`
+# locates the app config dir for the dock marker file, app-handle-free (the
+# watchdog is a headless helper with no Tauri runtime).
+[target.'cfg(target_os = "linux")'.dependencies]
+# `randr` for per-monitor geometry (the "is the game window fullscreen on ITS
+# monitor" test — the whole-desktop root size is wrong on multi-head).
+x11rb = { version = "0.13", features = ["randr"] }
+dirs = { workspace = true }
+

@@ -198,6 +198,15 @@ pub struct LauncherState {
     /// before the webview forks, so a change takes effect on the next launch.
     #[serde(default)]
     pub linux_gpu_accel: Option<bool>,
+
+    /// Linux-only "gaming mode": while the game runs, a detached watchdog keeps
+    /// the game window genuinely fullscreen-and-focused (GNOME/mutter on X11 can
+    /// leave a Wine fullscreen window unfocused/`HIDDEN`, drawing the top bar over
+    /// the game and blocking fullscreen unredirection) and temporarily disables
+    /// the Ubuntu dock, restoring it when the game exits. `Some(true)` = on;
+    /// `Some(false)`/`None` (the default) = off. Read at game-launch time.
+    #[serde(default)]
+    pub linux_gaming_mode: Option<bool>,
 }
 
 /// Onboarding / feature-discovery persisted state. See [`LauncherState::onboarding`].
@@ -326,6 +335,7 @@ impl Default for LauncherState {
             onboarding: OnboardingState::default(),
             linux_launch: None,
             linux_gpu_accel: None,
+            linux_gaming_mode: None,
         }
     }
 }

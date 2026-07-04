@@ -913,9 +913,35 @@ pub fn appimage_path(env_value: Option<&str>) -> Option<PathBuf> {
     Some(PathBuf::from(v))
 }
 
+/// Whether an X11 `WM_CLASS` makes a window a CANDIDATE for the UT4 game window
+/// ("gaming mode" watchdog). Proton sets the fixed `steam_proton` class on every
+/// non-Steam Proton window, so this alone is too broad — the watchdog narrows
+/// candidates by `_NET_WM_PID` against live UT4 shipping processes. Plain Wine
+/// derives the class from the exe name (`ue4-win64-shipping.exe`). Deliberately
+/// class-only: matching on the window TITLE would false-positive on e.g. a
+/// browser tab named "UnrealTournament …" and fullscreen the wrong window.
+#[must_use]
+pub fn is_game_window_class(wm_class: &str) -> bool {
+    let class = wm_class.to_ascii_lowercase();
+    class.contains("steam_proton") || class.contains("ue4-win64-shipping")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn game_window_class_matches_proton_and_plain_wine_only() {
+        // Observed live on the GE-Proton launch path.
+        assert!(is_game_window_class("steam_proton"));
+        // Plain Wine derives the class from the exe basename.
+        assert!(is_game_window_class("ue4-win64-shipping.exe"));
+        assert!(is_game_window_class("UE4-Win64-Shipping.exe"));
+        // Never the launcher itself, the desktop, or arbitrary apps.
+        assert!(!is_game_window_class("netcodeplus-launcher"));
+        assert!(!is_game_window_class("firefox"));
+        assert!(!is_game_window_class(""));
+    }
 
     #[test]
     fn appimage_path_requires_a_real_value() {
