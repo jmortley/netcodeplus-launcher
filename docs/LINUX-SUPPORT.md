@@ -82,8 +82,10 @@ pixels.
   game → VNC/RDP into the box's desktop over Tailscale, or in person. The game
   already runs there via Lutris, so the prefix is known-good.
 
-GitHub `ubuntu-latest` runners can build the **AppImage as a CI artifact** — so
-the box is only needed for the Wine-specific + visual reality.
+GitHub runners build the **AppImage as a CI artifact** (the build job is pinned
+to `ubuntu-22.04`, not `ubuntu-latest` — a newer runner raises the bundle's
+glibc floor and it stops launching on older host distros; see the comment in
+`ci.yml`) — so the box is only needed for the Wine-specific + visual reality.
 
 ## Roadmap
 
@@ -110,3 +112,51 @@ from the Windows dev box (cross-compile; the full app — `ncp-net`/`src-tauri` 
 needs real Linux). **Heads-up:** `main`'s CI is pre-existing red on
 `clippy`/`audit`/`fmt` (manual ff merges, not CI-gated); enabling the Linux build
 is also a good prompt to clear that debt.
+
+## Troubleshooting
+
+### Blank / white window on launch (WebKitGTK DMABUF)
+
+WebKitGTK ≥ 2.42 defaults to a DMABUF renderer that aborts with
+`EGL_BAD_PARAMETER` on some AMD/Wayland stacks, leaving a blank white window.
+As of **1.6.2** the launcher disables that renderer by default
+(`WEBKIT_DISABLE_DMABUF_RENDERER=1` is set before the webview forks), so a fresh
+install should render normally.
+
+- **In-app toggle:** Settings → Wine/Proton (Linux) → *"Use GPU-accelerated
+  rendering"*. Leave **unchecked** (the default) to keep the workaround on; check
+  it to opt into the GPU/DMABUF path. The env is read once at webview-fork time,
+  so **restart the launcher** after toggling.
+- **`.deb` users / manual override:** the setting is baked into the app, but you
+  can always force it from the shell regardless of the toggle:
+
+  ```bash
+  WEBKIT_DISABLE_DMABUF_RENDERER=1 ./UT4-Community-Launcher-x86_64.AppImage
+  # or, for the .deb install (the package installs /usr/bin/netcodeplus-launcher):
+  WEBKIT_DISABLE_DMABUF_RENDERER=1 netcodeplus-launcher
+  ```
+
+### AMD GPU permission error — `amdgpu ACCEL_WORKING failed (-13)`
+
+`-13` is `EACCES`: your user can't open the render node. This is a host GPU-perms
+issue, not a launcher bug. Add yourself to the `render` and `video` groups and
+re-login:
+
+```bash
+sudo usermod -aG render,video "$USER"   # idempotent — safe if already a member
+# then log out and back in
+```
+
+### Won't launch on Arch / Fedora — bundled `libwayland-client` mismatch
+
+The AppImage can over-bundle `libwayland-client.so.0`, which then mismatches the
+host Mesa/compositor on rolling distros and prevents startup. Preload the host
+copy as a fallback:
+
+```bash
+env LD_PRELOAD="$(ldconfig -p | grep -m1 libwayland-client.so.0 | awk '{print $NF}')" \
+  ./UT4-Community-Launcher-x86_64.AppImage
+```
+
+(Ubuntu/Debian are unaffected — the host provides a matching
+`libwayland-client`.)
