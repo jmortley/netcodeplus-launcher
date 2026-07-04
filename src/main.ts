@@ -140,7 +140,7 @@ interface AffinityPreset {
 interface LauncherState {
   install_path: string | null;
   launch_profile_label: string | null;
-  launch_priority: "normal" | "high";
+  launch_priority: "normal" | "high" | "real_time";
   affinity_mask_hex: string | null;
   launch_window_action: string;
   ut4stats_playerid: string | null;
@@ -335,7 +335,7 @@ const state = {
   presets: [] as AffinityPreset[],
   selInstall: 0,
   profileLabel: null as string | null,
-  priority: "normal" as "normal" | "high",
+  priority: "normal" as "normal" | "high" | "real_time",
   affinityHex: "",
   launchWindowAction: "minimize" as "minimize" | "close" | "none",
   linkedId: null as string | null,
@@ -1596,8 +1596,10 @@ function renderAdvanced() {
         <select id="priority-sel">
           <option value="normal"${state.priority === "normal" ? " selected" : ""}>Normal</option>
           <option value="high"${state.priority === "high" ? " selected" : ""}>High</option>
+          <option value="real_time"${state.priority === "real_time" ? " selected" : ""}>Real-time (not recommended)</option>
         </select>
       </label>
+      <div id="realtime-warn" class="warn" style="display:${state.priority === "real_time" ? "" : "none"};font-size:0.85em;margin:-0.3rem 0 0.2rem">⚠️ Real-time can make Windows unresponsive (input, audio and networking compete with the game) and only takes full effect when the launcher runs as administrator — otherwise Windows caps it at High.</div>
       <label>When the game launches
         <select id="onlaunch-sel">
           <option value="minimize"${state.launchWindowAction === "minimize" ? " selected" : ""}>Minimize launcher</option>
@@ -1783,8 +1785,24 @@ function wire() {
   });
 
   const prioritySel = document.getElementById("priority-sel") as HTMLSelectElement | null;
-  prioritySel?.addEventListener("change", () => {
-    state.priority = prioritySel.value as "normal" | "high";
+  const realtimeWarn = document.getElementById("realtime-warn");
+  prioritySel?.addEventListener("change", async () => {
+    const choice = prioritySel.value as "normal" | "high" | "real_time";
+    // Real-time needs an explicit opt-in: it can starve the OS and only truly
+    // applies when the launcher runs elevated. Confirm before persisting; revert
+    // the dropdown if the user backs out.
+    if (choice === "real_time") {
+      const ok = await confirm(
+        "Real-time priority is NOT recommended. It can make Windows unresponsive — input, audio and networking have to compete with the game — and it only takes full effect if you run the launcher as administrator (otherwise Windows caps it at High). Use it anyway?",
+        { title: "Real-time priority", kind: "warning", okLabel: "Use real-time", cancelLabel: "Cancel" },
+      );
+      if (!ok) {
+        prioritySel.value = state.priority; // back to the previous choice
+        return;
+      }
+    }
+    state.priority = choice;
+    if (realtimeWarn) realtimeWarn.style.display = choice === "real_time" ? "" : "none";
     persist();
   });
 
@@ -1920,9 +1938,9 @@ async function launch() {
       windowAction: state.launchWindowAction,
     });
     persist();
-    status.innerHTML = `<span class="ok">Launched: ${escape(profile.label)} (${escape(state.priority)} priority${
-      state.affinityHex ? `, affinity ${escape(state.affinityHex)}` : ""
-    })</span>`;
+    status.innerHTML = `<span class="ok">Launched: ${escape(profile.label)} (${escape(
+      state.priority === "real_time" ? "real-time" : state.priority,
+    )} priority${state.affinityHex ? `, affinity ${escape(state.affinityHex)}` : ""})</span>`;
   } catch (err) {
     const msg = String(err);
     if (msg.includes("740") || msg.toLowerCase().includes("elevation")) {
@@ -2437,7 +2455,12 @@ function sparkline(vals: (number | null)[], color: string): string {
 // ---- startup --------------------------------------------------------------
 
 function applyPrefs(prefs: LauncherState) {
-  state.priority = prefs.launch_priority === "high" ? "high" : "normal";
+  state.priority =
+    prefs.launch_priority === "high"
+      ? "high"
+      : prefs.launch_priority === "real_time"
+        ? "real_time"
+        : "normal";
   state.affinityHex = prefs.affinity_mask_hex ?? "";
   state.launchWindowAction =
     prefs.launch_window_action === "close" || prefs.launch_window_action === "none"

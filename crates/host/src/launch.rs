@@ -31,6 +31,26 @@ pub enum Priority {
     /// High priority — `start /high` (what a competitive player's bat
     /// typically uses).
     High,
+    /// Real-time priority (`REALTIME_PRIORITY_CLASS`). NOT recommended: it can
+    /// starve the OS (input, audio, networking), and it only takes full effect
+    /// when the launcher runs **elevated** — Windows silently caps a non-elevated
+    /// process to `High` (no error). Serialises as `"real_time"`.
+    RealTime,
+}
+
+/// Map a UI/IPC priority label to a [`Priority`]. Case-insensitive; accepts the
+/// canonical serde strings (`"normal"`, `"high"`, `"real_time"`) plus the lenient
+/// alias `"realtime"`. Anything unrecognised maps to [`Priority::Normal`] — the
+/// safe default. The stringly-typed launch IPC boundary calls this.
+#[must_use]
+pub fn priority_from_label(s: &str) -> Priority {
+    if s.eq_ignore_ascii_case("high") {
+        Priority::High
+    } else if s.eq_ignore_ascii_case("real_time") || s.eq_ignore_ascii_case("realtime") {
+        Priority::RealTime
+    } else {
+        Priority::Normal
+    }
 }
 
 /// Linux-only explicit Wine/Proton launch override for setups where Lutris
@@ -168,15 +188,26 @@ pub fn launch(
     use std::os::windows::process::CommandExt;
     use std::process::Command;
 
-    // HIGH_PRIORITY_CLASS (winbase.h) — passed as a creation flag so the
-    // game starts at high priority: the safe equivalent of `start /high`.
+    // HIGH_PRIORITY_CLASS / REALTIME_PRIORITY_CLASS (winbase.h) — passed as a
+    // creation flag so the game starts at the chosen priority: the safe
+    // equivalent of `start /high` (or `/realtime`). REALTIME requires
+    // SeIncreaseBasePriorityPrivilege; a non-elevated launcher is silently
+    // downgraded to HIGH by Windows (no error), so "real-time" only truly
+    // applies when the launcher itself runs as administrator.
     const HIGH_PRIORITY_CLASS: u32 = 0x0000_0080;
+    const REALTIME_PRIORITY_CLASS: u32 = 0x0000_0100;
 
     let cwd = exe.parent().unwrap_or(exe);
     let mut command = Command::new(exe);
     command.args(args).current_dir(cwd);
-    if matches!(opts.priority, Priority::High) {
-        command.creation_flags(HIGH_PRIORITY_CLASS);
+    match opts.priority {
+        Priority::High => {
+            command.creation_flags(HIGH_PRIORITY_CLASS);
+        }
+        Priority::RealTime => {
+            command.creation_flags(REALTIME_PRIORITY_CLASS);
+        }
+        Priority::Normal => {}
     }
     let child = command.spawn()?;
     if let Some(mask) = opts.affinity_mask {
@@ -319,5 +350,36 @@ mod tests {
         assert_eq!(parse_mask_hex("   ").unwrap(), None);
         assert_eq!(parse_mask_hex("").unwrap(), None);
         assert!(parse_mask_hex("nothex").is_err());
+    }
+
+    #[test]
+    fn priority_serialises_snake_case() {
+        // The frontend <select> value + the persisted state must agree with these
+        // exact strings (the launch IPC boundary round-trips through them).
+        assert_eq!(
+            serde_json::to_string(&Priority::Normal).unwrap(),
+            "\"normal\""
+        );
+        assert_eq!(serde_json::to_string(&Priority::High).unwrap(), "\"high\"");
+        assert_eq!(
+            serde_json::to_string(&Priority::RealTime).unwrap(),
+            "\"real_time\""
+        );
+        assert_eq!(
+            serde_json::from_str::<Priority>("\"real_time\"").unwrap(),
+            Priority::RealTime
+        );
+    }
+
+    #[test]
+    fn priority_from_label_maps_all() {
+        assert_eq!(priority_from_label("high"), Priority::High);
+        assert_eq!(priority_from_label("HIGH"), Priority::High);
+        assert_eq!(priority_from_label("real_time"), Priority::RealTime);
+        assert_eq!(priority_from_label("realtime"), Priority::RealTime);
+        assert_eq!(priority_from_label("RealTime"), Priority::RealTime);
+        assert_eq!(priority_from_label("normal"), Priority::Normal);
+        assert_eq!(priority_from_label(""), Priority::Normal);
+        assert_eq!(priority_from_label("garbage"), Priority::Normal);
     }
 }

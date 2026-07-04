@@ -51,8 +51,8 @@ pub use crate::install::{
     UtInstall,
 };
 pub use crate::launch::{
-    affinity_presets, launch, logical_cpus, parse_mask_hex, AffinityPreset, LaunchOptions,
-    LinuxLaunchSettings, Priority,
+    affinity_presets, launch, logical_cpus, parse_mask_hex, priority_from_label, AffinityPreset,
+    LaunchOptions, LinuxLaunchSettings, Priority,
 };
 pub use crate::openal_install::{
     install_openal_binaries, install_openal_binaries_verified, install_openal_config,

@@ -8,7 +8,6 @@ use std::path::{Path, PathBuf};
 
 use ncp_host::{
     AffinityPreset, DetectSource, DetectedInstall, LaunchOptions, LaunchProfile, LauncherState,
-    Priority,
 };
 use tauri::Manager;
 
@@ -87,11 +86,7 @@ pub fn launch_game(
         None => None,
     };
     let opts = LaunchOptions {
-        priority: if priority.eq_ignore_ascii_case("high") {
-            Priority::High
-        } else {
-            Priority::Normal
-        },
+        priority: ncp_host::priority_from_label(&priority),
         affinity_mask,
     };
     // Linux only: an explicit Wine/Proton override (prefix + runner) the user set
@@ -328,11 +323,7 @@ pub fn save_launch_prefs(
         "none" => "none".to_string(),
         _ => "minimize".to_string(),
     };
-    state.launch_priority = if priority.eq_ignore_ascii_case("high") {
-        Priority::High
-    } else {
-        Priority::Normal
-    };
+    state.launch_priority = ncp_host::priority_from_label(&priority);
     // Validate the mask parses, but persist the (trimmed) hex string;
     // empty/None means "all cores".
     state.affinity_mask_hex = match affinity_mask_hex {
