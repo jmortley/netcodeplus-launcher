@@ -27,8 +27,8 @@
 //! Everything here is best-effort: a missing `gnome-extensions`, a Wayland
 //! session, or an X error must never break a launch. The repair logic is
 //! deliberately conservative — see [`repair_window_state`]: raising a hidden
-//! window is bounded to a session-level activation budget in the opening
-//! seconds and only when nothing (or the launcher) holds focus, and FULLSCREEN
+//! window happens only until the game is first shown correctly (the `established`
+//! latch) and only when nothing (or the launcher) holds focus, and FULLSCREEN
 //! is re-added only to an already ~monitor-sized focused window — so it can
 //! never fight a player who alt-tabs away (including to a second Proton game),
 //! minimizes after startup, or intentionally plays windowed. "Monitor-sized" is
@@ -73,15 +73,15 @@ mod imp {
     /// splash-to-game transition leaves a gap — a brief disappearance must not
     /// end the session and restore the dock mid-game.
     const EXIT_GRACE: Duration = Duration::from_secs(12);
-    /// Focus-steal (activation) is only attempted within this window of the game
-    /// FIRST being seen, and at most [`MAX_ACTIVATIONS`] times — a SESSION budget
-    /// (not per-window), so a player who deliberately minimizes the game after
-    /// the opening seconds is never re-raised, and a window-id that flips between
-    /// candidates tick-to-tick can't refill it. It only needs to cover the
-    /// startup "window comes up minimized/unfocused" state; a later map change
-    /// drops FULLSCREEN without hiding the window, which the re-fullscreen path
-    /// (no budget, screen-size-guarded) handles.
-    const ACTIVATION_GRACE: Duration = Duration::from_secs(30);
+    /// Focus-steal (activation) is only attempted BEFORE the game has ever been
+    /// shown fullscreen+focused (the [`RepairCtx::established`] latch), and at
+    /// most [`MAX_ACTIVATIONS`] times. Once the game has appeared correctly even
+    /// once, every later HIDDEN/unfocused state is the player's own choice — an
+    /// alt-tab (mutter transiently reports the game HIDDEN with nothing focused)
+    /// or a minimize — so the watchdog must never yank focus back. Activation
+    /// only exists to rescue the startup "window comes up minimized/unfocused"
+    /// bug; a later map change drops FULLSCREEN WITHOUT hiding the window, which
+    /// the re-fullscreen path (no budget, monitor-size-guarded) handles.
     const MAX_ACTIVATIONS: u32 = 5;
     /// A window counts as "meant to be fullscreen" when it covers at least this
     /// fraction of its MONITOR in BOTH dimensions (see [`monitor_sizes`] — using
@@ -326,11 +326,14 @@ mod imp {
     }
 
     /// Session-level repair bookkeeping (created once, when the game window is
-    /// first seen, never reset). The activation budget it carries is therefore
-    /// per-session — see [`ACTIVATION_GRACE`].
+    /// first seen, never reset).
     struct RepairCtx {
-        first_seen: Instant,
+        /// Focus-steals spent so far (hard cap [`MAX_ACTIVATIONS`]).
         activations: u32,
+        /// Set the first time the game is observed fullscreen+focused. Once set,
+        /// activation is disabled for the rest of the session, so alt-tabbing or
+        /// minimizing is never fought. See [`MAX_ACTIVATIONS`].
+        established: bool,
     }
 
     fn intern(conn: &RustConnection, name: &str) -> Option<Atom> {
@@ -377,9 +380,9 @@ mod imp {
                     ever_seen = true;
                     last_seen = Instant::now();
                     // Session-level budget: created once, on first sighting.
-                    let ctx = ctx.get_or_insert_with(|| RepairCtx {
-                        first_seen: Instant::now(),
+                    let ctx = ctx.get_or_insert(RepairCtx {
                         activations: 0,
+                        established: false,
                     });
                     let good = repair_window_state(&conn, root, &atoms, win, ctx);
                     // Stay fast until the window is confirmed good, then back off.
@@ -543,12 +546,13 @@ mod imp {
     ///
     /// - **Raise** — the window is minimized/`HIDDEN` while nothing is focused or
     ///   the launcher is (the broken-launch state: the game comes up minimized
-    ///   with `_NET_ACTIVE_WINDOW` = 0). Activate it. Bounded to
-    ///   [`MAX_ACTIVATIONS`] within [`ACTIVATION_GRACE`] of first sighting, a
-    ///   SESSION budget — so a player who minimizes the game after the opening
-    ///   seconds is not re-raised. Deliberately does NOT treat "some other game
-    ///   window is focused" as free: that would yank a player back from a second
-    ///   Proton game they alt-tabbed to (its class is `steam_proton` too).
+    ///   with `_NET_ACTIVE_WINDOW` = 0). Activate it. Only BEFORE the game has
+    ///   ever been shown fullscreen+focused ([`RepairCtx::established`]) and
+    ///   bounded to [`MAX_ACTIVATIONS`] — so once the game has appeared correctly
+    ///   once, alt-tabbing (mutter briefly reports the game HIDDEN with nothing
+    ///   focused) or minimizing is never fought. Deliberately does NOT treat
+    ///   "some other window is focused" as free either: that is the player's
+    ///   deliberate choice.
     /// - **Re-fullscreen** — the window is focused (or nothing else is) and
     ///   ~monitor-sized but lost the `_NET_WM_STATE_FULLSCREEN` atom. UE4 drops it
     ///   on a resolution/mode change (map load), leaving a focused non-fullscreen
@@ -568,6 +572,7 @@ mod imp {
         let fullscreen = states.contains(&atoms.net_wm_state_fullscreen);
         let active = active_window(conn, root, atoms);
         if fullscreen && !hidden && active == win {
+            ctx.established = true; // shown correctly at least once
             return true; // already correct — nothing to do
         }
 
@@ -580,11 +585,10 @@ mod imp {
         // (even a game-class one) holds focus — that is the player's choice.
         let focus_free = active == 0 || active_is_launcher;
 
-        if hidden
-            && focus_free
-            && ctx.activations < MAX_ACTIVATIONS
-            && ctx.first_seen.elapsed() <= ACTIVATION_GRACE
-        {
+        // Raise ONLY during the initial establish phase. After the game has been
+        // shown fullscreen+focused once, a HIDDEN+nothing-focused state is the
+        // player alt-tabbing or minimizing — never fight it.
+        if !ctx.established && hidden && focus_free && ctx.activations < MAX_ACTIVATIONS {
             // data.l = [source, timestamp, requestor's active window, 0, 0];
             // source 2 = direct user action (trusted, like wmctrl -a).
             send_root_message(conn, root, win, atoms.net_active_window, [2, 0, 0, 0, 0]);
@@ -597,7 +601,6 @@ mod imp {
             && (active == win || active == 0)
             && is_monitor_sized(conn, root, win)
         {
-            // data.l = [_NET_WM_STATE_ADD, state atom, 0, source, 0].
             // data.l = [_NET_WM_STATE_ADD, state atom, 0, source, 0].
             send_root_message(
                 conn,
