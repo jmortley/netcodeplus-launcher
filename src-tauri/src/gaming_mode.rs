@@ -26,10 +26,16 @@
 //!
 //! Everything here is best-effort: a missing `gnome-extensions`, a Wayland
 //! session, or an X error must never break a launch. The repair logic is
-//! deliberately conservative — bounded activations inside a launch grace
-//! window, fullscreen re-added only right after our own activation — so it
-//! can never fight a player who alt-tabs away, minimizes, or intentionally
-//! plays windowed.
+//! deliberately conservative — see [`repair_window_state`]: raising a hidden
+//! window is bounded to a session-level activation budget in the opening
+//! seconds and only when nothing (or the launcher) holds focus, and FULLSCREEN
+//! is re-added only to an already ~monitor-sized focused window — so it can
+//! never fight a player who alt-tabs away (including to a second Proton game),
+//! minimizes after startup, or intentionally plays windowed. "Monitor-sized" is
+//! measured against the window's actual monitor via RandR, not the combined
+//! multi-head X root. The poll is adaptive: fast (sub-second) while a window is
+//! in the wrong state so startup and map-change repairs are near-instant, slow
+//! once it's confirmed fullscreen+focused.
 
 #[cfg(target_os = "linux")]
 mod imp {
@@ -40,6 +46,7 @@ mod imp {
 
     use sysinfo::{Pid, ProcessRefreshKind, System, UpdateKind};
     use x11rb::connection::Connection;
+    use x11rb::protocol::randr::ConnectionExt as _;
     use x11rb::protocol::xproto::{
         Atom, AtomEnum, ClientMessageEvent, ConnectionExt, EventMask, Window, CLIENT_MESSAGE_EVENT,
     };
@@ -54,23 +61,41 @@ mod imp {
     /// How long the watchdog waits for the game window to appear before giving
     /// up (slow prefix warm-up, shader compile).
     const APPEAR_TIMEOUT: Duration = Duration::from_secs(300);
-    const POLL: Duration = Duration::from_secs(2);
-    /// Consecutive empty polls before the window's disappearance counts as game
-    /// exit. Wine destroys/recreates the X window across display-mode changes,
-    /// and the splash-to-game transition leaves a gap — a single miss (or one
-    /// failed X query) must not end the session and restore the dock mid-game.
-    const EXIT_DEBOUNCE_TICKS: u32 = 5;
-    /// Activation (focus-steal) is only attempted this soon after the window
-    /// first appears, and at most [`MAX_ACTIVATIONS`] times. The broken-launch
-    /// state happens at appearance; a player minimizing the game later must
-    /// never be re-raised.
-    const ACTIVATION_GRACE: Duration = Duration::from_secs(90);
-    const MAX_ACTIVATIONS: u32 = 3;
-    /// FULLSCREEN is only re-added within this many ticks after OUR OWN
-    /// activation (mutter drops it when it unminimizes). Without the latch, a
-    /// player who intentionally switches the game to windowed mode would be
-    /// force-fullscreened every poll forever.
-    const FS_READD_TICKS: u32 = 3;
+    /// Poll cadence. Fast while the window is in a wrong state (so startup and
+    /// post-map-change repairs land in well under a second instead of the
+    /// several-second flash a 2 s poll produced); slow once it's confirmed
+    /// fullscreen+focused, so a stable session barely wakes.
+    const POLL_FAST: Duration = Duration::from_millis(400);
+    const POLL_SLOW: Duration = Duration::from_secs(2);
+    /// The game window must stay gone THIS long before we treat it as game exit.
+    /// Time-based (not tick-based) so it's independent of the adaptive poll rate:
+    /// UE4 destroys/recreates its X window across display-mode changes, and the
+    /// splash-to-game transition leaves a gap — a brief disappearance must not
+    /// end the session and restore the dock mid-game.
+    const EXIT_GRACE: Duration = Duration::from_secs(12);
+    /// Focus-steal (activation) is only attempted within this window of the game
+    /// FIRST being seen, and at most [`MAX_ACTIVATIONS`] times — a SESSION budget
+    /// (not per-window), so a player who deliberately minimizes the game after
+    /// the opening seconds is never re-raised, and a window-id that flips between
+    /// candidates tick-to-tick can't refill it. It only needs to cover the
+    /// startup "window comes up minimized/unfocused" state; a later map change
+    /// drops FULLSCREEN without hiding the window, which the re-fullscreen path
+    /// (no budget, screen-size-guarded) handles.
+    const ACTIVATION_GRACE: Duration = Duration::from_secs(30);
+    const MAX_ACTIVATIONS: u32 = 5;
+    /// A window counts as "meant to be fullscreen" when it covers at least this
+    /// fraction of its MONITOR in BOTH dimensions (see [`monitor_sizes`] — using
+    /// the whole multi-monitor X screen here would wrongly reject a single-head
+    /// fullscreen game). Anti-hijack guard for the FULLSCREEN re-add: a
+    /// deliberately-windowed (small) game never matches; only a game already
+    /// ~monitor-sized that lost the FULLSCREEN atom gets it back.
+    const FULLSCREEN_FRAC_NUM: u64 = 9;
+    const FULLSCREEN_FRAC_DEN: u64 = 10;
+    /// Absolute minimum window area (px²) for a game-window candidate, to skip
+    /// the same-class helper windows a Proton game spawns (1×1 IME, tiny Input).
+    /// A real game window is orders of magnitude larger; this is monitor-agnostic
+    /// so it's correct on any head count.
+    const MIN_CANDIDATE_AREA: u64 = 256 * 256;
 
     pub fn handle_watchdog_flag() {
         if std::env::args().any(|a| a == WATCHDOG_FLAG) {
@@ -300,12 +325,12 @@ mod imp {
         net_wm_pid: Atom,
     }
 
-    /// Per-session repair bookkeeping — the latches that keep the watchdog
-    /// from ever fighting the player (see the module docs).
+    /// Session-level repair bookkeeping (created once, when the game window is
+    /// first seen, never reset). The activation budget it carries is therefore
+    /// per-session — see [`ACTIVATION_GRACE`].
     struct RepairCtx {
         first_seen: Instant,
         activations: u32,
-        fs_readd_window: u32,
     }
 
     fn intern(conn: &RustConnection, name: &str) -> Option<Atom> {
@@ -319,9 +344,9 @@ mod imp {
     }
 
     /// Poll until the game window has been seen and then stays gone for
-    /// [`EXIT_DEBOUNCE_TICKS`] (game exit), repairing its WM state along the
-    /// way. Returns early if X is unreachable (Wayland-only session, no
-    /// DISPLAY) or the window never appears within [`APPEAR_TIMEOUT`].
+    /// [`EXIT_GRACE`] (game exit), repairing its WM state along the way. Returns
+    /// early if X is unreachable (Wayland-only session, no DISPLAY) or the window
+    /// never appears within [`APPEAR_TIMEOUT`].
     fn watch_game_window() {
         let Ok((conn, screen_num)) = x11rb::connect(None) else {
             return;
@@ -342,38 +367,49 @@ mod imp {
 
         let started = Instant::now();
         let mut ctx: Option<RepairCtx> = None;
-        let mut misses: u32 = 0;
+        let mut last_seen = started;
+        let mut ever_seen = false;
+        let mut poll = POLL_FAST;
         loop {
-            std::thread::sleep(POLL);
+            std::thread::sleep(poll);
             match find_game_window(&conn, root, &atoms) {
                 Some(win) => {
-                    misses = 0;
+                    ever_seen = true;
+                    last_seen = Instant::now();
+                    // Session-level budget: created once, on first sighting.
                     let ctx = ctx.get_or_insert_with(|| RepairCtx {
                         first_seen: Instant::now(),
                         activations: 0,
-                        fs_readd_window: 0,
                     });
-                    repair_window_state(&conn, root, &atoms, win, ctx);
+                    let good = repair_window_state(&conn, root, &atoms, win, ctx);
+                    // Stay fast until the window is confirmed good, then back off.
+                    poll = if good { POLL_SLOW } else { POLL_FAST };
                 }
-                None if ctx.is_some() => {
-                    misses += 1;
-                    if misses >= EXIT_DEBOUNCE_TICKS {
-                        return;
+                None => {
+                    poll = POLL_FAST;
+                    if ever_seen && last_seen.elapsed() > EXIT_GRACE {
+                        return; // game exited
+                    }
+                    if !ever_seen && started.elapsed() > APPEAR_TIMEOUT {
+                        return; // never showed up
                     }
                 }
-                None if started.elapsed() > APPEAR_TIMEOUT => return,
-                None => {}
             }
         }
     }
 
-    /// The game window: class candidates from `_NET_CLIENT_LIST`, preferring
-    /// one owned by a live UT4 shipping process (`_NET_WM_PID`), newest first.
-    /// The class filter alone is too broad — `steam_proton` is Proton-Wine's
-    /// class for EVERY non-Steam Proton window on the desktop (another
-    /// launcher's game, a winedbg dialog), and the client list is oldest-first,
-    /// so a bare `.find()` would deterministically pick a stale foreign window
-    /// over the game.
+    /// The game window: among `_NET_CLIENT_LIST` windows with a game
+    /// `WM_CLASS`, the **largest** one owned by a live UT4 shipping process.
+    /// Two filters, both load-bearing:
+    /// - **PID** (`_NET_WM_PID` ∈ live UE4 pids): `steam_proton` is Proton-Wine's
+    ///   class for EVERY non-Steam Proton window on the desktop (another
+    ///   launcher's game, a winedbg dialog), so class alone is too broad.
+    /// - **Size** (≥ [`MIN_CANDIDATE_AREA`]): a single Proton game spawns many
+    ///   same-class helper windows — a 1×1 IME window, a tiny "Input" window — so
+    ///   picking "newest" or "first" would latch onto a 1×1 child. An ABSOLUTE
+    ///   floor, not a screen fraction: a screen-relative floor computed off the
+    ///   whole (possibly multi-monitor) X root would wrongly reject a real
+    ///   single-head game window. The genuine game window then wins on max area.
     fn find_game_window(conn: &RustConnection, root: Window, atoms: &Atoms) -> Option<Window> {
         let reply = conn
             .get_property(
@@ -388,28 +424,77 @@ mod imp {
             .reply()
             .ok()?;
         let windows: Vec<Window> = reply.value32()?.collect();
-        let candidates: Vec<Window> = windows
+        let ue4 = ue4_pids();
+        // Class-matched, big-enough windows, tagged by whether a live UT4
+        // process owns them.
+        let candidates: Vec<(Window, bool, u64)> = windows
             .into_iter()
             .filter(|&w| {
                 wm_class_of(conn, w)
                     .map(|c| ncp_host::linux::is_game_window_class(&c))
                     .unwrap_or(false)
             })
+            .map(|w| {
+                let (ww, wh) = window_dims(conn, w);
+                let is_ue4 = wm_pid_of(conn, w, atoms)
+                    .map(|p| ue4.contains(&p))
+                    .unwrap_or(false);
+                (w, is_ue4, ww as u64 * wh as u64)
+            })
+            .filter(|&(_, _, area)| area >= MIN_CANDIDATE_AREA)
             .collect();
-        if candidates.is_empty() {
-            return None;
-        }
-        let ue4 = ue4_pids();
+        // Prefer the largest UT4-owned window; fall back to the largest
+        // class+size match if none expose a matching `_NET_WM_PID`.
         candidates
             .iter()
-            .rev()
-            .find(|&&w| {
-                wm_pid_of(conn, w, atoms)
-                    .map(|p| ue4.contains(&p))
-                    .unwrap_or(false)
-            })
-            .or_else(|| candidates.last())
-            .copied()
+            .filter(|&&(_, is_ue4, _)| is_ue4)
+            .max_by_key(|&&(_, _, area)| area)
+            .or_else(|| candidates.iter().max_by_key(|&&(_, _, area)| area))
+            .map(|&(w, _, _)| w)
+    }
+
+    /// A window's current width and height in pixels, `(0, 0)` if unavailable.
+    fn window_dims(conn: &RustConnection, win: Window) -> (u16, u16) {
+        conn.get_geometry(win)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .map(|g| (g.width, g.height))
+            .unwrap_or((0, 0))
+    }
+
+    /// Per-monitor `(width, height)` from RandR — so "screen-sized" is measured
+    /// against the monitor a window occupies, not the whole multi-head X root
+    /// (a fullscreen game on one head is far smaller than the combined desktop).
+    /// Falls back to the root screen size if RandR is unavailable (single-head
+    /// setups then still work; multi-head without RandR is vanishingly rare).
+    fn monitor_sizes(conn: &RustConnection, root: Window) -> Vec<(u16, u16)> {
+        if let Some(reply) = conn
+            .randr_get_monitors(root, true)
+            .ok()
+            .and_then(|c| c.reply().ok())
+        {
+            let mons: Vec<(u16, u16)> =
+                reply.monitors.iter().map(|m| (m.width, m.height)).collect();
+            if !mons.is_empty() {
+                return mons;
+            }
+        }
+        conn.get_geometry(root)
+            .ok()
+            .and_then(|c| c.reply().ok())
+            .map(|g| vec![(g.width, g.height)])
+            .unwrap_or_default()
+    }
+
+    /// Whether `win`'s size covers ≥ [`FULLSCREEN_FRAC_NUM`]/[`FULLSCREEN_FRAC_DEN`]
+    /// of ANY monitor in both dimensions — the "meant to be fullscreen" test.
+    fn is_monitor_sized(conn: &RustConnection, root: Window, win: Window) -> bool {
+        let (ww, wh) = window_dims(conn, win);
+        let (ww, wh) = (ww as u64, wh as u64);
+        monitor_sizes(conn, root).into_iter().any(|(mw, mh)| {
+            ww * FULLSCREEN_FRAC_DEN >= mw as u64 * FULLSCREEN_FRAC_NUM
+                && wh * FULLSCREEN_FRAC_DEN >= mh as u64 * FULLSCREEN_FRAC_NUM
+        })
     }
 
     /// A window's `WM_CLASS` (both nul-separated fields, joined) — missing
@@ -451,34 +536,52 @@ mod imp {
             .unwrap_or(0)
     }
 
-    /// One repair step per poll tick, mirroring the sequence proven live:
-    /// activate first (mutter drops FULLSCREEN when it unminimizes), then
-    /// re-add FULLSCREEN on a following tick. Guard rails, in order of the
-    /// checks below: activation needs the pathological launch state (HIDDEN
-    /// while nothing has focus, or while focus is still on the launcher),
-    /// bounded by [`MAX_ACTIVATIONS`] inside [`ACTIVATION_GRACE`]; FULLSCREEN
-    /// re-add only follows OUR OWN activation ([`FS_READD_TICKS`] latch) and
-    /// only while the game is (or is becoming) the active window.
+    /// One repair step per poll tick. Returns `true` when the window is already
+    /// in the desired state (fullscreen, not hidden, and the active window) so
+    /// the caller can back off to the slow poll. Two independent repairs, each
+    /// with an anti-hijack guard so the watchdog never fights the player:
+    ///
+    /// - **Raise** — the window is minimized/`HIDDEN` while nothing is focused or
+    ///   the launcher is (the broken-launch state: the game comes up minimized
+    ///   with `_NET_ACTIVE_WINDOW` = 0). Activate it. Bounded to
+    ///   [`MAX_ACTIVATIONS`] within [`ACTIVATION_GRACE`] of first sighting, a
+    ///   SESSION budget — so a player who minimizes the game after the opening
+    ///   seconds is not re-raised. Deliberately does NOT treat "some other game
+    ///   window is focused" as free: that would yank a player back from a second
+    ///   Proton game they alt-tabbed to (its class is `steam_proton` too).
+    /// - **Re-fullscreen** — the window is focused (or nothing else is) and
+    ///   ~monitor-sized but lost the `_NET_WM_STATE_FULLSCREEN` atom. UE4 drops it
+    ///   on a resolution/mode change (map load), leaving a focused non-fullscreen
+    ///   window that mutter no longer unredirects, so the top bar draws over the
+    ///   game. Re-add it. The monitor-size guard is the anti-hijack: a
+    ///   deliberately-windowed (small) game never matches, and an alt-tabbed
+    ///   player has focus on some other window (so `active != win`).
     fn repair_window_state(
         conn: &RustConnection,
         root: Window,
         atoms: &Atoms,
         win: Window,
         ctx: &mut RepairCtx,
-    ) {
+    ) -> bool {
         let states = window_states(conn, win, atoms);
         let hidden = states.contains(&atoms.net_wm_state_hidden);
         let fullscreen = states.contains(&atoms.net_wm_state_fullscreen);
         let active = active_window(conn, root, atoms);
-        let active_is_launcher = || {
-            active != 0
-                && wm_class_of(conn, active)
-                    .map(|c| c.to_ascii_lowercase().contains("netcodeplus-launcher"))
-                    .unwrap_or(false)
-        };
+        if fullscreen && !hidden && active == win {
+            return true; // already correct — nothing to do
+        }
+
+        let active_is_launcher = active != 0
+            && wm_class_of(conn, active)
+                .map(|c| c.to_ascii_lowercase().contains("netcodeplus-launcher"))
+                .unwrap_or(false);
+        // Focus is not a deliberate elsewhere-choice by the player only when
+        // nothing at all is focused, or the launcher is. NOT when another window
+        // (even a game-class one) holds focus — that is the player's choice.
+        let focus_free = active == 0 || active_is_launcher;
 
         if hidden
-            && (active == 0 || active_is_launcher())
+            && focus_free
             && ctx.activations < MAX_ACTIVATIONS
             && ctx.first_seen.elapsed() <= ACTIVATION_GRACE
         {
@@ -486,10 +589,15 @@ mod imp {
             // source 2 = direct user action (trusted, like wmctrl -a).
             send_root_message(conn, root, win, atoms.net_active_window, [2, 0, 0, 0, 0]);
             ctx.activations += 1;
-            ctx.fs_readd_window = FS_READD_TICKS;
-            return;
+            return false;
         }
-        if !fullscreen && !hidden && ctx.fs_readd_window > 0 && (active == win || active == 0) {
+
+        if !fullscreen
+            && !hidden
+            && (active == win || active == 0)
+            && is_monitor_sized(conn, root, win)
+        {
+            // data.l = [_NET_WM_STATE_ADD, state atom, 0, source, 0].
             // data.l = [_NET_WM_STATE_ADD, state atom, 0, source, 0].
             send_root_message(
                 conn,
@@ -499,7 +607,7 @@ mod imp {
                 [1, atoms.net_wm_state_fullscreen, 0, 2, 0],
             );
         }
-        ctx.fs_readd_window = ctx.fs_readd_window.saturating_sub(1);
+        false
     }
 
     fn send_root_message(
