@@ -151,6 +151,9 @@ interface LauncherState {
   discord_presence_enabled?: boolean;
   // Linux-only explicit Wine/Proton launch override; null/absent = auto-detect.
   linux_launch?: LinuxLaunch | null;
+  // Linux-only: true = use GPU (DMABUF) webview rendering; false/absent = the
+  // launcher disables it (WEBKIT_DISABLE_DMABUF_RENDERER=1) to avoid a white screen.
+  linux_gpu_accel?: boolean | null;
 }
 
 // (Linux) Explicit Wine/Proton launch override the user set in Settings.
@@ -1661,6 +1664,12 @@ function wineProtonPanel(): string {
         <button id="wine-clear" type="button"${linuxLaunch ? "" : " disabled"}>Clear (auto-detect)</button>
       </span>
       <div id="wine-resolved" class="src" style="white-space:pre-wrap;word-break:break-all"></div>
+      <label style="display:flex;align-items:flex-start;gap:0.5rem;margin-top:0.9rem;cursor:pointer">
+        <input id="linux-gpu-accel" type="checkbox"${linuxGpuAccel ? " checked" : ""} style="margin-top:0.2rem" />
+        <span>Use GPU-accelerated rendering
+          <span class="src" style="display:block">Faster, but uncheck it if the launcher opens to a blank / white window (a WebKitGTK issue on some AMD/Wayland setups). Restart the launcher to apply.</span>
+        </span>
+      </label>
     </div>`;
 }
 
@@ -1731,6 +1740,19 @@ function wireWineProton(di: DetectedInstall) {
   });
 
   clearBtn?.addEventListener("click", () => saveLinuxLaunch(null, null));
+
+  // Webview rendering toggle (persisted to state; applied on next launcher start).
+  const gpuAccel = document.getElementById("linux-gpu-accel") as HTMLInputElement | null;
+  gpuAccel?.addEventListener("change", async () => {
+    const enabled = gpuAccel.checked;
+    try {
+      await invoke("save_linux_gpu_accel", { enabled });
+      linuxGpuAccel = enabled;
+    } catch (err) {
+      console.error("save_linux_gpu_accel failed:", err);
+      gpuAccel.checked = linuxGpuAccel; // revert the UI to the persisted value
+    }
+  });
 
   async function saveLinuxLaunch(prefix: string | null, wine: string | null) {
     try {
@@ -2429,6 +2451,7 @@ function applyPrefs(prefs: LauncherState) {
   state.unrealpugsToken = prefs.unrealpugs_launcher_token;
   state.discordPresence = prefs.discord_presence_enabled ?? false;
   linuxLaunch = prefs.linux_launch ?? null;
+  linuxGpuAccel = prefs.linux_gpu_accel ?? false;
   if (prefs.install_path) {
     const i = state.installs.findIndex((d) => d.install.root === prefs.install_path);
     if (i >= 0) state.selInstall = i;
@@ -2460,6 +2483,10 @@ let platformOs: PlatformInfo["os"] = "windows";
 // launch override (null = auto-detect via Lutris). Populated in loadAll on Linux.
 let wineRunners: WineRunner[] = [];
 let linuxLaunch: LinuxLaunch | null = null;
+// Linux-only: mirrors LauncherState.linux_gpu_accel. false = the launcher forces
+// WEBKIT_DISABLE_DMABUF_RENDERER=1 (safe default); true = user opted into the GPU
+// path. Applied at startup, so a change needs a launcher restart to take effect.
+let linuxGpuAccel = false;
 
 async function loadAll() {
   try {

@@ -69,8 +69,39 @@ pub use crate::plugin_install::{
 pub use crate::shortcut::{
     create_desktop_shortcut, create_desktop_shortcut_with, detect_outdated_launcher,
     is_stale_pending, repoint_launcher_shortcut_if_present, schedule_delete_on_reboot,
-    ShortcutError, ShortcutRepoint, LAUNCHER_SHORTCUT_NAME,
+    set_app_user_model_id, ShortcutError, ShortcutRepoint, LAUNCHER_SHORTCUT_NAME,
 };
 pub use crate::state::{LauncherState, OnboardingState, PakStamp, DEFAULT_CHANNEL};
 pub use crate::stray::{remove_stray, scan_strays, StrayKind, StrayPlugin, StrayRemoveError};
 pub use crate::swap::{apply_binary_swap, swap_paths, SwapError};
+
+/// (Linux) Apply the default WebKitGTK DMABUF-renderer preference *before* the
+/// webview process forks. WebKitGTK >= 2.42's DMABUF renderer white-screens on some
+/// Linux GPU/driver stacks (AMD/Mesa, Wayland) with `EGL_BAD_PARAMETER`, so the safe
+/// default is to disable it by setting `WEBKIT_DISABLE_DMABUF_RENDERER=1`.
+///
+/// Precedence: an explicit `WEBKIT_DISABLE_DMABUF_RENDERER` already in the
+/// environment always wins (a CLI override); else the saved [`LauncherState`]
+/// `linux_gpu_accel` opt-in (`Some(true)` leaves the GPU path on); else default to
+/// disabling it. The state file is located the app-handle-free way (like Tauri's
+/// `app_config_dir`: `<config>/<app_identifier>/state.json`), since no `AppHandle`
+/// exists this early in startup. Edition 2021 → `set_var` is safe (a bump to
+/// edition 2024 would require an `unsafe {}` block here).
+#[cfg(target_os = "linux")]
+pub fn apply_webview_dmabuf_default(app_identifier: &str) {
+    if std::env::var_os("WEBKIT_DISABLE_DMABUF_RENDERER").is_some() {
+        return; // explicit env override always wins
+    }
+    let gpu_accel = dirs::config_dir()
+        .map(|d| d.join(app_identifier).join("state.json"))
+        .and_then(|p| crate::state::read(&p).ok().flatten())
+        .and_then(|s| s.linux_gpu_accel)
+        .unwrap_or(false);
+    if !gpu_accel {
+        std::env::set_var("WEBKIT_DISABLE_DMABUF_RENDERER", "1");
+    }
+}
+
+/// Non-Linux stub: there is no WebKitGTK webview to configure.
+#[cfg(not(target_os = "linux"))]
+pub fn apply_webview_dmabuf_default(_app_identifier: &str) {}

@@ -371,6 +371,21 @@ pub fn save_linux_launch(
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
 }
 
+/// (Linux) Save whether to use GPU-accelerated (DMABUF) webview rendering.
+/// `false` (the default) makes `run()` force `WEBKIT_DISABLE_DMABUF_RENDERER=1` on
+/// the next launch — the safe default that avoids the AMD/Wayland white-screen
+/// (`EGL_BAD_PARAMETER`). Takes effect after a restart: WebKitGTK reads the env var
+/// once, when the webview process forks at startup.
+#[tauri::command]
+pub fn save_linux_gpu_accel(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.linux_gpu_accel = Some(enabled);
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
 /// (Linux) Wine/Proton runners installed on this machine (Lutris runners + Steam
 /// compatibilitytools.d), each resolved to its wine binary — for the settings
 /// dropdown. Empty on Windows / when none are found.

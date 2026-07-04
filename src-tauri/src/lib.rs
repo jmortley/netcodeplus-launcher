@@ -95,6 +95,14 @@ pub fn run() {
     // No-op off Windows; must run before we touch Tauri.
     webview2::ensure_webview2_runtime();
 
+    // Windows: pin a stable, version-INDEPENDENT AppUserModelID so taskbar pins and
+    // launches all group under one identity. Without it, Windows derives an implicit
+    // AUMID from the exe path, so the in-place self-update (which changes the path)
+    // splits a pinned icon into two. Must run before any window is created. Best-
+    // effort — a failure here must not block startup.
+    #[cfg(windows)]
+    let _ = ncp_host::set_app_user_model_id("NetcodePlus.UT4CommunityLauncher");
+
     // A self-update relaunch must let its predecessor release the single-instance
     // lock first — wait for it before building anything.
     #[cfg(desktop)]
@@ -104,6 +112,11 @@ pub fn run() {
     // files) — after the wait, so the handoff has fully settled.
     #[cfg(desktop)]
     sweep_update_leftovers();
+
+    // Linux: disable WebKitGTK's DMABUF renderer by default (it white-screens on
+    // some AMD/Wayland stacks) unless the user set the env var or opted into GPU
+    // rendering in Settings. Must run before the webview forks; no-op off Linux.
+    ncp_host::apply_webview_dmabuf_default("org.netcodeplus.launcher");
 
     let mut builder = tauri::Builder::default();
 
@@ -153,6 +166,7 @@ pub fn run() {
             commands::load_state,
             commands::save_launch_prefs,
             commands::save_linux_launch,
+            commands::save_linux_gpu_accel,
             commands::list_wine_runners,
             commands::resolve_linux_launch,
             installer::game_installer_integrity,

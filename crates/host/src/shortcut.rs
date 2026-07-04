@@ -288,6 +288,52 @@ pub fn schedule_delete_on_reboot(_path: &Path) -> std::io::Result<()> {
     ))
 }
 
+/// Set this process's explicit AppUserModelID (AUMID) so the Windows taskbar
+/// groups every launch and pin under ONE stable identity.
+///
+/// Without an explicit AUMID, Windows derives an *implicit* one from the exe path.
+/// The in-place self-update changes that path (`<binary>` ↔ `<binary>.old` swap),
+/// so a pinned taskbar icon splits into a second icon after an update. Pinning a
+/// stable, **version-independent** id here keeps all launches in one taskbar group
+/// across updates. Must be called before any window is created (i.e. before
+/// `tauri::Builder`), and the id must NOT embed the version.
+///
+/// # Errors
+/// The failing `HRESULT` (wrapped in [`std::io::Error`]) on Windows, or an
+/// `Unsupported` error on non-Windows targets.
+#[cfg(windows)]
+#[allow(unsafe_code)]
+pub fn set_app_user_model_id(id: &str) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::UI::Shell::SetCurrentProcessExplicitAppUserModelID;
+
+    // NUL-terminated UTF-16 for the `*W` API, encoded straight from the OS string.
+    let wide: Vec<u16> = std::ffi::OsStr::new(id)
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect();
+
+    // SAFETY: `wide` is a NUL-terminated UTF-16 buffer that outlives the call.
+    // SetCurrentProcessExplicitAppUserModelID copies the string into per-process
+    // state and returns an HRESULT; it retains no pointer we must own.
+    let hr = unsafe { SetCurrentProcessExplicitAppUserModelID(wide.as_ptr()) };
+    if hr < 0 {
+        return Err(std::io::Error::other(format!(
+            "SetCurrentProcessExplicitAppUserModelID failed: 0x{hr:08X}"
+        )));
+    }
+    Ok(())
+}
+
+/// Non-Windows stub: there is no taskbar AppUserModelID to set.
+#[cfg(not(windows))]
+pub fn set_app_user_model_id(_id: &str) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "AppUserModelID is only supported on Windows",
+    ))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

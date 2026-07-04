@@ -188,6 +188,16 @@ pub struct LauncherState {
     /// (the default and the happy path). See [`LinuxLaunchSettings`].
     #[serde(default)]
     pub linux_launch: Option<LinuxLaunchSettings>,
+
+    /// Linux-only: whether to let WebKitGTK use its GPU (DMABUF) rendering path.
+    /// `Some(true)` = the user opted back into GPU rendering. `Some(false)`/`None`
+    /// (the default) = the launcher forces `WEBKIT_DISABLE_DMABUF_RENDERER=1` at
+    /// startup, because that renderer white-screens on some AMD/Wayland stacks
+    /// (`EGL_BAD_PARAMETER`). An explicit `WEBKIT_DISABLE_DMABUF_RENDERER` in the
+    /// environment overrides this either way. Read app-handle-free in `run()`
+    /// before the webview forks, so a change takes effect on the next launch.
+    #[serde(default)]
+    pub linux_gpu_accel: Option<bool>,
 }
 
 /// Onboarding / feature-discovery persisted state. See [`LauncherState::onboarding`].
@@ -315,6 +325,7 @@ impl Default for LauncherState {
             pending_old_launcher_path: None,
             onboarding: OnboardingState::default(),
             linux_launch: None,
+            linux_gpu_accel: None,
         }
     }
 }

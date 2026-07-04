@@ -94,6 +94,7 @@ fn sample_state() -> LauncherState {
                     .into(),
             ),
         }),
+        linux_gpu_accel: Some(true),
     }
 }
 
