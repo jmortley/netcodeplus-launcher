@@ -135,6 +135,41 @@ jobs:
       - run: npm ci
       - name: Build AppImage + deb bundles
         run: npm run tauri build -- --bundles appimage,deb
+      # linuxdeploy over-bundles libwayland-client.so.0, which is on the
+      # official AppImage excludelist: the bundled copy mismatches the host
+      # Mesa/compositor on rolling distros (Arch/Fedora) and the launcher
+      # never starts. Strip ONLY libwayland-client.so* — libwayland-
+      # cursor/egl/server are NOT on the excludelist and must stay bundled.
+      # This runs before upload-artifact because releases are cut from this
+      # artifact; hashing/signing happens at ship time, after this repack.
+      # The .deb is unaffected (no bundling).
+      - name: Strip host-provided libwayland-client from the AppImage
+        shell: bash
+        run: |
+          set -euxo pipefail
+          curl -fsSL -o /tmp/appimagetool \
+            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+          chmod +x /tmp/appimagetool
+          for img in target/release/bundle/appimage/*.AppImage; do
+            wd="$(mktemp -d)"
+            ( cd "$wd" && "$OLDPWD/$img" --appimage-extract >/dev/null )
+            find "$wd/squashfs-root" -type f -name 'libwayland-client.so*' -print -delete
+            # appimagetool is itself an AppImage; extract-and-run avoids
+            # depending on FUSE being present on the runner.
+            ARCH=x86_64 /tmp/appimagetool --appimage-extract-and-run "$wd/squashfs-root" "$img"
+            rm -rf "$wd"
+            # Self-check the repacked image: client gone, siblings kept.
+            wd="$(mktemp -d)"
+            ( cd "$wd" && "$OLDPWD/$img" --appimage-extract >/dev/null )
+            if find "$wd/squashfs-root" -name 'libwayland-client.so*' | grep -q .; then
+              echo "::error::libwayland-client still present after strip"; exit 1
+            fi
+            for lib in libwayland-cursor.so.0 libwayland-egl.so.1 libwayland-server.so.0; do
+              find "$wd/squashfs-root" -name "$lib" | grep -q . \
+                || { echo "::error::$lib missing after repack"; exit 1; }
+            done
+            rm -rf "$wd"
+          done
       # Workspace target dir is at the repo root (NOT src-tauri/target).
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
