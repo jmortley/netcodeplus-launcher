@@ -147,8 +147,12 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
+          # appimagetool pinned to a fixed release + sha256-verified. The
+          # `continuous` tag is a moving target; this tool repacks the AppImage
+          # that gets signed into the update manifest, so verify what we run.
           curl -fsSL -o /tmp/appimagetool \
-            https://github.com/AppImage/appimagetool/releases/download/continuous/appimagetool-x86_64.AppImage
+            https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage
+          echo "ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0  /tmp/appimagetool" | sha256sum -c -
           chmod +x /tmp/appimagetool
           for img in target/release/bundle/appimage/*.AppImage; do
             wd="$(mktemp -d)"
