@@ -104,6 +104,15 @@ pub fn launch_game(
     ncp_host::launch(Path::new(&executable), &args, &opts, linux_launch.as_ref())
         .map_err(|e| e.to_string())?;
 
+    // Linux gaming mode (opt-in): spawn the detached watchdog that keeps the
+    // game window fullscreen+focused and hides the GNOME dock while playing.
+    // BEFORE the window action below — "close" exits this process, and the
+    // watchdog must already be spawned (it survives the launcher's exit).
+    // Best-effort and a no-op off Linux: must never fail a successful launch.
+    if let Ok(path) = state_path(&app) {
+        crate::gaming_mode::engage_after_launch(&path);
+    }
+
     // Game launched — apply the user's window preference. Best-effort: a window
     // action must never fail an otherwise-successful launch. The game is spawned
     // detached, so exiting the launcher does not kill it.
@@ -383,6 +392,21 @@ pub fn save_linux_gpu_accel(app: tauri::AppHandle, enabled: bool) -> Result<(), 
         .map_err(|e| e.to_string())?
         .unwrap_or_default();
     state.linux_gpu_accel = Some(enabled);
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
+/// (Linux) Save whether "gaming mode" is on: while the game runs, a detached
+/// watchdog keeps its window fullscreen+focused (fixes the GNOME top bar / dock
+/// drawing over the game and restores fullscreen unredirection) and temporarily
+/// disables the Ubuntu dock. Read at game-launch time — no restart needed; the
+/// next launch picks it up.
+#[tauri::command]
+pub fn save_linux_gaming_mode(app: tauri::AppHandle, enabled: bool) -> Result<(), String> {
+    let path = state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.linux_gaming_mode = Some(enabled);
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
 }
 

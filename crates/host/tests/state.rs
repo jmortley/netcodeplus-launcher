@@ -95,6 +95,7 @@ fn sample_state() -> LauncherState {
             ),
         }),
         linux_gpu_accel: Some(true),
+        linux_gaming_mode: Some(true),
     }
 }
 
