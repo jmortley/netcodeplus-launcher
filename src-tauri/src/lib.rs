@@ -102,13 +102,17 @@ pub fn run() {
     // No-op off Windows; must run before we touch Tauri.
     webview2::ensure_webview2_runtime();
 
-    // Windows: pin a stable, version-INDEPENDENT AppUserModelID so taskbar pins and
-    // launches all group under one identity. Without it, Windows derives an implicit
-    // AUMID from the exe path, so the in-place self-update (which changes the path)
-    // splits a pinned icon into two. Must run before any window is created. Best-
-    // effort — a failure here must not block startup.
-    #[cfg(windows)]
-    let _ = ncp_host::set_app_user_model_id("NetcodePlus.UT4CommunityLauncher");
+    // Windows taskbar identity: we deliberately do NOT set an explicit
+    // AppUserModelID. The in-place self-update keeps the exe at the SAME path, so
+    // Windows' implicit path-derived AUMID is already stable across updates and
+    // pinned taskbar icons keep grouping on their own. 1.6.2 added an explicit
+    // AUMID here and it ORPHANED every existing implicit-AUMID pin (the Microsoft-
+    // documented duplicate-icon failure mode — SetCurrentProcessExplicitAppUserModelID
+    // without also stamping the pinned .lnk's System.AppUserModel.ID); reverted in
+    // 1.6.3. If an explicit AUMID is ever genuinely needed (a launcher/host process
+    // split, or a movable install path), adopt it PROPERLY: stamp the identical
+    // System.AppUserModel.ID onto the shortcut at install/first-run and accept a
+    // one-time re-pin — setting it only in-process is worse than not setting it.
 
     // A self-update relaunch must let its predecessor release the single-instance
     // lock first — wait for it before building anything.
