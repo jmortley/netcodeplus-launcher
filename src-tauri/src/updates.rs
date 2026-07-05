@@ -994,6 +994,14 @@ pub async fn install_plugin(
         return Err("This channel does not offer a NetcodePlus plugin.".into());
     };
 
+    // Don't swap the plugin out from under a running game: the moved-aside copy
+    // (`.NetcodePlus.old.*`) stays file-locked until UT4 exits, so the cleanup
+    // can't remove it and the leftover lingers (often admin-owned, in Program
+    // Files). Refuse up front — mirrors the pak-install guard.
+    if crate::commands::shipping_client_running() {
+        return Err("Close UT4 to update the NetcodePlus plugin.".into());
+    }
+
     let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
     // Stage the download once in a temp dir; the same verified ZIP is reused for
     // every install that needs it (all installs get identical bytes).

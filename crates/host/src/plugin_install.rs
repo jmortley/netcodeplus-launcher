@@ -86,9 +86,55 @@ fn sweep_leftovers(plugins_dir: &Path) {
         let name = entry.file_name();
         let name = name.to_string_lossy();
         if name.starts_with(".NetcodePlus.staging.") || name.starts_with(".NetcodePlus.old.") {
-            let _ = fs::remove_dir_all(entry.path());
+            remove_leftover_dir(&entry.path());
         }
     }
+}
+
+/// Remove a `.NetcodePlus.old.*` / `.staging.*` leftover tree, best-effort. A
+/// plain recursive delete fails when a plugin DLL an OPEN UT4 still has memory-
+/// mapped keeps its file locked until the game exits — which is how these
+/// leftovers accumulate. On Windows, fall back to a reboot-time delete of what
+/// remained (files, then dirs deepest-first, then the root) so a still-LOCKED
+/// leftover clears at next boot instead of lingering forever. The reboot-delete
+/// records into HKLM (needs admin), so it is only effective in the elevated
+/// Program-Files install pass — where it is the safety net for a file locked even
+/// under elevation; a plain UN-locked admin-owned leftover is just removed
+/// outright there. Unelevated, both the delete and the schedule are best-effort.
+fn remove_leftover_dir(path: &Path) {
+    if fs::remove_dir_all(path).is_ok() || !path.exists() {
+        return;
+    }
+    #[cfg(windows)]
+    schedule_tree_delete_on_reboot(path);
+}
+
+/// Schedule every file, then every directory (deepest-first), then `root` itself
+/// for delete-on-reboot, so the boot-time pass removes a directory's contents
+/// before the directory. Best-effort per entry.
+#[cfg(windows)]
+fn schedule_tree_delete_on_reboot(root: &Path) {
+    fn collect(dir: &Path, files: &mut Vec<PathBuf>, dirs: &mut Vec<PathBuf>) {
+        let Ok(entries) = fs::read_dir(dir) else {
+            return;
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.is_dir() {
+                collect(&p, files, dirs);
+                dirs.push(p);
+            } else {
+                files.push(p);
+            }
+        }
+    }
+    let mut files = Vec::new();
+    let mut dirs = Vec::new();
+    collect(root, &mut files, &mut dirs);
+    for entry in files.iter().chain(dirs.iter()) {
+        let _ = crate::shortcut::schedule_delete_on_reboot(entry);
+    }
+    let _ = crate::shortcut::schedule_delete_on_reboot(root);
 }
 
 /// Compute the lowercase hex SHA-256 of the file at `path`, streaming so a
@@ -206,7 +252,7 @@ pub fn install_plugin_zip(zip_path: &Path, root: &Path) -> Result<()> {
     {
         Ok(()) => {
             if had_existing {
-                let _ = fs::remove_dir_all(&backup); // best-effort cleanup
+                remove_leftover_dir(&backup); // best-effort; reboot-delete a locked leftover
             }
             Ok(())
         }
