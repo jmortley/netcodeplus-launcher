@@ -10,7 +10,8 @@
 //! would happily install a second copy, leaving the stray to keep loading.
 //!
 //! It also finds **misplaced content paks**: the only `.pak` that belongs in
-//! `<root>/UnrealTournament/Content/Paks/` is the game's own `UnrealTournament.pak`.
+//! `<root>/UnrealTournament/Content/Paks/` is the game's own stock pak (the cooked
+//! `UnrealTournament-WindowsNoEditor.pak`; see [`ALLOWED_CONTENT_PAKS`]).
 //! Players sometimes drop mod/content paks there by hand (they belong in
 //! `Saved/Paks/DownloadedPaks/`, which the launcher manages) — an extra pak in the
 //! shipped-content folder loads unconditionally and causes hard-to-diagnose
@@ -30,10 +31,19 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// The only `.pak` filename that legitimately lives in the game's
-/// `Content/Paks/` folder. Every other `.pak` there is a misplaced content pak.
-/// Compared case-insensitively; extend this if the stock game ever ships more.
-const ALLOWED_CONTENT_PAKS: &[&str] = &["UnrealTournament.pak"];
+/// The `.pak` filenames that legitimately live in the game's `Content/Paks/`
+/// folder. Every OTHER `.pak` there is a misplaced content pak.
+///
+/// The real stock pak is the cooked name **`UnrealTournament-WindowsNoEditor.pak`**
+/// (verified against a live install) — NOT `UnrealTournament.pak`. That distinction
+/// is load-bearing: this list is an allowlist, so a wrong/short name here would make
+/// the scanner flag the game's OWN pak as a stray and offer to delete it. The plain
+/// `UnrealTournament.pak` is kept too in case an editor/other build variant uses it.
+/// Compared case-insensitively; extend this if a variant ships another stock pak.
+const ALLOWED_CONTENT_PAKS: &[&str] = &[
+    "UnrealTournament-WindowsNoEditor.pak",
+    "UnrealTournament.pak",
+];
 
 /// Why a found path is considered a stray NetcodePlus copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -51,8 +61,8 @@ pub enum StrayKind {
     /// `<root>/UnrealTournament/Plugins/` (archive contents dumped without the
     /// `NetcodePlus/` folder). Not engine-correct.
     LooseInPluginsRoot,
-    /// A `.pak` other than `UnrealTournament.pak` sitting directly in
-    /// `<root>/UnrealTournament/Content/Paks/` — a mod/content pak hand-dropped
+    /// A `.pak` other than a stock game pak ([`ALLOWED_CONTENT_PAKS`]) sitting
+    /// directly in `<root>/UnrealTournament/Content/Paks/` — a mod pak hand-dropped
     /// into the shipped-content folder (it belongs in `DownloadedPaks/`). Loads
     /// unconditionally and causes content conflicts / crashes. Unlike the other
     /// kinds this is not a single fixed path — the [`StrayPlugin::path`] names the
@@ -88,9 +98,9 @@ impl StrayKind {
             }
             StrayKind::ContentPak => {
                 "A content pak is in the game's Paks folder, where only the game's \
-                 own UnrealTournament.pak belongs. Extra paks here load no matter \
-                 what and can cause content conflicts and crashes — the launcher \
-                 keeps mod paks in the separate DownloadedPaks folder instead."
+                 own stock pak belongs. Extra paks here load no matter what and can \
+                 cause content conflicts and crashes — the launcher keeps mod paks \
+                 in the separate DownloadedPaks folder instead."
             }
             StrayKind::PluginLeftover => {
                 "A leftover NetcodePlus folder from a previous update is still in \
@@ -450,17 +460,20 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let paks = content_paks_dir(tmp.path());
         mk_dir(&paks);
-        // The game's own pak belongs here; a `.sig` is not a `.pak`.
-        fs::write(paks.join("UnrealTournament.pak"), b"game").unwrap();
+        // The REAL stock pak is the cooked `-WindowsNoEditor` name (this is the
+        // regression guard: the scanner must NOT flag the game's own pak). The
+        // plain name is allowlisted too; a `.sig` is not a `.pak`.
+        fs::write(paks.join("UnrealTournament-WindowsNoEditor.pak"), b"game").unwrap();
+        fs::write(paks.join("UnrealTournament.pak"), b"game2").unwrap();
         fs::write(paks.join("UnrealTournament.sig"), b"sig").unwrap();
-        // A hand-dropped mod pak is the stray.
+        // A hand-dropped mod pak is the only stray.
         fs::write(paks.join("NCWepMut-WindowsNoEditor.pak"), b"mod").unwrap();
 
         let pak_strays: Vec<_> = scan_strays(tmp.path())
             .into_iter()
             .filter(|s| s.kind == StrayKind::ContentPak)
             .collect();
-        assert_eq!(pak_strays.len(), 1);
+        assert_eq!(pak_strays.len(), 1, "only the mod pak, never a stock pak");
         assert_eq!(
             pak_strays[0].path,
             paks.join("NCWepMut-WindowsNoEditor.pak")
@@ -490,7 +503,7 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let paks = content_paks_dir(tmp.path());
         mk_dir(&paks);
-        let game = paks.join("UnrealTournament.pak");
+        let game = paks.join("UnrealTournament-WindowsNoEditor.pak");
         let mod_pak = paks.join("SomeMod-WindowsNoEditor.pak");
         fs::write(&game, b"game").unwrap();
         fs::write(&mod_pak, b"mod").unwrap();
@@ -509,10 +522,11 @@ mod tests {
         let tmp = TempDir::new().unwrap();
         let paks = content_paks_dir(tmp.path());
         mk_dir(&paks);
-        let game = paks.join("UnrealTournament.pak");
+        // The real cooked stock pak — a payload claiming it is a stray must be
+        // refused (deleting it would brick the install).
+        let game = paks.join("UnrealTournament-WindowsNoEditor.pak");
         fs::write(&game, b"game").unwrap();
 
-        // A payload claiming the allowlisted game pak is a stray must be refused.
         let evil = StrayPlugin {
             kind: StrayKind::ContentPak,
             path: game.clone(),
