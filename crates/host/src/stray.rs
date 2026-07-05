@@ -32,16 +32,25 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// The `.pak` filenames that legitimately live in the game's `Content/Paks/`
-/// folder. Every OTHER `.pak` there is a misplaced content pak.
+/// folder — the stock game content paks. Every OTHER `.pak` there is a misplaced
+/// content pak.
 ///
 /// The real stock pak is the cooked name **`UnrealTournament-WindowsNoEditor.pak`**
 /// (verified against a live install) — NOT `UnrealTournament.pak`. That distinction
 /// is load-bearing: this list is an allowlist, so a wrong/short name here would make
-/// the scanner flag the game's OWN pak as a stray and offer to delete it. The plain
-/// `UnrealTournament.pak` is kept too in case an editor/other build variant uses it.
+/// the scanner flag the game's OWN pak as a stray and offer to delete it.
+///
+/// Every KNOWN Epic-shipped stock pak name is listed defensively — the server and
+/// Linux cooked variants too — even though the current UI only scans client roots.
+/// The downside of an extra allowlist entry is nil (these are never mod paks); the
+/// downside of a MISSING one is catastrophic (offering to delete the game's own
+/// content). The plain `UnrealTournament.pak` is kept for editor/other variants.
 /// Compared case-insensitively; extend this if a variant ships another stock pak.
 const ALLOWED_CONTENT_PAKS: &[&str] = &[
     "UnrealTournament-WindowsNoEditor.pak",
+    "UnrealTournament-WindowsServer.pak",
+    "UnrealTournament-LinuxNoEditor.pak",
+    "UnrealTournament-LinuxServer.pak",
     "UnrealTournament.pak",
 ];
 
@@ -118,10 +127,12 @@ impl StrayKind {
 pub struct StrayPlugin {
     /// What kind of misplacement this is.
     pub kind: StrayKind,
-    /// The path that should be removed (a directory, except
-    /// [`StrayKind::LooseInPluginsRoot`] which reports the `Plugins` dir whose
-    /// loose files are the problem — see [`remove_stray`] for how that case is
-    /// handled).
+    /// The exact path [`remove_stray`] should remove, which varies by `kind`:
+    /// a directory for [`StrayKind::EnginePlugins`], [`StrayKind::NestedTooDeep`]
+    /// and [`StrayKind::PluginLeftover`]; the loose `NetcodePlus.uplugin` FILE for
+    /// [`StrayKind::LooseInPluginsRoot`]; and the offending `.pak` FILE for
+    /// [`StrayKind::ContentPak`]. `remove_stray` re-derives/re-validates this per
+    /// kind before deleting, so it is never trusted blindly.
     pub path: PathBuf,
 }
 
@@ -296,12 +307,18 @@ pub enum StrayRemoveError {
 pub fn remove_stray(root: &Path, stray: &StrayPlugin) -> Result<(), StrayRemoveError> {
     // ContentPak is not a single fixed location: re-scan Content/Paks and only
     // delete `stray.path` if it is one of the paks that scan CURRENTLY flags as
-    // misplaced (right folder, `.pak`, not the allowlisted game pak). Same
+    // misplaced (right folder, `.pak`, not an allowlisted stock pak). Same
     // "recompute, don't trust the webview payload" gate the fixed-path kinds get
-    // below — a tampered path can't escape the flagged set.
+    // below — a tampered path can't escape the flagged set. An already-GONE path
+    // (deleted externally between scan and click) is a benign success, matching
+    // the fixed kinds; a path that still EXISTS but isn't flagged is refused.
     if stray.kind == StrayKind::ContentPak {
         if !misplaced_content_paks(root).contains(&stray.path) {
-            return Err(StrayRemoveError::NotAStray);
+            return if stray.path.exists() {
+                Err(StrayRemoveError::NotAStray)
+            } else {
+                Ok(())
+            };
         }
         std::fs::remove_file(&stray.path)?;
         return Ok(());
@@ -309,11 +326,17 @@ pub fn remove_stray(root: &Path, stray: &StrayPlugin) -> Result<(), StrayRemoveE
 
     // PluginLeftover is also a variable path: re-scan the Plugins folder and only
     // delete `stray.path` if it is one of the leftover dirs scan CURRENTLY flags
-    // (`.NetcodePlus.old.*` / `.staging.*` directly in Plugins/). A still file-
-    // locked leftover (game open) surfaces the OS error to the UI ("close UT4").
+    // (`.NetcodePlus.old.*` / `.staging.*` directly in Plugins/). Same already-gone
+    // vs still-present handling as ContentPak. The command layer refuses to run
+    // this while UT4 is open (see `remove_stray_plugin`), so a game-locked leftover
+    // is caught up front with a plain "close UT4" message rather than failing here.
     if stray.kind == StrayKind::PluginLeftover {
         if !plugin_leftover_dirs(root).contains(&stray.path) {
-            return Err(StrayRemoveError::NotAStray);
+            return if stray.path.exists() {
+                Err(StrayRemoveError::NotAStray)
+            } else {
+                Ok(())
+            };
         }
         std::fs::remove_dir_all(&stray.path)?;
         return Ok(());
@@ -478,6 +501,41 @@ mod tests {
             pak_strays[0].path,
             paks.join("NCWepMut-WindowsNoEditor.pak")
         );
+    }
+
+    #[test]
+    fn every_stock_pak_variant_is_allowlisted() {
+        let tmp = TempDir::new().unwrap();
+        let paks = content_paks_dir(tmp.path());
+        mk_dir(&paks);
+        // Defense-in-depth: none of the known Epic-shipped stock pak names (client,
+        // server, Linux variants) may ever be flagged for deletion.
+        for stock in ALLOWED_CONTENT_PAKS {
+            fs::write(paks.join(stock), b"stock").unwrap();
+        }
+        fs::write(paks.join("SomeMod-WindowsNoEditor.pak"), b"mod").unwrap();
+
+        let pak_strays: Vec<_> = scan_strays(tmp.path())
+            .into_iter()
+            .filter(|s| s.kind == StrayKind::ContentPak)
+            .collect();
+        assert_eq!(pak_strays.len(), 1, "only the mod pak, never any stock pak");
+        assert_eq!(pak_strays[0].path, paks.join("SomeMod-WindowsNoEditor.pak"));
+    }
+
+    #[test]
+    fn remove_content_pak_already_gone_is_benign_success() {
+        let tmp = TempDir::new().unwrap();
+        let paks = content_paks_dir(tmp.path());
+        mk_dir(&paks);
+        // A mod pak that was already deleted (externally, between scan and click):
+        // removal returns Ok, NOT the scary "not a recognised stray" refusal.
+        let gone = paks.join("SomeMod-WindowsNoEditor.pak");
+        let stray = StrayPlugin {
+            kind: StrayKind::ContentPak,
+            path: gone,
+        };
+        assert!(remove_stray(tmp.path(), &stray).is_ok());
     }
 
     #[test]

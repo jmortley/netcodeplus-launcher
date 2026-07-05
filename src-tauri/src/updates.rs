@@ -1490,12 +1490,20 @@ pub fn scan_strays() -> Vec<InstallStrays> {
 ///
 /// `root` + `kind` identify the stray; `ncp_host::remove_stray` recomputes the
 /// expected stray location(s) under `root` for that kind — a fixed path for the
-/// plugin kinds, or a fresh re-scan of `Content/Paks` for `content_pak` — and
-/// refuses anything else, so the webview cannot direct a delete to an arbitrary
-/// location. The `path` from the scan is passed through for the safety re-check.
+/// three plugin kinds, or a fresh re-scan of `Content/Paks` (`content_pak`) /
+/// `Plugins/` (`plugin_leftover`) for the variable kinds — and refuses anything
+/// else, so the webview cannot direct a delete to an arbitrary location. The
+/// `path` from the scan is passed through for the safety re-check.
 #[tauri::command]
 pub fn remove_stray_plugin(root: String, kind: String, path: String) -> Result<(), String> {
     let kind = stray_kind_from_str(&kind).ok_or_else(|| "unknown stray kind".to_string())?;
+    // A running game can hold these files locked (a mounted content pak, or a
+    // leftover/loaded plugin DLL), so the delete would fail with a cryptic OS
+    // sharing-violation. Refuse up front with a plain-English message — mirrors the
+    // pak/plugin install guards so the whole delete surface behaves consistently.
+    if crate::commands::shipping_client_running() {
+        return Err("Close Unreal Tournament, then try again.".into());
+    }
     let stray = ncp_host::StrayPlugin {
         kind,
         path: std::path::PathBuf::from(path),
