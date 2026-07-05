@@ -9,6 +9,13 @@
 //! build winning. The launcher reports the canonical slot as `Missing` and
 //! would happily install a second copy, leaving the stray to keep loading.
 //!
+//! It also finds **misplaced content paks**: the only `.pak` that belongs in
+//! `<root>/UnrealTournament/Content/Paks/` is the game's own `UnrealTournament.pak`.
+//! Players sometimes drop mod/content paks there by hand (they belong in
+//! `Saved/Paks/DownloadedPaks/`, which the launcher manages) — an extra pak in the
+//! shipped-content folder loads unconditionally and causes hard-to-diagnose
+//! content conflicts and crashes.
+//!
 //! This module finds those stray copies so the UI can warn and offer a guarded
 //! one-click removal. Detection is read-only; removal lives in
 //! [`remove_stray`] and is only ever invoked after explicit user confirmation.
@@ -16,6 +23,11 @@
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
+
+/// The only `.pak` filename that legitimately lives in the game's
+/// `Content/Paks/` folder. Every other `.pak` there is a misplaced content pak.
+/// Compared case-insensitively; extend this if the stock game ever ships more.
+const ALLOWED_CONTENT_PAKS: &[&str] = &["UnrealTournament.pak"];
 
 /// Why a found path is considered a stray NetcodePlus copy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -33,6 +45,13 @@ pub enum StrayKind {
     /// `<root>/UnrealTournament/Plugins/` (archive contents dumped without the
     /// `NetcodePlus/` folder). Not engine-correct.
     LooseInPluginsRoot,
+    /// A `.pak` other than `UnrealTournament.pak` sitting directly in
+    /// `<root>/UnrealTournament/Content/Paks/` — a mod/content pak hand-dropped
+    /// into the shipped-content folder (it belongs in `DownloadedPaks/`). Loads
+    /// unconditionally and causes content conflicts / crashes. Unlike the other
+    /// kinds this is not a single fixed path — the [`StrayPlugin::path`] names the
+    /// specific offending `.pak`.
+    ContentPak,
 }
 
 impl StrayKind {
@@ -52,6 +71,12 @@ impl StrayKind {
             StrayKind::LooseInPluginsRoot => {
                 "NetcodePlus files were unpacked loose instead of into their own \
                  NetcodePlus folder, so the game can't load them correctly."
+            }
+            StrayKind::ContentPak => {
+                "A content pak is in the game's Paks folder, where only the game's \
+                 own UnrealTournament.pak belongs. Extra paks here load no matter \
+                 what and can cause content conflicts and crashes — the launcher \
+                 keeps mod paks in the separate DownloadedPaks folder instead."
             }
         }
     }
@@ -79,6 +104,39 @@ fn engine_plugins_dir(root: &Path) -> PathBuf {
 /// `<root>/UnrealTournament/Plugins` — the correct plugins parent.
 fn game_plugins_dir(root: &Path) -> PathBuf {
     root.join("UnrealTournament").join("Plugins")
+}
+
+/// Whether `name` is a `.pak` that does NOT belong in the game's `Content/Paks`
+/// folder — i.e. a `.pak` (any case) whose filename is not in
+/// [`ALLOWED_CONTENT_PAKS`] (compared case-insensitively, since the Windows
+/// filesystem is case-insensitive).
+fn is_misplaced_content_pak(name: &str) -> bool {
+    let is_pak = std::path::Path::new(name)
+        .extension()
+        .is_some_and(|e| e.eq_ignore_ascii_case("pak"));
+    is_pak
+        && !ALLOWED_CONTENT_PAKS
+            .iter()
+            .any(|allowed| allowed.eq_ignore_ascii_case(name))
+}
+
+/// Every misplaced content pak sitting DIRECTLY in `<root>/…/Content/Paks/`
+/// (non-recursive), sorted by path for a stable order. The single source of
+/// truth for both [`scan_strays`] and the [`remove_stray`] safety re-check, so a
+/// removal can only ever target a path this scan actually flags.
+fn misplaced_content_paks(root: &Path) -> Vec<PathBuf> {
+    let dir = crate::install::ut4_content_paks_dir(root);
+    let Ok(entries) = std::fs::read_dir(&dir) else {
+        return Vec::new();
+    };
+    let mut paks: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter(|e| is_misplaced_content_pak(&e.file_name().to_string_lossy()))
+        .map(|e| e.path())
+        .collect();
+    paks.sort();
+    paks
 }
 
 /// Scan a UT4 install `root` for stray / misplaced NetcodePlus copies.
@@ -120,6 +178,15 @@ pub fn scan_strays(root: &Path) -> Vec<StrayPlugin> {
         });
     }
 
+    // 4. Any .pak other than UnrealTournament.pak in Content/Paks — one stray per
+    //    offending file (there can be several).
+    for pak in misplaced_content_paks(root) {
+        strays.push(StrayPlugin {
+            kind: StrayKind::ContentPak,
+            path: pak,
+        });
+    }
+
     strays
 }
 
@@ -150,18 +217,36 @@ pub enum StrayRemoveError {
 /// directory tree; [`StrayKind::LooseInPluginsRoot`] removes just the loose
 /// `NetcodePlus.uplugin` file (it cannot safely guess which other loose files
 /// belonged to the plugin, so it clears the marker and lets a clean install
-/// repopulate the correct folder).
+/// repopulate the correct folder). [`StrayKind::ContentPak`] removes just the one
+/// offending `.pak` file, and — since its path is variable — re-derives the check
+/// by re-scanning: the delete proceeds only if the path is one
+/// [`scan_strays`]/`misplaced_content_paks` currently flags (never the game's own
+/// `UnrealTournament.pak`, never a path outside `Content/Paks`).
 ///
 /// # Errors
 /// [`StrayRemoveError::NotAStray`] if the path does not match a recomputed
 /// stray location, or [`StrayRemoveError::Io`] on a filesystem error.
 pub fn remove_stray(root: &Path, stray: &StrayPlugin) -> Result<(), StrayRemoveError> {
+    // ContentPak is not a single fixed location: re-scan Content/Paks and only
+    // delete `stray.path` if it is one of the paks that scan CURRENTLY flags as
+    // misplaced (right folder, `.pak`, not the allowlisted game pak). Same
+    // "recompute, don't trust the webview payload" gate the fixed-path kinds get
+    // below — a tampered path can't escape the flagged set.
+    if stray.kind == StrayKind::ContentPak {
+        if !misplaced_content_paks(root).contains(&stray.path) {
+            return Err(StrayRemoveError::NotAStray);
+        }
+        std::fs::remove_file(&stray.path)?;
+        return Ok(());
+    }
+
     let expected = match stray.kind {
         StrayKind::EnginePlugins => engine_plugins_dir(root),
         StrayKind::NestedTooDeep => game_plugins_dir(root)
             .join("NetcodePlus")
             .join("NetcodePlus"),
         StrayKind::LooseInPluginsRoot => game_plugins_dir(root).join("NetcodePlus.uplugin"),
+        StrayKind::ContentPak => unreachable!("ContentPak handled above"),
     };
     if stray.path != expected {
         return Err(StrayRemoveError::NotAStray);
@@ -283,5 +368,107 @@ mod tests {
         remove_stray(tmp.path(), &stray).unwrap();
         assert!(!uplugin.exists());
         assert!(plugins.is_dir(), "the Plugins dir itself must survive");
+    }
+
+    fn content_paks_dir(root: &Path) -> PathBuf {
+        crate::install::ut4_content_paks_dir(root)
+    }
+
+    #[test]
+    fn detects_misplaced_content_pak_only() {
+        let tmp = TempDir::new().unwrap();
+        let paks = content_paks_dir(tmp.path());
+        mk_dir(&paks);
+        // The game's own pak belongs here; a `.sig` is not a `.pak`.
+        fs::write(paks.join("UnrealTournament.pak"), b"game").unwrap();
+        fs::write(paks.join("UnrealTournament.sig"), b"sig").unwrap();
+        // A hand-dropped mod pak is the stray.
+        fs::write(paks.join("NCWepMut-WindowsNoEditor.pak"), b"mod").unwrap();
+
+        let pak_strays: Vec<_> = scan_strays(tmp.path())
+            .into_iter()
+            .filter(|s| s.kind == StrayKind::ContentPak)
+            .collect();
+        assert_eq!(pak_strays.len(), 1);
+        assert_eq!(
+            pak_strays[0].path,
+            paks.join("NCWepMut-WindowsNoEditor.pak")
+        );
+    }
+
+    #[test]
+    fn allowlists_game_pak_case_insensitively_and_catches_uppercase_ext() {
+        let tmp = TempDir::new().unwrap();
+        let paks = content_paks_dir(tmp.path());
+        mk_dir(&paks);
+        // Different case of the allowlisted name must NOT be flagged.
+        fs::write(paks.join("unrealtournament.pak"), b"game").unwrap();
+        // An uppercase `.PAK` extension on a mod pak still counts.
+        fs::write(paks.join("Mod-WindowsNoEditor.PAK"), b"mod").unwrap();
+
+        let pak_strays: Vec<_> = scan_strays(tmp.path())
+            .into_iter()
+            .filter(|s| s.kind == StrayKind::ContentPak)
+            .collect();
+        assert_eq!(pak_strays.len(), 1);
+        assert_eq!(pak_strays[0].path, paks.join("Mod-WindowsNoEditor.PAK"));
+    }
+
+    #[test]
+    fn remove_content_pak_deletes_only_that_file() {
+        let tmp = TempDir::new().unwrap();
+        let paks = content_paks_dir(tmp.path());
+        mk_dir(&paks);
+        let game = paks.join("UnrealTournament.pak");
+        let mod_pak = paks.join("SomeMod-WindowsNoEditor.pak");
+        fs::write(&game, b"game").unwrap();
+        fs::write(&mod_pak, b"mod").unwrap();
+
+        let stray = StrayPlugin {
+            kind: StrayKind::ContentPak,
+            path: mod_pak.clone(),
+        };
+        remove_stray(tmp.path(), &stray).unwrap();
+        assert!(!mod_pak.exists(), "the misplaced pak is removed");
+        assert!(game.is_file(), "the game's own pak must survive");
+    }
+
+    #[test]
+    fn remove_content_pak_refuses_the_game_pak() {
+        let tmp = TempDir::new().unwrap();
+        let paks = content_paks_dir(tmp.path());
+        mk_dir(&paks);
+        let game = paks.join("UnrealTournament.pak");
+        fs::write(&game, b"game").unwrap();
+
+        // A payload claiming the allowlisted game pak is a stray must be refused.
+        let evil = StrayPlugin {
+            kind: StrayKind::ContentPak,
+            path: game.clone(),
+        };
+        assert!(matches!(
+            remove_stray(tmp.path(), &evil),
+            Err(StrayRemoveError::NotAStray)
+        ));
+        assert!(game.is_file(), "the game pak must not be deleted");
+    }
+
+    #[test]
+    fn remove_content_pak_refuses_a_path_outside_the_paks_dir() {
+        let tmp = TempDir::new().unwrap();
+        mk_dir(&content_paks_dir(tmp.path()));
+        // A `.pak` path that is NOT inside Content/Paks must be refused, even
+        // though the name isn't allowlisted.
+        let outside = tmp.path().join("evil.pak");
+        fs::write(&outside, b"x").unwrap();
+        let evil = StrayPlugin {
+            kind: StrayKind::ContentPak,
+            path: outside.clone(),
+        };
+        assert!(matches!(
+            remove_stray(tmp.path(), &evil),
+            Err(StrayRemoveError::NotAStray)
+        ));
+        assert!(outside.is_file(), "a path outside Paks must not be deleted");
     }
 }

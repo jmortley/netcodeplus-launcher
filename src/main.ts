@@ -598,11 +598,13 @@ async function doInstallPaks(sink: HTMLElement | null): Promise<boolean> {
   }
 }
 
-// Warn about stray / misplaced NetcodePlus copies (e.g. a hand-install dropped
-// into Engine/Plugins, which double-loads). Renders prominent warnings into
-// #stray-panel with a confirm-gated "Fix this" that removes the stray. Silent
-// when everything is in the right place. Aimed at non-tech-savvy testers, so
-// the copy is plain-English and the destructive action requires an OS confirm.
+// Warn about misplaced files inside a UT4 install: a stray NetcodePlus copy
+// (e.g. a hand-install dropped into Engine/Plugins, which double-loads) OR a
+// content pak dropped into the game's Content/Paks folder (where only
+// UnrealTournament.pak belongs). Renders prominent warnings into #stray-panel
+// with a confirm-gated "Fix this" that removes the offender. Silent when
+// everything is in the right place. Aimed at non-tech-savvy testers, so the copy
+// is plain-English and the destructive action requires an OS confirm.
 async function renderStrays(): Promise<void> {
   const panel = document.getElementById("stray-panel");
   if (!panel) return;
@@ -630,7 +632,7 @@ async function renderStrays(): Promise<void> {
   }
   panel.innerHTML = `
     <div class="stray-card">
-      <div class="stray-title">⚠ NetcodePlus is in the wrong place</div>
+      <div class="stray-title">⚠ Files are in the wrong place</div>
       ${rows
         .map(
           (r, i) => `<div class="stray-row">
@@ -652,8 +654,8 @@ async function renderStrays(): Promise<void> {
 
 async function fixStray(root: string, stray: StrayReport, btn: HTMLButtonElement): Promise<void> {
   const ok = await confirm(
-    `${stray.explanation}\n\nRemove this misplaced copy?\n\n${stray.path}`,
-    { title: "Fix NetcodePlus install", kind: "warning" },
+    `${stray.explanation}\n\nRemove this misplaced file?\n\n${stray.path}`,
+    { title: "Remove misplaced file", kind: "warning" },
   );
   if (!ok) return;
   const statusEl = btn.parentElement?.querySelector<HTMLElement>(".stray-status");

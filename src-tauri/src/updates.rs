@@ -1447,6 +1447,7 @@ fn stray_kind_str(k: ncp_host::StrayKind) -> &'static str {
         ncp_host::StrayKind::EnginePlugins => "engine_plugins",
         ncp_host::StrayKind::NestedTooDeep => "nested_too_deep",
         ncp_host::StrayKind::LooseInPluginsRoot => "loose_in_plugins_root",
+        ncp_host::StrayKind::ContentPak => "content_pak",
     }
 }
 
@@ -1455,6 +1456,7 @@ fn stray_kind_from_str(s: &str) -> Option<ncp_host::StrayKind> {
         "engine_plugins" => Some(ncp_host::StrayKind::EnginePlugins),
         "nested_too_deep" => Some(ncp_host::StrayKind::NestedTooDeep),
         "loose_in_plugins_root" => Some(ncp_host::StrayKind::LooseInPluginsRoot),
+        "content_pak" => Some(ncp_host::StrayKind::ContentPak),
         _ => None,
     }
 }
@@ -1485,9 +1487,10 @@ pub fn scan_strays() -> Vec<InstallStrays> {
 /// Remove one stray copy after the user confirmed it in the UI.
 ///
 /// `root` + `kind` identify the stray; `ncp_host::remove_stray` recomputes the
-/// expected path under `root` for that kind and refuses anything else, so the
-/// webview cannot direct a delete to an arbitrary location. The `path` from the
-/// scan is passed through for the safety re-check.
+/// expected stray location(s) under `root` for that kind — a fixed path for the
+/// plugin kinds, or a fresh re-scan of `Content/Paks` for `content_pak` — and
+/// refuses anything else, so the webview cannot direct a delete to an arbitrary
+/// location. The `path` from the scan is passed through for the safety re-check.
 #[tauri::command]
 pub fn remove_stray_plugin(root: String, kind: String, path: String) -> Result<(), String> {
     let kind = stray_kind_from_str(&kind).ok_or_else(|| "unknown stray kind".to_string())?;

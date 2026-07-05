@@ -499,7 +499,8 @@ fn has_ue4_shipping_exe(root: &Path) -> bool {
 }
 
 /// `<root>/UnrealTournament/Content/Paks/` — the shipped game content.
-fn ut4_content_paks_dir(root: &Path) -> PathBuf {
+/// `pub(crate)` so [`crate::stray`] can scan it for misplaced content paks.
+pub(crate) fn ut4_content_paks_dir(root: &Path) -> PathBuf {
     root.join(GAME_NAME).join("Content").join("Paks")
 }
 
