@@ -9,10 +9,12 @@
 //! build winning. The launcher reports the canonical slot as `Missing` and
 //! would happily install a second copy, leaving the stray to keep loading.
 //!
-//! It also finds **misplaced content paks**: the only `.pak` that belongs in
-//! `<root>/UnrealTournament/Content/Paks/` is the game's own stock pak (the cooked
-//! `UnrealTournament-WindowsNoEditor.pak`; see [`ALLOWED_CONTENT_PAKS`]).
-//! Players sometimes drop mod/content paks there by hand (they belong in
+//! It also finds **misplaced content paks**: the `.pak`s that belong in
+//! `<root>/UnrealTournament/Content/Paks/` are the game's own stock pak (the cooked
+//! `UnrealTournament-WindowsNoEditor.pak`) plus a short list of known-good community
+//! paks that intentionally live there (see [`ALLOWED_CONTENT_PAKS`]).
+//! Players sometimes drop the launcher-managed NCP mod paks there by hand (those
+//! belong in
 //! `Saved/Paks/DownloadedPaks/`, which the launcher manages) — an extra pak in the
 //! shipped-content folder loads unconditionally and causes hard-to-diagnose
 //! content conflicts and crashes.
@@ -32,8 +34,9 @@ use std::path::{Path, PathBuf};
 use serde::{Deserialize, Serialize};
 
 /// The `.pak` filenames that legitimately live in the game's `Content/Paks/`
-/// folder — the stock game content paks. Every OTHER `.pak` there is a misplaced
-/// content pak.
+/// folder and must NOT be flagged as misplaced — the stock game content paks PLUS
+/// known-good community paks that intentionally belong there. Every OTHER `.pak`
+/// in that folder is treated as a misplaced content pak.
 ///
 /// The real stock pak is the cooked name **`UnrealTournament-WindowsNoEditor.pak`**
 /// (verified against a live install) — NOT `UnrealTournament.pak`. That distinction
@@ -42,16 +45,24 @@ use serde::{Deserialize, Serialize};
 ///
 /// Every KNOWN Epic-shipped stock pak name is listed defensively — the server and
 /// Linux cooked variants too — even though the current UI only scans client roots.
-/// The downside of an extra allowlist entry is nil (these are never mod paks); the
-/// downside of a MISSING one is catastrophic (offering to delete the game's own
-/// content). The plain `UnrealTournament.pak` is kept for editor/other variants.
-/// Compared case-insensitively; extend this if a variant ships another stock pak.
+/// The downside of an extra allowlist entry is nil (these are never the NCP mod
+/// paks the launcher manages); the downside of a MISSING one is bad (offering to
+/// delete a legitimate pak — the game's own content, a plugin's, or a hub-endorsed
+/// crash-fix). Compared case-insensitively; extend this as more legit paks surface.
 const ALLOWED_CONTENT_PAKS: &[&str] = &[
+    // Stock game content (Epic-shipped, all cooked variants).
     "UnrealTournament-WindowsNoEditor.pak",
     "UnrealTournament-WindowsServer.pak",
     "UnrealTournament-LinuxNoEditor.pak",
     "UnrealTournament-LinuxServer.pak",
     "UnrealTournament.pak",
+    // Known-good community paks that intentionally live in Content/Paks (NOT the
+    // launcher-managed NCP mod paks, which belong in DownloadedPaks):
+    //   - UltiCross: aldehir's cross-hub travel plugin's content pak.
+    //   - SM_EffectCapsule…_P_1: phantaci's hub-endorsed override pak that fixes an
+    //     occasional map-change crash (players are explicitly told to drop it here).
+    "UltiCross-WindowsNoEditor.pak",
+    "SM_EffectCapsule-WindowsNoEditor_P_1.pak",
 ];
 
 /// Why a found path is considered a stray NetcodePlus copy.
@@ -521,6 +532,35 @@ mod tests {
             .collect();
         assert_eq!(pak_strays.len(), 1, "only the mod pak, never any stock pak");
         assert_eq!(pak_strays[0].path, paks.join("SomeMod-WindowsNoEditor.pak"));
+    }
+
+    #[test]
+    fn allowlists_known_good_community_paks_by_name() {
+        // Explicit regression guard for the specific community paks that live in
+        // Content/Paks on purpose (the iterating test above would still pass if
+        // these were dropped from the const — this one pins the exact names).
+        let tmp = TempDir::new().unwrap();
+        let paks = content_paks_dir(tmp.path());
+        mk_dir(&paks);
+        fs::write(paks.join("UltiCross-WindowsNoEditor.pak"), b"ulticross").unwrap();
+        fs::write(
+            paks.join("SM_EffectCapsule-WindowsNoEditor_P_1.pak"),
+            b"crashfix",
+        )
+        .unwrap();
+        // Case-insensitive, and a genuine mod pak alongside is still flagged.
+        fs::write(paks.join("ulticross-windowsnoeditor.pak"), b"case").unwrap();
+        fs::write(paks.join("NCWepMut-WindowsNoEditor.pak"), b"mod").unwrap();
+
+        let pak_strays: Vec<_> = scan_strays(tmp.path())
+            .into_iter()
+            .filter(|s| s.kind == StrayKind::ContentPak)
+            .collect();
+        assert_eq!(pak_strays.len(), 1, "only the real mod pak is a stray");
+        assert_eq!(
+            pak_strays[0].path,
+            paks.join("NCWepMut-WindowsNoEditor.pak")
+        );
     }
 
     #[test]
