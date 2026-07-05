@@ -16,6 +16,12 @@
 //! shipped-content folder loads unconditionally and causes hard-to-diagnose
 //! content conflicts and crashes.
 //!
+//! Finally it finds **leftover install dirs** — `.NetcodePlus.old.*` (a moved-
+//! aside previous build) or `.NetcodePlus.staging.*` (an interrupted extraction)
+//! in `<root>/UnrealTournament/Plugins/`. The installer normally clears these, but
+//! one can linger when it was file-locked by a running game; surfacing it here
+//! gives a way to clear it WITHOUT triggering a full plugin reinstall.
+//!
 //! This module finds those stray copies so the UI can warn and offer a guarded
 //! one-click removal. Detection is read-only; removal lives in
 //! [`remove_stray`] and is only ever invoked after explicit user confirmation.
@@ -52,6 +58,14 @@ pub enum StrayKind {
     /// kinds this is not a single fixed path — the [`StrayPlugin::path`] names the
     /// specific offending `.pak`.
     ContentPak,
+    /// A leftover `.NetcodePlus.old.*` (moved-aside previous build) or
+    /// `.NetcodePlus.staging.*` (interrupted extraction) directory in
+    /// `<root>/UnrealTournament/Plugins/`. The launcher's own installer normally
+    /// clears these, but one can linger if it was file-locked by a running game
+    /// (the phantaci report) — and a `.uplugin` still inside it can be picked up
+    /// by the engine's recursive plugin scan. Variable path — [`StrayPlugin::path`]
+    /// names the specific leftover dir.
+    PluginLeftover,
 }
 
 impl StrayKind {
@@ -77,6 +91,12 @@ impl StrayKind {
                  own UnrealTournament.pak belongs. Extra paks here load no matter \
                  what and can cause content conflicts and crashes — the launcher \
                  keeps mod paks in the separate DownloadedPaks folder instead."
+            }
+            StrayKind::PluginLeftover => {
+                "A leftover NetcodePlus folder from a previous update is still in \
+                 your Plugins folder. It's normally removed automatically, but one \
+                 can get left behind if the game was open during an update — it can \
+                 clutter or confuse the plugin, so it's safe to remove."
             }
         }
     }
@@ -139,6 +159,32 @@ fn misplaced_content_paks(root: &Path) -> Vec<PathBuf> {
     paks
 }
 
+/// Whether `name` is one of the launcher's own leftover install dirs — a
+/// moved-aside previous build (`.NetcodePlus.old.*`) or an interrupted
+/// extraction (`.NetcodePlus.staging.*`). Mirrors the prefixes
+/// `crate::plugin_install::sweep_leftovers` cleans, so the two never disagree.
+fn is_plugin_leftover_name(name: &str) -> bool {
+    name.starts_with(".NetcodePlus.old.") || name.starts_with(".NetcodePlus.staging.")
+}
+
+/// Every leftover `.NetcodePlus.old.*` / `.NetcodePlus.staging.*` DIRECTORY
+/// sitting directly in `<root>/UnrealTournament/Plugins/` (non-recursive), sorted
+/// for a stable order. Single source of truth for both [`scan_strays`] and the
+/// [`remove_stray`] safety re-check.
+fn plugin_leftover_dirs(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(game_plugins_dir(root)) else {
+        return Vec::new();
+    };
+    let mut dirs: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_dir()).unwrap_or(false))
+        .filter(|e| is_plugin_leftover_name(&e.file_name().to_string_lossy()))
+        .map(|e| e.path())
+        .collect();
+    dirs.sort();
+    dirs
+}
+
 /// Scan a UT4 install `root` for stray / misplaced NetcodePlus copies.
 ///
 /// Read-only. Returns every stray found (there can be more than one). The
@@ -187,6 +233,15 @@ pub fn scan_strays(root: &Path) -> Vec<StrayPlugin> {
         });
     }
 
+    // 5. Leftover .NetcodePlus.old.* / .staging.* dirs the installer couldn't
+    //    clear (e.g. locked by a running game) — one stray per leftover.
+    for leftover in plugin_leftover_dirs(root) {
+        strays.push(StrayPlugin {
+            kind: StrayKind::PluginLeftover,
+            path: leftover,
+        });
+    }
+
     strays
 }
 
@@ -217,11 +272,13 @@ pub enum StrayRemoveError {
 /// directory tree; [`StrayKind::LooseInPluginsRoot`] removes just the loose
 /// `NetcodePlus.uplugin` file (it cannot safely guess which other loose files
 /// belonged to the plugin, so it clears the marker and lets a clean install
-/// repopulate the correct folder). [`StrayKind::ContentPak`] removes just the one
-/// offending `.pak` file, and — since its path is variable — re-derives the check
-/// by re-scanning: the delete proceeds only if the path is one
-/// [`scan_strays`]/`misplaced_content_paks` currently flags (never the game's own
-/// `UnrealTournament.pak`, never a path outside `Content/Paks`).
+/// repopulate the correct folder). [`StrayKind::ContentPak`] and
+/// [`StrayKind::PluginLeftover`] have VARIABLE paths, so instead of recomputing a
+/// fixed location they re-derive the check by re-scanning: the delete proceeds
+/// only if the path is one the current scan still flags — ContentPak removes the
+/// one offending `.pak` (never the game's own `UnrealTournament.pak`, never a path
+/// outside `Content/Paks`); PluginLeftover removes the one leftover dir (only a
+/// `.NetcodePlus.old.*` / `.staging.*` directly in `Plugins/`).
 ///
 /// # Errors
 /// [`StrayRemoveError::NotAStray`] if the path does not match a recomputed
@@ -240,13 +297,27 @@ pub fn remove_stray(root: &Path, stray: &StrayPlugin) -> Result<(), StrayRemoveE
         return Ok(());
     }
 
+    // PluginLeftover is also a variable path: re-scan the Plugins folder and only
+    // delete `stray.path` if it is one of the leftover dirs scan CURRENTLY flags
+    // (`.NetcodePlus.old.*` / `.staging.*` directly in Plugins/). A still file-
+    // locked leftover (game open) surfaces the OS error to the UI ("close UT4").
+    if stray.kind == StrayKind::PluginLeftover {
+        if !plugin_leftover_dirs(root).contains(&stray.path) {
+            return Err(StrayRemoveError::NotAStray);
+        }
+        std::fs::remove_dir_all(&stray.path)?;
+        return Ok(());
+    }
+
     let expected = match stray.kind {
         StrayKind::EnginePlugins => engine_plugins_dir(root),
         StrayKind::NestedTooDeep => game_plugins_dir(root)
             .join("NetcodePlus")
             .join("NetcodePlus"),
         StrayKind::LooseInPluginsRoot => game_plugins_dir(root).join("NetcodePlus.uplugin"),
-        StrayKind::ContentPak => unreachable!("ContentPak handled above"),
+        StrayKind::ContentPak | StrayKind::PluginLeftover => {
+            unreachable!("variable-path kinds handled above")
+        }
     };
     if stray.path != expected {
         return Err(StrayRemoveError::NotAStray);
@@ -470,5 +541,62 @@ mod tests {
             Err(StrayRemoveError::NotAStray)
         ));
         assert!(outside.is_file(), "a path outside Paks must not be deleted");
+    }
+
+    #[test]
+    fn detects_plugin_leftover_dirs_but_not_a_real_install() {
+        let tmp = TempDir::new().unwrap();
+        let plugins = game_plugins_dir(tmp.path());
+        // The correct install must NOT be flagged as a leftover.
+        mk_dir(&plugins.join("NetcodePlus").join("Binaries"));
+        // Two leftovers the installer couldn't clear + one unrelated plugin.
+        mk_dir(&plugins.join(".NetcodePlus.old.4242"));
+        mk_dir(&plugins.join(".NetcodePlus.staging.99"));
+        mk_dir(&plugins.join("UltiCross"));
+
+        let leftovers: Vec<_> = scan_strays(tmp.path())
+            .into_iter()
+            .filter(|s| s.kind == StrayKind::PluginLeftover)
+            .map(|s| s.path)
+            .collect();
+        assert_eq!(leftovers.len(), 2);
+        assert!(leftovers.contains(&plugins.join(".NetcodePlus.old.4242")));
+        assert!(leftovers.contains(&plugins.join(".NetcodePlus.staging.99")));
+    }
+
+    #[test]
+    fn remove_plugin_leftover_deletes_only_that_dir() {
+        let tmp = TempDir::new().unwrap();
+        let plugins = game_plugins_dir(tmp.path());
+        let leftover = plugins.join(".NetcodePlus.old.4242");
+        mk_dir(&leftover.join("Binaries"));
+        let good = plugins.join("NetcodePlus");
+        mk_dir(&good.join("Binaries"));
+
+        let stray = StrayPlugin {
+            kind: StrayKind::PluginLeftover,
+            path: leftover.clone(),
+        };
+        remove_stray(tmp.path(), &stray).unwrap();
+        assert!(!leftover.exists(), "the leftover dir is removed");
+        assert!(good.is_dir(), "the real install must survive");
+    }
+
+    #[test]
+    fn remove_plugin_leftover_refuses_a_non_leftover_dir() {
+        let tmp = TempDir::new().unwrap();
+        let plugins = game_plugins_dir(tmp.path());
+        // The real install dir is not a leftover — a payload naming it is refused.
+        let good = plugins.join("NetcodePlus");
+        mk_dir(&good.join("Binaries"));
+        let evil = StrayPlugin {
+            kind: StrayKind::PluginLeftover,
+            path: good.clone(),
+        };
+        assert!(matches!(
+            remove_stray(tmp.path(), &evil),
+            Err(StrayRemoveError::NotAStray)
+        ));
+        assert!(good.is_dir(), "the real install must not be deleted");
     }
 }

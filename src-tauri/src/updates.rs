@@ -1448,6 +1448,7 @@ fn stray_kind_str(k: ncp_host::StrayKind) -> &'static str {
         ncp_host::StrayKind::NestedTooDeep => "nested_too_deep",
         ncp_host::StrayKind::LooseInPluginsRoot => "loose_in_plugins_root",
         ncp_host::StrayKind::ContentPak => "content_pak",
+        ncp_host::StrayKind::PluginLeftover => "plugin_leftover",
     }
 }
 
@@ -1457,6 +1458,7 @@ fn stray_kind_from_str(s: &str) -> Option<ncp_host::StrayKind> {
         "nested_too_deep" => Some(ncp_host::StrayKind::NestedTooDeep),
         "loose_in_plugins_root" => Some(ncp_host::StrayKind::LooseInPluginsRoot),
         "content_pak" => Some(ncp_host::StrayKind::ContentPak),
+        "plugin_leftover" => Some(ncp_host::StrayKind::PluginLeftover),
         _ => None,
     }
 }
