@@ -284,9 +284,65 @@ pub enum StrayRemoveError {
     /// webview-supplied path can never direct a delete somewhere arbitrary.
     #[error("refused to remove a path that is not a recognised stray location")]
     NotAStray,
+    /// A directory component on the way to the target is a symlink or junction —
+    /// refuse. This is the load-bearing guard for the ELEVATED removal path: an
+    /// attacker who plants a junction on `Content/Paks` (or `Plugins`) inside a
+    /// fake install they own could otherwise redirect the re-scan AND the delete
+    /// through it into a protected location, turning the admin-integrity worker
+    /// into an arbitrary-file-delete primitive. A genuine UT4 install has no
+    /// reparse points in these paths, so this never rejects a legitimate stray.
+    #[error("refused: the path crosses a symlink or junction")]
+    UnsafePath,
     /// Filesystem error during removal.
     #[error("could not remove stray plugin: {0}")]
     Io(#[from] std::io::Error),
+}
+
+/// Whether `p` itself is a reparse point — a symlink OR a directory junction /
+/// mount point. On Windows this checks `FILE_ATTRIBUTE_REPARSE_POINT` directly
+/// because Rust's `FileType::is_symlink()` reports `false` for junctions
+/// (`IO_REPARSE_TAG_MOUNT_POINT`) — the exact reparse kind `mklink /J` creates and
+/// the one a local attacker uses to redirect the delete. `symlink_metadata` does
+/// NOT follow the final component, so a junction's own attributes are inspected.
+#[cfg(windows)]
+fn is_reparse_point(p: &Path) -> bool {
+    use std::os::windows::fs::MetadataExt;
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x400;
+    std::fs::symlink_metadata(p)
+        .map(|m| m.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0)
+        .unwrap_or(false)
+}
+
+/// Non-Windows: a symlink is the only reparse kind that matters (in-prefix Linux
+/// installs). `symlink_metadata` inspects the link itself, not its target.
+#[cfg(not(windows))]
+fn is_reparse_point(p: &Path) -> bool {
+    std::fs::symlink_metadata(p)
+        .map(|m| m.file_type().is_symlink())
+        .unwrap_or(false)
+}
+
+/// Whether the path from `root` down to `target` crosses a reparse point at ANY
+/// component (including `root` and `target` themselves) — or `target` is not a
+/// descendant of `root`. All of this module's delete targets are built by joining
+/// fixed components onto `root`, so a genuine install yields an all-real chain;
+/// any junction/symlink in the chain means an attacker may be redirecting the
+/// delete out of the real install and the removal MUST be refused.
+fn path_crosses_reparse_point(root: &Path, target: &Path) -> bool {
+    let Ok(rel) = target.strip_prefix(root) else {
+        return true; // target not lexically under root — treat as unsafe
+    };
+    if is_reparse_point(root) {
+        return true;
+    }
+    let mut cur = root.to_path_buf();
+    for comp in rel.components() {
+        cur.push(comp);
+        if is_reparse_point(&cur) {
+            return true;
+        }
+    }
+    false
 }
 
 /// Remove a single stray copy, re-validating that `stray.path` is exactly one
@@ -312,9 +368,15 @@ pub enum StrayRemoveError {
 /// outside `Content/Paks`); PluginLeftover removes the one leftover dir (only a
 /// `.NetcodePlus.old.*` / `.staging.*` directly in `Plugins/`).
 ///
+/// Before any delete it also refuses if the path from `root` to the target
+/// crosses a symlink or junction ([`StrayRemoveError::UnsafePath`]) — the guard
+/// that keeps the elevated removal worker from being redirected through an
+/// attacker-planted reparse point into a protected location.
+///
 /// # Errors
 /// [`StrayRemoveError::NotAStray`] if the path does not match a recomputed
-/// stray location, or [`StrayRemoveError::Io`] on a filesystem error.
+/// stray location, [`StrayRemoveError::UnsafePath`] if the path crosses a
+/// symlink/junction, or [`StrayRemoveError::Io`] on a filesystem error.
 pub fn remove_stray(root: &Path, stray: &StrayPlugin) -> Result<(), StrayRemoveError> {
     // ContentPak is not a single fixed location: re-scan Content/Paks and only
     // delete `stray.path` if it is one of the paks that scan CURRENTLY flags as
@@ -330,6 +392,12 @@ pub fn remove_stray(root: &Path, stray: &StrayPlugin) -> Result<(), StrayRemoveE
             } else {
                 Ok(())
             };
+        }
+        // The re-scan above enumerates THROUGH any junction on Content/Paks, so a
+        // membership match alone is not enough for an elevated delete: refuse if
+        // any component from root to the target is a reparse point.
+        if path_crosses_reparse_point(root, &stray.path) {
+            return Err(StrayRemoveError::UnsafePath);
         }
         std::fs::remove_file(&stray.path)?;
         return Ok(());
@@ -349,6 +417,11 @@ pub fn remove_stray(root: &Path, stray: &StrayPlugin) -> Result<(), StrayRemoveE
                 Ok(())
             };
         }
+        // Same junction defense as ContentPak: a reparse point on Plugins/ (or an
+        // ancestor) could redirect this recursive delete out of the real install.
+        if path_crosses_reparse_point(root, &stray.path) {
+            return Err(StrayRemoveError::UnsafePath);
+        }
         std::fs::remove_dir_all(&stray.path)?;
         return Ok(());
     }
@@ -365,6 +438,11 @@ pub fn remove_stray(root: &Path, stray: &StrayPlugin) -> Result<(), StrayRemoveE
     };
     if stray.path != expected {
         return Err(StrayRemoveError::NotAStray);
+    }
+    // Junction defense for the fixed-path kinds too (they also delete via the
+    // elevated worker on an access-denied first attempt).
+    if path_crosses_reparse_point(root, &expected) {
+        return Err(StrayRemoveError::UnsafePath);
     }
 
     match stray.kind {
@@ -710,5 +788,72 @@ mod tests {
             Err(StrayRemoveError::NotAStray)
         ));
         assert!(good.is_dir(), "the real install must not be deleted");
+    }
+
+    #[test]
+    fn reparse_guard_is_inert_for_a_normal_install_path() {
+        // A genuine install has no reparse points on the way to a pak, so the
+        // junction guard must NOT reject legitimate removals (regression guard for
+        // the fix not breaking the feature).
+        let tmp = TempDir::new().unwrap();
+        let paks = content_paks_dir(tmp.path());
+        mk_dir(&paks);
+        let pak = paks.join("SomeMod-WindowsNoEditor.pak");
+        assert!(!path_crosses_reparse_point(tmp.path(), &pak));
+        fs::write(&pak, b"mod").unwrap();
+        let stray = StrayPlugin {
+            kind: StrayKind::ContentPak,
+            path: pak.clone(),
+        };
+        remove_stray(tmp.path(), &stray).unwrap();
+        assert!(!pak.exists());
+    }
+
+    #[test]
+    fn path_outside_root_is_unsafe() {
+        // A target not lexically under root is treated as reparse-unsafe.
+        let tmp = TempDir::new().unwrap();
+        assert!(path_crosses_reparse_point(
+            &tmp.path().join("root"),
+            std::path::Path::new("C:/Windows/System32/x.pak")
+        ));
+    }
+
+    // The junction/symlink escalation the security review found: a Content/Paks
+    // reached through a reparse point must be refused, and the file behind it must
+    // survive — even though the re-scan enumerates through the link. Creating a
+    // symlink needs privilege/Developer Mode, so this SKIPS where it can't run
+    // rather than failing CI; the same FILE_ATTRIBUTE_REPARSE_POINT check covers
+    // `mklink /J` junctions (which need no privilege) identically.
+    #[cfg(windows)]
+    #[test]
+    fn remove_content_pak_refuses_a_reparse_paks_dir() {
+        let tmp = TempDir::new().unwrap();
+        let target = tmp.path().join("attacker_target");
+        mk_dir(&target);
+        let victim = target.join("Victim-WindowsNoEditor.pak");
+        fs::write(&victim, b"victim").unwrap();
+
+        let root = tmp.path().join("fake");
+        let paks = content_paks_dir(&root); // <root>/UnrealTournament/Content/Paks
+        mk_dir(paks.parent().unwrap()); // .../Content
+        if std::os::windows::fs::symlink_dir(&target, &paks).is_err() {
+            return; // no symlink privilege on this box — cannot exercise here
+        }
+
+        let via_link = paks.join("Victim-WindowsNoEditor.pak");
+        assert!(path_crosses_reparse_point(&root, &via_link));
+        let stray = StrayPlugin {
+            kind: StrayKind::ContentPak,
+            path: via_link,
+        };
+        assert!(matches!(
+            remove_stray(&root, &stray),
+            Err(StrayRemoveError::UnsafePath)
+        ));
+        assert!(
+            victim.is_file(),
+            "the file behind a reparse-point Paks dir must survive"
+        );
     }
 }
