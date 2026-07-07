@@ -102,11 +102,17 @@ fn sweep_leftovers(plugins_dir: &Path) {
 /// under elevation; a plain UN-locked admin-owned leftover is just removed
 /// outright there. Unelevated, both the delete and the schedule are best-effort.
 fn remove_leftover_dir(path: &Path) {
-    if fs::remove_dir_all(path).is_ok() || !path.exists() {
-        return;
-    }
+    // Windows: if removal fails and the tree is still there, it's locked (a
+    // mmap'd DLL held by the running game) — queue a reboot-time delete so the
+    // leftover clears at next boot instead of lingering forever.
     #[cfg(windows)]
-    schedule_tree_delete_on_reboot(path);
+    if fs::remove_dir_all(path).is_err() && path.exists() {
+        schedule_tree_delete_on_reboot(path);
+    }
+    // Elsewhere there is no reboot-delete queue; a best-effort remove is all we
+    // can do, and a locked leftover simply isn't a thing outside Windows.
+    #[cfg(not(windows))]
+    let _ = fs::remove_dir_all(path);
 }
 
 /// Schedule every file, then every directory (deepest-first), then `root` itself
