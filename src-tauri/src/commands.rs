@@ -1375,7 +1375,10 @@ pub fn launcher_update_housekeeping(app: tauri::AppHandle) -> Result<Housekeepin
         current_version: current_version.to_string(),
         // The manual "Update desktop shortcut" button only shows if the in-place
         // repoint above actually failed (locked file / unwritable Desktop).
-        shortcut_needs_update: repoint == ncp_host::ShortcutRepoint::Failed,
+        // Windows-only: the button's `create_launcher_shortcut` command writes a
+        // `.lnk`, which is a stub on Linux — so a Failed Linux `.desktop` repoint
+        // must NOT surface a button that could only ever error.
+        shortcut_needs_update: cfg!(windows) && repoint == ncp_host::ShortcutRepoint::Failed,
     })
 }
 
