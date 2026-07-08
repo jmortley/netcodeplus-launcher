@@ -4239,11 +4239,19 @@ function customNameMap(hubs: GameServerEntry[]): Map<string, string> {
 }
 
 // A match's display title: the host's custom name (keyed by instance GUID), else
-// "<owner>'s match", else "" (the card then promotes "<Mode> in <Map>").
+// the match's own broadcast name (UT_SERVERNAME_s), else "<owner>'s match", else
+// "" (the card then promotes "<Mode> in <Map>").
 function matchTitle(inst: GameServerEntry, names: Map<string, string>): string {
   const guid = String(inst.attributes?.UT_SERVERINSTANCEGUID_s ?? "").toUpperCase();
   const custom = guid ? names.get(guid) : undefined;
   if (custom && custom.trim()) return custom.trim();
+  // The match instance broadcasts its OWN name (UT_SERVERNAME_s): the host-set
+  // match title, or the auto "<Mode> on <Map>". Prefer it over the generic owner
+  // fallback — for a match with no hub-level custom-name entry this is exactly
+  // what stock UT4's browser shows (e.g. "Again!" or "Deathmatch on DM-Tempest"),
+  // whereas the owner is a bare dedicated-server id like "[DS]2e111ee27c62-489".
+  const serverName = String(inst.attributes?.UT_SERVERNAME_s ?? "").trim();
+  if (serverName) return serverName;
   if (inst.ownerName && inst.ownerName.trim()) return `${inst.ownerName.trim()}'s match`;
   return "";
 }
