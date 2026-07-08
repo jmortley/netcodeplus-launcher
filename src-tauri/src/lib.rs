@@ -195,6 +195,7 @@ pub fn run() {
             commands::list_servers,
             commands::hub_pak_versions,
             commands::open_external,
+            commands::reveal_in_folder,
             commands::pug_action,
             commands::pug_status,
             commands::pug_ready,

@@ -806,6 +806,42 @@ pub fn open_external(app: tauri::AppHandle, url: String) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+/// Open the OS file browser with `path` selected, so the user can remove a
+/// misplaced stray file themselves — the safe fallback when the launcher can't
+/// delete it unprivileged (most often because it lives in a Program-Files
+/// install). This is an UNPRIVILEGED shell action that only OPENS a window; the
+/// launcher never performs a privileged delete. Deleting from a protected folder
+/// in Explorer triggers Windows' OWN elevation prompt via the trusted shell —
+/// which is exactly why we hand off here instead of elevating ourselves (a
+/// bespoke elevated delete is a privilege-escalation footgun; see the launcher
+/// handover notes).
+#[tauri::command]
+pub fn reveal_in_folder(path: String) -> Result<(), String> {
+    let p = Path::new(&path);
+    #[cfg(windows)]
+    {
+        // `explorer /select,<path>` highlights the file in its folder. Spawned via
+        // Command (no shell, so the path can't inject). `explorer` returns a
+        // nonzero exit even on success, so spawn and don't inspect status.
+        std::process::Command::new("explorer")
+            .arg(format!("/select,{}", p.display()))
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("couldn't open the folder: {e}"))
+    }
+    #[cfg(not(windows))]
+    {
+        // Best-effort open the containing directory (the stray panel is
+        // Windows-only, so this is not reached from the UI today).
+        let dir = p.parent().unwrap_or(p);
+        std::process::Command::new("xdg-open")
+            .arg(dir)
+            .spawn()
+            .map(|_| ())
+            .map_err(|e| format!("couldn't open the folder: {e}"))
+    }
+}
+
 /// UT4IGBot launcher PUG endpoint (HTTPS via the ut4stats.com Apache
 /// reverse-proxy to the bot's FastAPI app; the proxied path is TLS-terminated).
 const BOT_PUG_URL: &str = "https://ut4stats.com/launcher/pug_action";
