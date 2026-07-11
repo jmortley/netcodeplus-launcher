@@ -827,6 +827,11 @@ pub struct PluginStatusResult {
     pub installs: Vec<PluginInstallStatus>,
     /// `true` when at least one install needs an install/update.
     pub any_update_needed: bool,
+    /// Release-notes URL for the offered build (the manifest entry's
+    /// `notes_url`), if it carries one. The UI shows a "what's new" link when
+    /// an install/update is pending; `None` → the UI falls back to the
+    /// plugin's releases page.
+    pub notes_url: Option<String>,
 }
 
 /// Map a [`ncp_planner::PluginAction`] to its UI discriminant + the installed
@@ -916,6 +921,7 @@ pub async fn plugin_status(
     let channel = manifest.channels.get(&state.channel);
     let entry = channel.and_then(|c| c.plugin.as_ref());
     let available_version = entry.map(|e| e.version);
+    let notes_url = entry.and_then(|e| e.notes_url.clone());
 
     let installs: Vec<PluginInstallStatus> = resolve_roots(roots)
         .into_iter()
@@ -950,6 +956,7 @@ pub async fn plugin_status(
         available_version,
         installs,
         any_update_needed,
+        notes_url,
     })
 }
 
