@@ -671,7 +671,23 @@ async function fixStray(root: string, stray: StrayReport, btn: HTMLButtonElement
     renderAdvanced();
     void loadStatusData();
   } catch (err) {
-    if (statusEl) statusEl.innerHTML = `<span class="warn">Couldn't remove: ${escape(String(err))}</span>`;
+    // The launcher couldn't delete it — most often because it sits in a protected
+    // install (Program Files), where an unprivileged delete is denied. We do NOT
+    // try to elevate and delete ourselves (that's a privilege-escalation footgun);
+    // instead offer to open the folder so the user removes it via the OS shell,
+    // which handles any elevation through Windows' own trusted prompt.
+    if (statusEl) {
+      statusEl.innerHTML =
+        `<span class="warn">${escape(String(err))} </span>` +
+        `<button class="stray-open" type="button">Open folder</button>`;
+      statusEl
+        .querySelector<HTMLButtonElement>(".stray-open")
+        ?.addEventListener("click", () => {
+          void invoke("reveal_in_folder", { path: stray.path }).catch((e) =>
+            console.error("reveal_in_folder failed:", e),
+          );
+        });
+    }
     btn.disabled = false;
     console.error("remove_stray_plugin failed:", err);
   }
