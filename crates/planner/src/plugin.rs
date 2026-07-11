@@ -147,6 +147,7 @@ mod tests {
             url: "https://example.invalid/p.zip".to_string(),
             sha256: Sha256Digest::from_bytes([sha; 32]),
             size_bytes: 100,
+            notes_url: None,
         }
     }
 

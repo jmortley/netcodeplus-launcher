@@ -237,6 +237,15 @@ pub struct PluginEntry {
     /// Declared size of the zip in bytes. A download whose length differs
     /// should be aborted before hashing (cheap resource-exhaustion guard).
     pub size_bytes: u64,
+
+    /// Human-facing release notes for this build — an HTTPS page the launcher
+    /// offers as a "what's new" link when it tells the user a plugin
+    /// install/update is pending. Optional and `#[serde(default)]` in both
+    /// directions: manifests authored without it parse to `None` (the UI falls
+    /// back to the plugin's releases page), and launchers that predate the
+    /// field ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_url: Option<String>,
 }
 
 /// A single pak entry within a [`Channel`].
@@ -636,6 +645,42 @@ mod tests {
         assert_eq!(openal.version, "2023-10-21");
         let reparsed: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(reparsed, m);
+    }
+
+    #[test]
+    fn plugin_notes_url_optional_and_round_trips() {
+        // Back-compat: a plugin entry authored before `notes_url` parses with
+        // `None` (this is every manifest published so far)…
+        let without = r#"{
+            "paks": {},
+            "plugin": {
+                "version": 327,
+                "url": "https://example.invalid/NetcodePlus-327.zip",
+                "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "size_bytes": 1
+            }
+        }"#;
+        let ch: Channel = serde_json::from_str(without).unwrap();
+        assert!(ch.plugin.unwrap().notes_url.is_none());
+
+        // …and an entry carrying one round-trips.
+        let with = r#"{
+            "paks": {},
+            "plugin": {
+                "version": 328,
+                "url": "https://example.invalid/NetcodePlus-328.zip",
+                "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                "size_bytes": 1,
+                "notes_url": "https://example.invalid/notes/328"
+            }
+        }"#;
+        let ch: Channel = serde_json::from_str(with).unwrap();
+        assert_eq!(
+            ch.plugin.as_ref().unwrap().notes_url.as_deref(),
+            Some("https://example.invalid/notes/328")
+        );
+        let reparsed: Channel = serde_json::from_str(&serde_json::to_string(&ch).unwrap()).unwrap();
+        assert_eq!(reparsed, ch);
     }
 
     #[test]

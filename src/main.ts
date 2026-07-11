@@ -53,6 +53,10 @@ interface PluginStatusResult {
   available_version: number | null;
   installs: PluginInstallStatus[];
   any_update_needed: boolean;
+  // Release-notes URL for the offered build (manifest `notes_url`); absent on
+  // manifests authored before the field — the UI falls back to the plugin's
+  // releases page.
+  notes_url?: string | null;
 }
 interface PluginInstallOutcome {
   root: string;
@@ -399,6 +403,16 @@ function sourceText(source: DetectSource): string {
   }
 }
 
+// Where "what's new in this plugin build" lives. Prefer the manifest's signed
+// notes_url (per-build precision, must be https for the gated opener); fall
+// back to the plugin's releases page, which always shows the current build's
+// notes.
+const PLUGIN_NOTES_FALLBACK = "https://github.com/jmortley/NetcodePlusUT4/releases/tag/plugin-latest";
+function pluginNotesUrl(): string {
+  const u = (statusCache.plugin?.notes_url ?? "").trim();
+  return u.startsWith("https://") ? u : PLUGIN_NOTES_FALLBACK;
+}
+
 function netcodeplusBadge(
   status: NetcodePlusStatus,
   root?: string,
@@ -415,7 +429,10 @@ function netcodeplusBadge(
         // The big primary button below is now the UPDATE action (see
         // renderHomeHero), so the badge is just the reason — no separate button.
         const v = availVer != null ? ` (build ${availVer})` : "";
-        return `<span class="warn">⬆&nbsp;NetcodePlus update required${escape(v)} — update before you can play</span>`;
+        return (
+          `<span class="warn">⬆&nbsp;NetcodePlus update required${escape(v)} — update before you can play</span>` +
+          ` <button class="card-link" data-extlink="${escape(pluginNotesUrl())}" type="button">see what's new</button>`
+        );
       }
       // With a root, the badge is a link that opens the plugin folder.
       return root
@@ -1427,7 +1444,7 @@ async function renderDashStatus(): Promise<void> {
         ? `NetcodePlus is not installed${ver} — install it in ${n} UT4 install${n === 1 ? "" : "s"}.`
         : `NetcodePlus update available${ver} — ${n} install${n === 1 ? "" : "s"}.`;
       lines.push(
-        `<div class="statline"><span class="warn">↑</span><span>${escape(msg)}</span></div>
+        `<div class="statline"><span class="warn">↑</span><span>${escape(msg)} <button class="card-link" data-extlink="${escape(pluginNotesUrl())}" type="button">See what's new</button></span></div>
         <button id="plugin-update-btn" type="button" class="btn btn-sm">${freshInstall ? "Install NetcodePlus" : "Update NetcodePlus"}</button>
         <div id="plugin-status" class="launch-status"></div>`,
       );
