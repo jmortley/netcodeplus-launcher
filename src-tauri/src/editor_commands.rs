@@ -245,25 +245,37 @@ pub async fn editor_plugin_status(
         .map(|e| e.synced_plugins.clone())
         .unwrap_or_default();
 
-    // Plugins that can be sideloaded from the registered build tree (if any).
-    let sideloadable: Vec<String> = state
+    // Plugins buildable in the registered build tree (have an editor DLL there).
+    let buildable: HashSet<String> = state
         .build_tree
         .as_deref()
         .map(ncp_host::build_tree_plugins)
-        .unwrap_or_default();
-    let sideloadable_set: HashSet<&str> = sideloadable.iter().map(String::as_str).collect();
+        .unwrap_or_default()
+        .into_iter()
+        .collect();
 
-    // Row per plugin in the union of manifest ∪ build-tree ∪ already-synced, so a
-    // dev sideload is offered even when the signed manifest advertises nothing.
+    // Plugins actually PRESENT on disk in this editor install (with an editor
+    // DLL) — the plugins dir is `<root>/UnrealTournament/Plugins`, which is what
+    // build_tree_plugins scans given the project dir.
+    let project_dir = inst.project.parent().unwrap_or(&inst.root).to_path_buf();
+    let present: HashSet<String> = ncp_host::build_tree_plugins(&project_dir)
+        .into_iter()
+        .collect();
+
+    // Rows = manifest ∪ already-synced ∪ (present in the editor AND buildable) —
+    // so the panel shows the plugins actually in this editor (correctly statused,
+    // not "not installed") plus anything the signed manifest offers, WITHOUT the
+    // build-only server/util plugins (ServerShield, StatSQL, …) that aren't here.
     let mut names: BTreeSet<String> = BTreeSet::new();
     names.extend(manifest.editor_plugins.keys().cloned());
-    names.extend(sideloadable.iter().cloned());
     names.extend(synced.keys().cloned());
+    names.extend(present.intersection(&buildable).cloned());
 
     let mut out = Vec::with_capacity(names.len());
     for plugin in names {
         let entry = manifest.editor_plugins.get(&plugin);
         let installed = synced.get(&plugin);
+        let is_present = present.contains(&plugin);
         let (action, available_version, engine_mismatch, notes_url) = match entry {
             Some(e) => {
                 let d = ncp_host::plan_editor_plugin(installed, e, install_bid.as_deref());
@@ -275,10 +287,13 @@ pub async fn editor_plugin_status(
                 )
             }
             None => {
-                // Not in the signed manifest: sideload-only (or already synced).
+                // Not in the signed manifest.
                 let a = match installed.map(|s| &s.source) {
                     Some(SyncSource::LocalDev { .. }) => "pinned_local_dev",
                     Some(SyncSource::Signed { .. }) => "up_to_date",
+                    // On disk but the launcher didn't install it (hand-copied) →
+                    // "present"; buildable-but-absent → "sideload_only".
+                    None if is_present => "present",
                     None => "sideload_only",
                 };
                 (a.to_string(), None, false, None)
@@ -290,7 +305,7 @@ pub async fn editor_plugin_status(
             source: installed.map(|s| source_str(&s.source).to_string()),
             installed_version: installed.map(|s| s.version),
             available_version,
-            sideloadable: sideloadable_set.contains(plugin.as_str()),
+            sideloadable: buildable.contains(&plugin),
             engine_mismatch,
             notes_url,
         });

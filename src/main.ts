@@ -353,7 +353,7 @@ interface EditorInstall {
 // Per-plugin sync status for an editor install (mirrors EditorPluginStatusDto).
 interface EditorPluginStatus {
   plugin: string;
-  action: "install" | "update" | "up_to_date" | "pinned_local_dev" | "sideload_only";
+  action: "install" | "update" | "up_to_date" | "pinned_local_dev" | "sideload_only" | "present";
   source: "signed" | "local_dev" | null;
   installed_version: number | null;
   available_version: number | null;
@@ -6061,8 +6061,11 @@ function editorPluginRow(root: string, r: EditorPluginStatus): string {
     right = `<span class="muted" style="font-size:.8em">✓ ${r.installed_version != null ? `build ${r.installed_version}` : "installed"}${r.source === "local_dev" ? " (dev)" : ""}</span>`;
   } else if (r.action === "pinned_local_dev") {
     right = `<span class="muted" style="font-size:.8em">dev sideload — pinned</span>`;
+  } else if (r.action === "present") {
+    // On disk already, but not launcher-tracked (e.g. hand-copied earlier).
+    right = `<span class="muted" style="font-size:.8em">✓ installed</span>`;
   } else {
-    // sideload_only — present in the build tree, not in the signed manifest.
+    // sideload_only — buildable, not on disk in this editor.
     right = `<span class="muted" style="font-size:.8em">not installed</span>`;
   }
   const mismatch = r.engine_mismatch
