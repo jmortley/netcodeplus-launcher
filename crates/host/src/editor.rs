@@ -131,6 +131,25 @@ fn is_editor_root(root: &Path) -> bool {
     editor_exe(root).is_file() && uproject(root).is_file()
 }
 
+/// If `dir` isn't itself an editor root but exactly one of its immediate children
+/// is, return that child. Handles the common case of picking the *parent* folder
+/// that contains the editor tree (e.g. `C:\LAEditorUT4` holding
+/// `C:\LAEditorUT4\UnrealTournamentEditor`). Returns `None` for zero matches or
+/// two-plus (ambiguous — the caller should pick the specific one).
+fn find_child_editor_root(dir: &Path) -> Option<PathBuf> {
+    let mut found: Option<PathBuf> = None;
+    for entry in std::fs::read_dir(dir).ok()?.flatten() {
+        let child = entry.path();
+        if child.is_dir() && is_editor_root(&child) {
+            if found.is_some() {
+                return None; // more than one editor install under `dir` — ambiguous
+            }
+            found = Some(child);
+        }
+    }
+    found
+}
+
 /// The standard UT4 editor launch arguments — the community's long-standing
 /// shortcut convention: the project name (a bare `UE4Editor.exe` opens a project
 /// browser instead of UT4), a log window, no shared DDC, and the D3D11/SM5 path
@@ -175,23 +194,30 @@ fn now_ms() -> u64 {
         .unwrap_or(0)
 }
 
-/// Validate that `picked` (or one of its ancestors) is a UT4 editor install root,
-/// returning a fully-populated [`EditorInstall`].
+/// Validate that `picked` resolves to a UT4 editor install root, returning a
+/// fully-populated [`EditorInstall`].
 ///
-/// Like [`crate::install::check_install`], this walks *up* from the picked path,
-/// so a user who picks a subfolder (e.g. the `UnrealTournament\` project dir)
-/// still resolves to the real root. The label defaults to the root folder name.
+/// Resolution tries, in order: `picked` itself or any **ancestor** (so picking a
+/// subfolder such as the `UnrealTournament\` project dir still works, like
+/// [`crate::install::check_install`]); then one level **down** — a lone direct
+/// child of `picked` that is an editor root (so picking the *parent* folder that
+/// holds the editor tree, e.g. `C:\LAEditorUT4` containing `…\UnrealTournamentEditor`,
+/// also works). The label defaults to the root folder name.
 ///
 /// # Errors
 ///
-/// [`EditorError::NotEditorRoot`] if no ancestor is a UT4 editor root.
+/// [`EditorError::NotEditorRoot`] if neither `picked`, an ancestor, nor a single
+/// direct child is a UT4 editor root (a parent holding *several* editor installs
+/// is treated as not-a-root — pick the specific one).
 pub fn check_editor_install(picked: &Path) -> Result<EditorInstall, EditorError> {
-    let root = picked
+    let root: PathBuf = picked
         .ancestors()
         .find(|p| is_editor_root(p))
+        .map(Path::to_path_buf)
+        .or_else(|| find_child_editor_root(picked))
         .ok_or_else(|| EditorError::NotEditorRoot(picked.to_path_buf()))?;
 
-    let (engine_build_id, engine_changelist) = read_engine_stamp(root);
+    let (engine_build_id, engine_changelist) = read_engine_stamp(&root);
     let label = root
         .file_name()
         .and_then(|n| n.to_str())
@@ -207,10 +233,10 @@ pub fn check_editor_install(picked: &Path) -> Result<EditorInstall, EditorError>
     );
 
     Ok(EditorInstall {
-        root: root.to_path_buf(),
+        root: root.clone(),
         label,
-        editor_exe: editor_exe(root),
-        project: uproject(root),
+        editor_exe: editor_exe(&root),
+        project: uproject(&root),
         engine_build_id,
         engine_changelist,
         launch_args: default_editor_args(),
@@ -293,6 +319,31 @@ mod tests {
         // No .modules laid down → stamp is absent, but registration still succeeds.
         assert!(inst.engine_build_id.is_none());
         assert!(inst.engine_changelist.is_none());
+    }
+
+    #[test]
+    fn check_descends_one_level_into_a_parent_folder() {
+        // Pick the PARENT (like C:\LAEditorUT4) — resolve into the sole child root
+        // (C:\LAEditorUT4\UnrealTournamentEditor). This is the real-world case.
+        let tmp = TempDir::new().unwrap();
+        let editor_root = tmp.path().join("UnrealTournamentEditor");
+        build_editor_install(&editor_root, None);
+        let inst = check_editor_install(tmp.path())
+            .expect("should descend into the single child editor root");
+        assert_eq!(inst.root, editor_root);
+    }
+
+    #[test]
+    fn check_parent_with_several_editor_children_is_ambiguous() {
+        // Two editor installs under the picked parent → ambiguous, rejected so the
+        // user picks the specific one rather than getting an arbitrary pick.
+        let tmp = TempDir::new().unwrap();
+        build_editor_install(&tmp.path().join("EditorA"), None);
+        build_editor_install(&tmp.path().join("EditorB"), None);
+        assert!(matches!(
+            check_editor_install(tmp.path()),
+            Err(EditorError::NotEditorRoot(_))
+        ));
     }
 
     #[test]
