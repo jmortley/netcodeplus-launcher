@@ -264,10 +264,10 @@ pub struct PluginEntry {
 /// plugin dir name in [`Manifest::editor_plugins`]).
 ///
 /// Same shape and hash-based trust as [`PluginEntry`] — a zip of the plugin's
-/// editor-target binaries (`<Plugin>.uplugin` + `Binaries/Win64/UE4Editor-*.dll`
-/// + `UE4Editor.modules`), verified against [`Self::sha256`] before extraction —
-/// plus the engine build the artifact was compiled against, so the launcher can
-/// warn (never block) when a registered editor install's engine differs.
+/// editor-target binaries (`<Plugin>.uplugin`, `Binaries/Win64/UE4Editor-*.dll`,
+/// `UE4Editor.modules`), verified against [`Self::sha256`] before extraction, plus
+/// the engine build the artifact was compiled against so the launcher can warn
+/// (never block) when a registered editor install's engine differs.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct EditorPluginEntry {
     /// Monotonic build number (matches the plugin's own version, e.g. `327`).

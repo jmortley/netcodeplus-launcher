@@ -20,6 +20,7 @@
 //! [`crate::install::play_install_from_shortcut`]), so this module is orthogonal:
 //! registering an editor install never collides with `detect_installs`.
 
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
@@ -73,6 +74,61 @@ pub struct EditorInstall {
     /// sync runs.
     #[serde(default)]
     pub last_sync_at_ms: Option<u64>,
+
+    /// Per-plugin sync state, keyed by plugin dir name (e.g. `"NetcodePlus"`).
+    /// Records which editor-plugin build was installed into this tree and how
+    /// (signed release vs dev sideload), for status + drift. Empty until a sync.
+    #[serde(default)]
+    pub synced_plugins: HashMap<String, SyncedPlugin>,
+}
+
+/// How a plugin's editor binaries got into an [`EditorInstall`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum SyncSource {
+    /// Installed from a signed `editor-plugins-latest` release (SHA-256 verified
+    /// against the manifest). The default, and the only path other users see.
+    Signed {
+        /// The manifest `EditorPluginEntry` build number installed.
+        release_version: u32,
+    },
+    /// Sideloaded directly from a local build tree (unsigned — author's box, dev
+    /// iteration). **Pinned**: the launcher never nags to "update" it back to a
+    /// signed release, and never auto-replaces it.
+    LocalDev {
+        /// The build tree the binaries were copied from.
+        build_tree: PathBuf,
+    },
+}
+
+/// Record of a plugin's editor binaries synced into an [`EditorInstall`], keyed by
+/// plugin dir name in [`EditorInstall::synced_plugins`].
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SyncedPlugin {
+    /// How it got here — signed release vs local-dev sideload.
+    pub source: SyncSource,
+
+    /// Build number recorded at install (the signed release version; `0` for a
+    /// sideload whose build number isn't known).
+    #[serde(default)]
+    pub version: u32,
+
+    /// Engine `BuildId` from the synced plugin's own `UE4Editor.modules`, if read.
+    #[serde(default)]
+    pub build_id: Option<String>,
+
+    /// Engine changelist companion to [`Self::build_id`].
+    #[serde(default)]
+    pub changelist: Option<u64>,
+
+    /// Order-independent SHA-256 fingerprint of the installed editor files (from
+    /// `editor_plugin::content_hash`), for drift detection. `None` if unreadable.
+    #[serde(default)]
+    pub content_hash: Option<String>,
+
+    /// When this plugin was synced (whole ms since the Unix epoch).
+    #[serde(default)]
+    pub synced_at_ms: u64,
 }
 
 /// Why a picked folder was rejected as an editor install.
@@ -242,6 +298,7 @@ pub fn check_editor_install(picked: &Path) -> Result<EditorInstall, EditorError>
         launch_args: default_editor_args(),
         added_at_ms: now_ms(),
         last_sync_at_ms: None,
+        synced_plugins: HashMap::new(),
     })
 }
 

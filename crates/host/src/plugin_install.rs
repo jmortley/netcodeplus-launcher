@@ -101,7 +101,7 @@ fn sweep_leftovers(plugins_dir: &Path) {
 /// Program-Files install pass — where it is the safety net for a file locked even
 /// under elevation; a plain UN-locked admin-owned leftover is just removed
 /// outright there. Unelevated, both the delete and the schedule are best-effort.
-fn remove_leftover_dir(path: &Path) {
+pub(crate) fn remove_leftover_dir(path: &Path) {
     if fs::remove_dir_all(path).is_ok() || !path.exists() {
         return;
     }
@@ -154,7 +154,7 @@ pub(crate) fn file_sha256_hex(path: &Path) -> io::Result<String> {
 
 /// Lowercase hex SHA-256 of everything an arbitrary reader yields (e.g. a ZIP
 /// entry stream), streamed so a large file is not fully buffered.
-fn reader_sha256_hex<R: io::Read>(mut reader: R) -> io::Result<String> {
+pub(crate) fn reader_sha256_hex<R: io::Read>(mut reader: R) -> io::Result<String> {
     use sha2::{Digest, Sha256};
     let mut hasher = Sha256::new();
     io::copy(&mut reader, &mut hasher)?;
@@ -269,7 +269,7 @@ pub fn install_plugin_zip(zip_path: &Path, root: &Path) -> Result<()> {
 
 /// Extract every entry of the ZIP at `zip_path` into `staging`, enforcing the
 /// zip-slip guard. Directory entries create dirs; file entries create files.
-fn extract_into(zip_path: &Path, staging: &Path) -> Result<()> {
+pub(crate) fn extract_into(zip_path: &Path, staging: &Path) -> Result<()> {
     let file = fs::File::open(zip_path)?;
     let mut archive = zip::ZipArchive::new(file)?;
 
@@ -372,7 +372,7 @@ pub fn plugin_matches_zip(zip_path: &Path, root: &Path) -> Result<bool> {
 
 /// Normalise a plugin-relative path to lowercase forward-slash form so ZIP entry
 /// names and on-disk paths compare equal across separators and case.
-fn norm_plugin_rel(rel: &str) -> String {
+pub(crate) fn norm_plugin_rel(rel: &str) -> String {
     rel.replace('\\', "/").to_ascii_lowercase()
 }
 
@@ -470,7 +470,7 @@ pub fn plugin_zip_content_hash(zip_path: &Path) -> Option<String> {
 
 /// Combine `(relative-path, file-SHA-256-hex)` pairs into one stable fingerprint,
 /// independent of input order. `None` for an empty set (no plugin files found).
-fn combine_fingerprint(mut parts: Vec<(String, String)>) -> Option<String> {
+pub(crate) fn combine_fingerprint(mut parts: Vec<(String, String)>) -> Option<String> {
     use sha2::{Digest, Sha256};
     if parts.is_empty() {
         return None;
@@ -499,7 +499,7 @@ fn combine_fingerprint(mut parts: Vec<(String, String)>) -> Option<String> {
 /// error PROPAGATES, so a partially-unreadable tree makes [`plugin_content_hash`]
 /// return `None` (fail-safe: fall back to the recorded ZIP digest) rather than
 /// fingerprint a partial file set and report a false "outdated".
-fn collect_files_under(
+pub(crate) fn collect_files_under(
     dir: &Path,
     base: &Path,
     out: &mut Vec<(String, PathBuf)>,

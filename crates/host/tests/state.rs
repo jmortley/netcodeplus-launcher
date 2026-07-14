@@ -69,6 +69,7 @@ fn sample_state() -> LauncherState {
             ],
             added_at_ms: 1_700_000_000_000,
             last_sync_at_ms: None,
+            synced_plugins: HashMap::new(),
         },
     );
 
