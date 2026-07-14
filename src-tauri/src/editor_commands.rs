@@ -197,16 +197,17 @@ pub fn set_build_tree(app: tauri::AppHandle, path: String) -> Result<String, Str
         ncp_host::state::write(&state_file, &state).map_err(|e| e.to_string())?;
         return Ok(String::new());
     }
-    let root = Path::new(trimmed);
-    if !root.join("Plugins").is_dir() {
-        return Err(format!(
-            "{} isn't a UT4 build tree — expected a Plugins/ folder in it",
-            root.display()
-        ));
-    }
-    state.build_tree = Some(root.to_path_buf());
+    let root = ncp_host::resolve_build_tree(Path::new(trimmed)).ok_or_else(|| {
+        format!(
+            "{trimmed} isn't a UT4 build tree — pick the project dir that contains \
+             Plugins/ (e.g. …\\UnrealTournament\\UnrealTournament), its Plugins folder, \
+             or the workspace root"
+        )
+    })?;
+    let stored = root.to_string_lossy().to_string();
+    state.build_tree = Some(root);
     ncp_host::state::write(&state_file, &state).map_err(|e| e.to_string())?;
-    Ok(root.to_string_lossy().to_string())
+    Ok(stored)
 }
 
 /// The registered build-tree path, or `null` if none is set.

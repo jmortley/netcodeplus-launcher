@@ -248,6 +248,44 @@ pub fn read_engine_stamp(root: &Path) -> (Option<String>, Option<u64>) {
     read_modules_stamp(&engine_modules(root))
 }
 
+/// Resolve a user-picked folder to a UT4 **build tree** project dir — the dir that
+/// directly contains `Plugins/` (e.g. `C:\UnrealTournament\UnrealTournament`). It
+/// tolerates the common mis-picks: the project dir itself, the `Plugins/` folder
+/// inside it (→ its parent), or a workspace root holding the project dir one level
+/// down (→ the sole child with a `Plugins/`). `None` if none match, or if a
+/// workspace root holds several project dirs (ambiguous — pick the specific one).
+#[must_use]
+pub fn resolve_build_tree(picked: &Path) -> Option<PathBuf> {
+    // 1. Picked the project dir itself (has Plugins/).
+    if picked.join("Plugins").is_dir() {
+        return Some(picked.to_path_buf());
+    }
+    // 2. Picked the Plugins/ folder → step up to its parent.
+    let is_plugins = picked
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.eq_ignore_ascii_case("Plugins"));
+    if is_plugins {
+        if let Some(parent) = picked.parent() {
+            return Some(parent.to_path_buf());
+        }
+    }
+    // 3. Picked a workspace root holding the project dir one level down.
+    let mut found: Option<PathBuf> = None;
+    if let Ok(entries) = std::fs::read_dir(picked) {
+        for entry in entries.flatten() {
+            let child = entry.path();
+            if child.is_dir() && child.join("Plugins").is_dir() {
+                if found.is_some() {
+                    return None; // more than one project dir under `picked`
+                }
+                found = Some(child);
+            }
+        }
+    }
+    found
+}
+
 /// Whole milliseconds since the Unix epoch, matching [`crate::state::PakStamp`]'s
 /// timestamp convention. `0` if the clock is before the epoch (never in practice).
 #[must_use]
@@ -409,6 +447,28 @@ mod tests {
             check_editor_install(tmp.path()),
             Err(EditorError::NotEditorRoot(_))
         ));
+    }
+
+    #[test]
+    fn resolve_build_tree_accepts_project_plugins_and_workspace() {
+        let tmp = TempDir::new().unwrap();
+        let proj = tmp.path().join("UnrealTournament");
+        fs::create_dir_all(proj.join("Plugins")).unwrap();
+        // 1. Picked the project dir itself (has Plugins/).
+        assert_eq!(resolve_build_tree(&proj).as_deref(), Some(proj.as_path()));
+        // 2. Picked the Plugins/ folder → resolves to its parent.
+        assert_eq!(
+            resolve_build_tree(&proj.join("Plugins")).as_deref(),
+            Some(proj.as_path())
+        );
+        // 3. Picked the workspace root → the sole child that has Plugins/.
+        assert_eq!(
+            resolve_build_tree(tmp.path()).as_deref(),
+            Some(proj.as_path())
+        );
+        // Nothing plausible → None.
+        let empty = TempDir::new().unwrap();
+        assert!(resolve_build_tree(empty.path()).is_none());
     }
 
     #[test]
