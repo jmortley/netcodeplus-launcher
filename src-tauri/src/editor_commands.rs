@@ -152,19 +152,25 @@ pub fn launch_editor_install(app: tauri::AppHandle, root: String) -> Result<(), 
 
 // ---- Phase 1: editor-plugin sync -------------------------------------------
 
-/// One editor plugin's status for a registered editor install, for the UI.
+/// One editor plugin's status for a registered editor install, for the UI. Rows
+/// come from the union of the signed manifest's `editor_plugins`, the build
+/// tree's sideloadable plugins, and what's already synced — so dev sideloads are
+/// offered even with an empty manifest.
 #[derive(serde::Serialize)]
 pub struct EditorPluginStatusDto {
-    /// Plugin dir name (the `editor_plugins` map key, e.g. `"NetcodePlus"`).
+    /// Plugin dir name (e.g. `"NetcodePlus"`).
     pub plugin: String,
-    /// `"install" | "update" | "up_to_date" | "pinned_local_dev"`.
+    /// `"install" | "update" | "up_to_date" | "pinned_local_dev" | "sideload_only"`.
     pub action: String,
     /// `"signed" | "local_dev"`, or `null` when not installed.
     pub source: Option<String>,
     /// Installed build number, or `null` when not installed.
     pub installed_version: Option<u32>,
-    /// The manifest's advertised build number.
-    pub available_version: u32,
+    /// The manifest's advertised build number, or `null` when the plugin isn't in
+    /// the signed manifest (sideload-only).
+    pub available_version: Option<u32>,
+    /// Whether this plugin can be sideloaded from the registered build tree.
+    pub sideloadable: bool,
     /// Whether the manifest build's engine differs from this install's (warn).
     pub engine_mismatch: bool,
     /// Optional "what's new" link for the available build.
@@ -227,35 +233,66 @@ pub async fn editor_plugin_status(
     app: tauri::AppHandle,
     root: String,
 ) -> Result<Vec<EditorPluginStatusDto>, String> {
+    use std::collections::{BTreeSet, HashSet};
+
     let inst = ncp_host::check_editor_install(Path::new(&root)).map_err(|e| e.to_string())?;
     let install_bid = inst.engine_build_id.clone();
 
     let (manifest, state, _, _) = crate::updates::fetch_verify(&app).await?;
-    if manifest.editor_plugins.is_empty() {
-        return Ok(Vec::new());
-    }
     let synced = state
         .editor_installs
         .get(&root)
         .map(|e| e.synced_plugins.clone())
         .unwrap_or_default();
 
-    let mut plugins: Vec<String> = manifest.editor_plugins.keys().cloned().collect();
-    plugins.sort();
+    // Plugins that can be sideloaded from the registered build tree (if any).
+    let sideloadable: Vec<String> = state
+        .build_tree
+        .as_deref()
+        .map(ncp_host::build_tree_plugins)
+        .unwrap_or_default();
+    let sideloadable_set: HashSet<&str> = sideloadable.iter().map(String::as_str).collect();
 
-    let mut out = Vec::with_capacity(plugins.len());
-    for plugin in plugins {
-        let entry = &manifest.editor_plugins[&plugin];
+    // Row per plugin in the union of manifest ∪ build-tree ∪ already-synced, so a
+    // dev sideload is offered even when the signed manifest advertises nothing.
+    let mut names: BTreeSet<String> = BTreeSet::new();
+    names.extend(manifest.editor_plugins.keys().cloned());
+    names.extend(sideloadable.iter().cloned());
+    names.extend(synced.keys().cloned());
+
+    let mut out = Vec::with_capacity(names.len());
+    for plugin in names {
+        let entry = manifest.editor_plugins.get(&plugin);
         let installed = synced.get(&plugin);
-        let decision = ncp_host::plan_editor_plugin(installed, entry, install_bid.as_deref());
+        let (action, available_version, engine_mismatch, notes_url) = match entry {
+            Some(e) => {
+                let d = ncp_host::plan_editor_plugin(installed, e, install_bid.as_deref());
+                (
+                    action_str(d.action).to_string(),
+                    Some(e.version),
+                    d.engine_mismatch,
+                    e.notes_url.clone(),
+                )
+            }
+            None => {
+                // Not in the signed manifest: sideload-only (or already synced).
+                let a = match installed.map(|s| &s.source) {
+                    Some(SyncSource::LocalDev { .. }) => "pinned_local_dev",
+                    Some(SyncSource::Signed { .. }) => "up_to_date",
+                    None => "sideload_only",
+                };
+                (a.to_string(), None, false, None)
+            }
+        };
         out.push(EditorPluginStatusDto {
             plugin: plugin.clone(),
-            action: action_str(decision.action).to_string(),
+            action,
             source: installed.map(|s| source_str(&s.source).to_string()),
             installed_version: installed.map(|s| s.version),
-            available_version: entry.version,
-            engine_mismatch: decision.engine_mismatch,
-            notes_url: entry.notes_url.clone(),
+            available_version,
+            sideloadable: sideloadable_set.contains(plugin.as_str()),
+            engine_mismatch,
+            notes_url,
         });
     }
     Ok(out)

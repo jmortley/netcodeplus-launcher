@@ -353,10 +353,11 @@ interface EditorInstall {
 // Per-plugin sync status for an editor install (mirrors EditorPluginStatusDto).
 interface EditorPluginStatus {
   plugin: string;
-  action: "install" | "update" | "up_to_date" | "pinned_local_dev";
+  action: "install" | "update" | "up_to_date" | "pinned_local_dev" | "sideload_only";
   source: "signed" | "local_dev" | null;
   installed_version: number | null;
-  available_version: number;
+  available_version: number | null;
+  sideloadable: boolean;
   engine_mismatch: boolean;
   notes_url: string | null;
 }
@@ -6028,11 +6029,13 @@ async function loadEditorPlugins(root: string, idx: number): Promise<void> {
     return;
   }
   if (rows.length === 0) {
-    box.innerHTML = `<span class="muted" style="font-size:.85em">No editor plugins are advertised in the manifest yet.</span>`;
+    box.innerHTML = `<span class="muted" style="font-size:.85em">No editor plugins yet — set a <strong>Build tree</strong> above to sideload freshly-built ones, or wait for a signed release.</span>`;
     return;
   }
   const eroot = escape(root);
-  const anyActionable = rows.some((r) => r.action === "install" || r.action === "update");
+  const anyActionable = rows.some(
+    (r) => r.available_version != null && (r.action === "install" || r.action === "update"),
+  );
   box.innerHTML =
     `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
       <strong style="font-size:.9em">Plugins</strong>
@@ -6055,14 +6058,17 @@ function editorPluginRow(root: string, r: EditorPluginStatus): string {
   } else if (r.action === "install") {
     right = `<span class="muted" style="font-size:.8em">not installed · build ${r.available_version}</span> <button type="button" data-ep-action="sync-one" data-ep-root="${eroot}" data-ep-plugin="${ep}">Install</button>`;
   } else if (r.action === "up_to_date") {
-    right = `<span class="muted" style="font-size:.8em">✓ build ${r.installed_version}${r.source === "local_dev" ? " (dev)" : ""}</span>`;
-  } else {
+    right = `<span class="muted" style="font-size:.8em">✓ ${r.installed_version != null ? `build ${r.installed_version}` : "installed"}${r.source === "local_dev" ? " (dev)" : ""}</span>`;
+  } else if (r.action === "pinned_local_dev") {
     right = `<span class="muted" style="font-size:.8em">dev sideload — pinned</span>`;
+  } else {
+    // sideload_only — present in the build tree, not in the signed manifest.
+    right = `<span class="muted" style="font-size:.8em">not installed</span>`;
   }
   const mismatch = r.engine_mismatch
     ? ` <span class="warn" style="font-size:.72em" title="built against a different engine build than this install">⚠ engine</span>`
     : "";
-  const sideload = editorBuildTree
+  const sideload = r.sideloadable
     ? ` <button type="button" class="link-btn" data-ep-action="sideload" data-ep-root="${eroot}" data-ep-plugin="${ep}">Sideload</button>`
     : "";
   return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0">

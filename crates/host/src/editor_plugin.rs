@@ -102,6 +102,42 @@ pub fn plugin_dir(editor_root: &Path, plugin: &str) -> PathBuf {
     editor_root.join(GAME_NAME).join("Plugins").join(plugin)
 }
 
+/// List the plugin dir names in a build tree that have an editor DLL built
+/// (`Plugins/<name>/Binaries/Win64/UE4Editor-*.dll`) — i.e. the plugins that can
+/// be sideloaded from it. Sorted + deduped; empty if the tree has no `Plugins/`.
+/// This is what lets the Editor tab offer dev sideloads even with an empty
+/// (or absent) signed `editor_plugins` manifest.
+#[must_use]
+pub fn build_tree_plugins(build_tree: &Path) -> Vec<String> {
+    let mut names: Vec<String> = Vec::new();
+    let Ok(entries) = fs::read_dir(build_tree.join("Plugins")) else {
+        return names;
+    };
+    for entry in entries.flatten() {
+        let dir = entry.path();
+        if !dir.is_dir() {
+            continue;
+        }
+        let has_editor_dll = fs::read_dir(dir.join("Binaries").join("Win64"))
+            .map(|rd| {
+                rd.flatten().any(|f| {
+                    let n = f.file_name();
+                    let n = n.to_string_lossy();
+                    n.starts_with("UE4Editor-") && n.ends_with(".dll")
+                })
+            })
+            .unwrap_or(false);
+        if has_editor_dll {
+            if let Some(name) = entry.file_name().to_str() {
+                names.push(name.to_string());
+            }
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
 /// Order-independent SHA-256 fingerprint of the editor plugin on disk under
 /// `editor_root`: its `<plugin>.uplugin` plus every file under `Binaries/`, each
 /// SHA-256'd and combined in sorted relative-path order. Equals the fingerprint
@@ -482,6 +518,26 @@ mod tests {
         fs::write(win64.join("UE4-TeamArena-Win64-Shipping.dll"), b"game").unwrap();
         let err = sideload_from_build(&build, &tmp.path().join("Editor"), "TeamArena").unwrap_err();
         assert!(matches!(err, PluginInstallError::NotAPlugin));
+    }
+
+    #[test]
+    fn build_tree_plugins_lists_only_editor_built_ones() {
+        let tmp = TempDir::new().unwrap();
+        let bt = tmp.path();
+        // NetcodePlus: has an editor DLL → listed.
+        let np = bt.join("Plugins/NetcodePlus/Binaries/Win64");
+        fs::create_dir_all(&np).unwrap();
+        fs::write(np.join("UE4Editor-NetcodePlus.dll"), b"x").unwrap();
+        // TeamArena: only a game DLL → excluded.
+        let ta = bt.join("Plugins/TeamArena/Binaries/Win64");
+        fs::create_dir_all(&ta).unwrap();
+        fs::write(ta.join("UE4-TeamArena-Win64-Shipping.dll"), b"x").unwrap();
+        // Online: no Binaries at all → excluded.
+        fs::create_dir_all(bt.join("Plugins/Online")).unwrap();
+
+        assert_eq!(build_tree_plugins(bt), vec!["NetcodePlus".to_string()]);
+        // A tree with no Plugins/ → empty.
+        assert!(build_tree_plugins(&tmp.path().join("nope")).is_empty());
     }
 
     fn entry(version: u32, engine_build_id: Option<&str>) -> EditorPluginEntry {
