@@ -17,6 +17,9 @@ use std::fs;
 use std::io;
 use std::path::{Path, PathBuf};
 
+use ncp_manifest::EditorPluginEntry;
+
+use crate::editor::{SyncSource, SyncedPlugin};
 use crate::fs_util::{annotate, rename_with_retry};
 use crate::plugin_install::{
     collect_files_under, combine_fingerprint, extract_into, file_sha256_hex, norm_plugin_rel,
@@ -25,6 +28,72 @@ use crate::plugin_install::{
 
 /// The UT4 project/game folder name, shared with [`crate::install`].
 const GAME_NAME: &str = "UnrealTournament";
+
+/// What to do about one editor plugin in a registered editor install, given the
+/// signed manifest entry and what's currently synced there.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EditorPluginAction {
+    /// Not synced into this editor tree — offer to install.
+    Install,
+    /// A newer signed build is available than the one installed.
+    Update,
+    /// Installed and current (installed build >= manifest build).
+    UpToDate,
+    /// Sideloaded from the local build tree — pinned; never auto-updated back to
+    /// the signed release, and never auto-replaced.
+    PinnedLocalDev,
+}
+
+/// The decision for one editor plugin: what to do, plus whether the manifest
+/// build's engine differs from the target install's (a non-blocking warning).
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EditorPluginDecision {
+    /// The recommended action.
+    pub action: EditorPluginAction,
+    /// The manifest build advertises an engine `BuildId` that differs from the
+    /// target editor install's — a compat WARNING only (4.15 tolerates it, so the
+    /// launcher still installs; it just surfaces the mismatch).
+    pub engine_mismatch: bool,
+}
+
+/// Decide what to do about one editor plugin.
+///
+/// `installed` is the recorded sync state (`None` = not installed), `entry` the
+/// signed manifest build, and `install_engine_build_id` the target editor
+/// install's own engine BuildId (from its `UE4Editor.modules`).
+///
+/// A `LocalDev` sideload is always [`EditorPluginAction::PinnedLocalDev`] (a
+/// deliberate dev build is never nagged back to the signed release). A signed
+/// install updates only when the manifest build is strictly newer, so a manifest
+/// rollback never triggers a downgrade.
+#[must_use]
+pub fn plan_editor_plugin(
+    installed: Option<&SyncedPlugin>,
+    entry: &EditorPluginEntry,
+    install_engine_build_id: Option<&str>,
+) -> EditorPluginDecision {
+    let engine_mismatch = match (entry.engine_build_id.as_deref(), install_engine_build_id) {
+        (Some(manifest_id), Some(install_id)) => !manifest_id.eq_ignore_ascii_case(install_id),
+        _ => false,
+    };
+    let action = match installed {
+        None => EditorPluginAction::Install,
+        Some(sp) => match sp.source {
+            SyncSource::LocalDev { .. } => EditorPluginAction::PinnedLocalDev,
+            SyncSource::Signed { .. } => {
+                if sp.version < entry.version {
+                    EditorPluginAction::Update
+                } else {
+                    EditorPluginAction::UpToDate
+                }
+            }
+        },
+    };
+    EditorPluginDecision {
+        action,
+        engine_mismatch,
+    }
+}
 
 /// `<editor_root>/UnrealTournament/Plugins/<plugin>/` — where a plugin's editor
 /// binaries live inside an editor install.
@@ -413,5 +482,89 @@ mod tests {
         fs::write(win64.join("UE4-TeamArena-Win64-Shipping.dll"), b"game").unwrap();
         let err = sideload_from_build(&build, &tmp.path().join("Editor"), "TeamArena").unwrap_err();
         assert!(matches!(err, PluginInstallError::NotAPlugin));
+    }
+
+    fn entry(version: u32, engine_build_id: Option<&str>) -> EditorPluginEntry {
+        EditorPluginEntry {
+            version,
+            url: "https://x.invalid/z.zip".into(),
+            sha256: ncp_manifest::Sha256Digest::from_bytes([0u8; 32]),
+            size_bytes: 1,
+            notes_url: None,
+            engine_build_id: engine_build_id.map(str::to_string),
+            engine_changelist: None,
+        }
+    }
+
+    fn signed(version: u32) -> SyncedPlugin {
+        SyncedPlugin {
+            source: SyncSource::Signed {
+                release_version: version,
+            },
+            version,
+            build_id: None,
+            changelist: None,
+            content_hash: None,
+            synced_at_ms: 0,
+        }
+    }
+
+    fn localdev() -> SyncedPlugin {
+        SyncedPlugin {
+            source: SyncSource::LocalDev {
+                build_tree: PathBuf::from("C:/Build"),
+            },
+            version: 0,
+            build_id: None,
+            changelist: None,
+            content_hash: None,
+            synced_at_ms: 0,
+        }
+    }
+
+    #[test]
+    fn plan_install_update_uptodate_and_pin() {
+        use EditorPluginAction::*;
+        // Not installed → Install.
+        assert_eq!(
+            plan_editor_plugin(None, &entry(327, None), None).action,
+            Install
+        );
+        // Older signed → Update.
+        assert_eq!(
+            plan_editor_plugin(Some(&signed(326)), &entry(327, None), None).action,
+            Update
+        );
+        // Equal or newer signed → UpToDate (a manifest rollback never downgrades).
+        assert_eq!(
+            plan_editor_plugin(Some(&signed(327)), &entry(327, None), None).action,
+            UpToDate
+        );
+        assert_eq!(
+            plan_editor_plugin(Some(&signed(328)), &entry(327, None), None).action,
+            UpToDate
+        );
+        // A LocalDev sideload is pinned regardless of version.
+        assert_eq!(
+            plan_editor_plugin(Some(&localdev()), &entry(999, None), None).action,
+            PinnedLocalDev
+        );
+    }
+
+    #[test]
+    fn plan_flags_engine_mismatch_only_when_both_known_and_differ() {
+        // Differing BuildIds → warn.
+        assert!(
+            plan_editor_plugin(None, &entry(327, Some("cc4a0b0a")), Some("7a4ea563"))
+                .engine_mismatch
+        );
+        // Same (case-insensitive) → no warn.
+        assert!(
+            !plan_editor_plugin(None, &entry(327, Some("CC4A0B0A")), Some("cc4a0b0a"))
+                .engine_mismatch
+        );
+        // Either side unknown → no warn (can't compare).
+        assert!(!plan_editor_plugin(None, &entry(327, None), Some("7a4ea563")).engine_mismatch);
+        assert!(!plan_editor_plugin(None, &entry(327, Some("cc4a0b0a")), None).engine_mismatch);
     }
 }
