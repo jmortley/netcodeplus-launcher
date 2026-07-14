@@ -80,6 +80,7 @@ fn sample_manifest(now: DateTime<Utc>) -> Manifest {
         editor_installer: None,
         openal: None,
         launcher_linux: None,
+        editor_plugins: HashMap::new(),
     }
 }
 

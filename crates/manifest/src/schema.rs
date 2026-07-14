@@ -111,6 +111,18 @@ pub struct Manifest {
     /// → `None` for back-compat.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub launcher_linux: Option<LauncherEntry>,
+
+    /// Signed **editor-plugin** builds, keyed by plugin dir name (e.g.
+    /// `"NetcodePlus"`, `"UTVehicles"`, `"MapForgeBridge"`). Distinct from the
+    /// per-channel game [`Channel::plugin`]: these carry the *editor-target*
+    /// binaries (`Binaries/Win64/UE4Editor-*.dll` + `UE4Editor.modules`) the
+    /// launcher installs into a registered UT4 **editor** install. Top-level and
+    /// channel-independent (editor installs are not on a game channel). Same
+    /// trust model as [`Channel::plugin`] — each zip is verified against its
+    /// [`EditorPluginEntry::sha256`]. `#[serde(default)]` → empty map, so
+    /// pre-editor-plugin manifests and launchers interoperate both ways.
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub editor_plugins: HashMap<String, EditorPluginEntry>,
 }
 
 /// The latest launcher build advertised by a [`Manifest`].
@@ -246,6 +258,47 @@ pub struct PluginEntry {
     /// field ignore it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub notes_url: Option<String>,
+}
+
+/// One signed **editor-plugin** build advertised by a [`Manifest`] (keyed by
+/// plugin dir name in [`Manifest::editor_plugins`]).
+///
+/// Same shape and hash-based trust as [`PluginEntry`] — a zip of the plugin's
+/// editor-target binaries (`<Plugin>.uplugin` + `Binaries/Win64/UE4Editor-*.dll`
+/// + `UE4Editor.modules`), verified against [`Self::sha256`] before extraction —
+/// plus the engine build the artifact was compiled against, so the launcher can
+/// warn (never block) when a registered editor install's engine differs.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct EditorPluginEntry {
+    /// Monotonic build number (matches the plugin's own version, e.g. `327`).
+    pub version: u32,
+
+    /// HTTPS URL of the editor-plugin zip. **Untrusted** — integrity comes from
+    /// [`Self::sha256`].
+    pub url: String,
+
+    /// SHA-256 of the editor-plugin **zip** bytes; extraction is refused on a
+    /// mismatch, and a mismatch against the recorded installed digest = "update".
+    pub sha256: Sha256Digest,
+
+    /// Declared zip size in bytes; a download whose length differs is aborted.
+    pub size_bytes: u64,
+
+    /// Optional "what's new" HTTPS page, exactly like [`PluginEntry::notes_url`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_url: Option<String>,
+
+    /// Engine `BuildId` this artifact was compiled against (read from its own
+    /// `UE4Editor.modules` at package time). The launcher compares it to a
+    /// registered editor install's engine BuildId and **warns** on a mismatch —
+    /// never blocks, since 4.15 tolerates cross-build loads in practice. `None`
+    /// if the packager did not stamp it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_build_id: Option<String>,
+
+    /// Engine changelist companion to [`Self::engine_build_id`].
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub engine_changelist: Option<u64>,
 }
 
 /// A single pak entry within a [`Channel`].
@@ -681,6 +734,72 @@ mod tests {
         );
         let reparsed: Channel = serde_json::from_str(&serde_json::to_string(&ch).unwrap()).unwrap();
         assert_eq!(reparsed, ch);
+    }
+
+    #[test]
+    fn manifest_without_editor_plugins_parses() {
+        // Back-compat: no `editor_plugins` key → empty map (every manifest so far).
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-07-13T00:00:00Z",
+            "expires_at": "2027-07-13T00:00:00Z",
+            "sequence": 46,
+            "min_launcher_version": "0.1.0",
+            "channels": {}
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert!(m.editor_plugins.is_empty());
+    }
+
+    #[test]
+    fn manifest_with_editor_plugins_round_trips() {
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-07-13T00:00:00Z",
+            "expires_at": "2027-07-13T00:00:00Z",
+            "sequence": 47,
+            "min_launcher_version": "0.1.0",
+            "channels": {},
+            "editor_plugins": {
+                "NetcodePlus": {
+                    "version": 327,
+                    "url": "https://example.invalid/NetcodePlus-editor-327.zip",
+                    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    "size_bytes": 6032896,
+                    "engine_build_id": "cc4a0b0a-2c5d-4b59-8749-e3efbfe6620a",
+                    "engine_changelist": 3525109
+                },
+                "MapForgeBridge": {
+                    "version": 12,
+                    "url": "https://example.invalid/MapForgeBridge-editor-12.zip",
+                    "sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789",
+                    "size_bytes": 341504
+                }
+            }
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert_eq!(m.editor_plugins.len(), 2);
+        let ncp = m
+            .editor_plugins
+            .get("NetcodePlus")
+            .expect("NetcodePlus entry present");
+        assert_eq!(ncp.version, 327);
+        assert_eq!(ncp.engine_changelist, Some(3_525_109));
+        assert_eq!(
+            ncp.engine_build_id.as_deref(),
+            Some("cc4a0b0a-2c5d-4b59-8749-e3efbfe6620a")
+        );
+        // An entry without the engine stamp / notes parses with those as None.
+        let mfb = m
+            .editor_plugins
+            .get("MapForgeBridge")
+            .expect("MapForgeBridge entry present");
+        assert!(mfb.engine_build_id.is_none());
+        assert!(mfb.engine_changelist.is_none());
+        assert!(mfb.notes_url.is_none());
+
+        let reparsed: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(reparsed, m);
     }
 
     #[test]

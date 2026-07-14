@@ -71,6 +71,7 @@ fn manifest_with_channel(name: &str, paks: HashMap<String, ManifestPak>) -> Mani
         editor_installer: None,
         openal: None,
         launcher_linux: None,
+        editor_plugins: HashMap::new(),
     }
 }
 
