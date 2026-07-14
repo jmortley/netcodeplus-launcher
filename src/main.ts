@@ -350,6 +350,22 @@ interface EditorInstall {
   last_sync_at_ms: number | null;
 }
 
+// Per-plugin sync status for an editor install (mirrors EditorPluginStatusDto).
+interface EditorPluginStatus {
+  plugin: string;
+  action: "install" | "update" | "up_to_date" | "pinned_local_dev";
+  source: "signed" | "local_dev" | null;
+  installed_version: number | null;
+  available_version: number;
+  engine_mismatch: boolean;
+  notes_url: string | null;
+}
+interface EditorPluginOutcome {
+  plugin: string;
+  result: string;
+  detail: string;
+}
+
 const state = {
   installs: [] as DetectedInstall[],
   editorInstalls: [] as EditorInstall[],
@@ -5936,42 +5952,172 @@ function setEditorMsg(html: string): void {
   if (el) el.innerHTML = html;
 }
 
-// Fetch + paint the registered editor installs. Called when the Editor tab opens
-// and after any register/remove.
+// Fetch + paint the registered editor installs (with a build-tree row and, per
+// install, an async-loaded plugin sync panel). Called when the Editor tab opens
+// and after any register/remove/sync.
+let editorBuildTree: string | null = null;
 async function renderEditor(): Promise<void> {
   const panel = document.getElementById("editor-panel");
   if (!panel) return;
   let installs: EditorInstall[];
   try {
-    installs = await invoke<EditorInstall[]>("list_editor_installs");
+    [installs, editorBuildTree] = await Promise.all([
+      invoke<EditorInstall[]>("list_editor_installs"),
+      invoke<string | null>("get_build_tree").catch(() => null),
+    ]);
   } catch (err) {
     panel.innerHTML = `<div class="warn">Couldn't load editor installs: ${escape(String(err))}</div>`;
     return;
   }
   state.editorInstalls = installs;
+
+  const btLabel = editorBuildTree
+    ? `<code>${escape(editorBuildTree)}</code>`
+    : `<span class="muted">not set — needed for dev sideload</span>`;
+  const buildRow = `
+    <div class="status" style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:12px">
+      <div style="min-width:0"><strong>Build tree</strong> ${btLabel}</div>
+      <button type="button" data-ed-action="set-build-tree">${editorBuildTree ? "Change…" : "Set…"}</button>
+    </div>`;
+
   if (installs.length === 0) {
-    panel.innerHTML = `<p class="muted">No editor installs registered yet. Click <strong>Register editor…</strong> and choose your UT4 editor folder (the one containing <code>Engine\\</code> and <code>UnrealTournament\\</code>).</p>`;
+    panel.innerHTML =
+      buildRow +
+      `<p class="muted">No editor installs registered yet. Click <strong>Register editor…</strong> and choose your UT4 editor folder (the one containing <code>Engine\\</code> and <code>UnrealTournament\\</code>).</p>`;
     return;
   }
-  panel.innerHTML = installs
-    .map((e) => {
-      const cl = e.engine_changelist != null ? `CL ${e.engine_changelist}` : "CL unknown";
-      const bid = e.engine_build_id ? escape(e.engine_build_id.slice(0, 8)) : "—";
-      const root = escape(e.root);
-      return `
-      <div class="status" style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px">
-        <div style="min-width:0">
-          <div><strong>${escape(e.label)}</strong></div>
-          <div class="muted" style="font-size:.85em;word-break:break-all"><code>${root}</code></div>
-          <div class="muted" style="font-size:.8em">${cl} · engine ${bid}</div>
+  panel.innerHTML =
+    buildRow +
+    installs
+      .map((e, i) => {
+        const cl = e.engine_changelist != null ? `CL ${e.engine_changelist}` : "CL unknown";
+        const bid = e.engine_build_id ? escape(e.engine_build_id.slice(0, 8)) : "—";
+        const root = escape(e.root);
+        return `
+      <div class="status" style="margin-bottom:8px">
+        <div style="display:flex;justify-content:space-between;align-items:center;gap:12px">
+          <div style="min-width:0">
+            <div><strong>${escape(e.label)}</strong></div>
+            <div class="muted" style="font-size:.85em;word-break:break-all"><code>${root}</code></div>
+            <div class="muted" style="font-size:.8em">${cl} · engine ${bid}</div>
+          </div>
+          <div style="display:flex;gap:8px;flex-shrink:0">
+            <button type="button" data-ed-action="launch" data-ed-root="${root}">Launch</button>
+            <button type="button" class="link-btn" data-ed-action="remove" data-ed-root="${root}">Remove</button>
+          </div>
         </div>
-        <div style="display:flex;gap:8px;flex-shrink:0">
-          <button type="button" data-ed-action="launch" data-ed-root="${root}">Launch</button>
-          <button type="button" class="link-btn" data-ed-action="remove" data-ed-root="${root}">Remove</button>
+        <div id="editor-plugins-${i}" style="margin-top:10px;border-top:1px solid var(--line,#333);padding-top:8px">
+          <span class="muted" style="font-size:.85em">Loading plugins…</span>
         </div>
       </div>`;
-    })
-    .join("");
+      })
+      .join("");
+
+  installs.forEach((e, i) => void loadEditorPlugins(e.root, i));
+}
+
+// Fetch + render one install's editor-plugin sync panel into its container.
+async function loadEditorPlugins(root: string, idx: number): Promise<void> {
+  const box = document.getElementById(`editor-plugins-${idx}`);
+  if (!box) return;
+  let rows: EditorPluginStatus[];
+  try {
+    rows = await invoke<EditorPluginStatus[]>("editor_plugin_status", { root });
+  } catch (err) {
+    box.innerHTML = `<span class="warn" style="font-size:.85em">Plugin status unavailable: ${escape(String(err))}</span>`;
+    return;
+  }
+  if (rows.length === 0) {
+    box.innerHTML = `<span class="muted" style="font-size:.85em">No editor plugins are advertised in the manifest yet.</span>`;
+    return;
+  }
+  const eroot = escape(root);
+  const anyActionable = rows.some((r) => r.action === "install" || r.action === "update");
+  box.innerHTML =
+    `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+      <strong style="font-size:.9em">Plugins</strong>
+      ${
+        anyActionable
+          ? `<button type="button" data-ep-action="sync-all" data-ep-root="${eroot}">Sync all</button>`
+          : `<span class="muted" style="font-size:.8em">all up to date</span>`
+      }
+    </div>` + rows.map((r) => editorPluginRow(root, r)).join("");
+}
+
+// One plugin row: name + a status/action on the right, plus an optional dev
+// Sideload button when a build tree is registered.
+function editorPluginRow(root: string, r: EditorPluginStatus): string {
+  const eroot = escape(root);
+  const ep = escape(r.plugin);
+  let right: string;
+  if (r.action === "update") {
+    right = `<span class="muted" style="font-size:.8em">build ${r.installed_version} → ${r.available_version}</span> <button type="button" data-ep-action="sync-one" data-ep-root="${eroot}" data-ep-plugin="${ep}">Update</button>`;
+  } else if (r.action === "install") {
+    right = `<span class="muted" style="font-size:.8em">not installed · build ${r.available_version}</span> <button type="button" data-ep-action="sync-one" data-ep-root="${eroot}" data-ep-plugin="${ep}">Install</button>`;
+  } else if (r.action === "up_to_date") {
+    right = `<span class="muted" style="font-size:.8em">✓ build ${r.installed_version}${r.source === "local_dev" ? " (dev)" : ""}</span>`;
+  } else {
+    right = `<span class="muted" style="font-size:.8em">dev sideload — pinned</span>`;
+  }
+  const mismatch = r.engine_mismatch
+    ? ` <span class="warn" style="font-size:.72em" title="built against a different engine build than this install">⚠ engine</span>`
+    : "";
+  const sideload = editorBuildTree
+    ? ` <button type="button" class="link-btn" data-ep-action="sideload" data-ep-root="${eroot}" data-ep-plugin="${ep}">Sideload</button>`
+    : "";
+  return `<div style="display:flex;justify-content:space-between;align-items:center;gap:8px;padding:2px 0">
+    <div style="min-width:0"><strong style="font-size:.9em">${ep}</strong>${mismatch}</div>
+    <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">${right}${sideload}</div>
+  </div>`;
+}
+
+// Pick a folder and register it as the build tree (dev sideload source).
+async function pickBuildTree(): Promise<void> {
+  setEditorMsg("");
+  let picked: string | string[] | null;
+  try {
+    picked = await open({ directory: true, multiple: false, title: "Choose your UT4 build tree (the folder containing Plugins/)" });
+  } catch (err) {
+    console.error("dialog open failed:", err);
+    return;
+  }
+  if (!picked) return;
+  const path = Array.isArray(picked) ? picked[0] : picked;
+  try {
+    await invoke("set_build_tree", { path });
+    await renderEditor();
+  } catch (err) {
+    setEditorMsg(`<div class="warn">${escape(String(err))}</div>`);
+  }
+}
+
+// Install/update signed editor plugins (all, or one) into an install.
+async function syncEditorPlugins(root: string, plugins: string[] | null): Promise<void> {
+  setEditorMsg(`<div class="status" style="font-size:.85em">Syncing editor plugins…</div>`);
+  try {
+    const outcomes = await invoke<EditorPluginOutcome[]>("install_editor_plugins", { root, plugins });
+    const failed = outcomes.filter((o) => o.result === "failed");
+    setEditorMsg(
+      failed.length
+        ? `<div class="warn">${failed.map((o) => `${escape(o.plugin)}: ${escape(o.detail)}`).join("<br>")}</div>`
+        : "",
+    );
+    await renderEditor();
+  } catch (err) {
+    setEditorMsg(`<div class="warn">${escape(String(err))}</div>`);
+  }
+}
+
+// Dev sideload one plugin's freshly-built editor binaries from the build tree.
+async function sideloadEditorPluginUi(root: string, plugin: string): Promise<void> {
+  setEditorMsg(`<div class="status" style="font-size:.85em">Sideloading ${escape(plugin)} from the build tree…</div>`);
+  try {
+    await invoke("sideload_editor_plugin", { root, plugin });
+    setEditorMsg("");
+    await renderEditor();
+  } catch (err) {
+    setEditorMsg(`<div class="warn">${escape(String(err))}</div>`);
+  }
 }
 
 // Pick a folder and register it as an editor install.
@@ -6019,14 +6165,21 @@ async function removeEditorInstall(root: string): Promise<void> {
   }
 }
 
-// Delegated row actions — the Launch/Remove buttons are re-rendered on each refresh.
+// Delegated actions — all Editor-tab buttons are re-rendered on each refresh.
 document.getElementById("view-editor")?.addEventListener("click", (ev) => {
-  const btn = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-ed-action]");
+  const btn = (ev.target as HTMLElement | null)?.closest<HTMLElement>(
+    "[data-ed-action], [data-ep-action]",
+  );
   if (!btn) return;
-  const root = btn.dataset.edRoot ?? "";
-  if (!root) return;
-  if (btn.dataset.edAction === "launch") void launchEditorInstall(root);
-  else if (btn.dataset.edAction === "remove") void removeEditorInstall(root);
+  const edAction = btn.dataset.edAction;
+  const epAction = btn.dataset.epAction;
+  const root = btn.dataset.edRoot ?? btn.dataset.epRoot ?? "";
+  if (edAction === "set-build-tree") return void pickBuildTree();
+  if (edAction === "launch" && root) return void launchEditorInstall(root);
+  if (edAction === "remove" && root) return void removeEditorInstall(root);
+  if (epAction === "sync-all" && root) return void syncEditorPlugins(root, null);
+  if (epAction === "sync-one" && root) return void syncEditorPlugins(root, [btn.dataset.epPlugin ?? ""]);
+  if (epAction === "sideload" && root) return void sideloadEditorPluginUi(root, btn.dataset.epPlugin ?? "");
 });
 document
   .getElementById("editor-register")
