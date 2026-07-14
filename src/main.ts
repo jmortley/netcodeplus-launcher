@@ -337,8 +337,22 @@ const configPanel = document.getElementById("config-panel")!;
 const newsPanel = document.getElementById("news-panel")!;
 const serversPanel = document.getElementById("servers-panel")!;
 
+// A registered UT4 editor install (mirrors ncp_host::editor::EditorInstall).
+interface EditorInstall {
+  root: string;
+  label: string;
+  editor_exe: string;
+  project: string;
+  engine_build_id: string | null;
+  engine_changelist: number | null;
+  launch_args: string[];
+  added_at_ms: number;
+  last_sync_at_ms: number | null;
+}
+
 const state = {
   installs: [] as DetectedInstall[],
+  editorInstalls: [] as EditorInstall[],
   presets: [] as AffinityPreset[],
   selInstall: 0,
   profileLabel: null as string | null,
@@ -2600,6 +2614,12 @@ async function loadAll() {
     state.utpugsConfigured = utpugsConfigured;
     state.unrealpugsConfigured = unrealpugsConfigured;
     platformOs = platformInfo.os;
+    // Editor-install management is Windows-only — reveal its (hidden-by-default)
+    // nav tab there. It stays hidden on Linux, where editor trees aren't a thing.
+    if (platformOs === "windows") {
+      const navEditor = document.getElementById("nav-editor");
+      if (navEditor) navEditor.style.display = "";
+    }
     // (Linux) discover installed Wine/Proton runners for the Settings dropdown.
     if (platformOs === "linux") {
       wineRunners = await invoke<WineRunner[]>("list_wine_runners").catch(() => []);
@@ -5908,6 +5928,110 @@ async function renderNews() {
     </div>`;
 }
 
+// ---- editor installs -------------------------------------------------------
+
+// Set a transient message above the editor list (errors, hints). Empty clears it.
+function setEditorMsg(html: string): void {
+  const el = document.getElementById("editor-msg");
+  if (el) el.innerHTML = html;
+}
+
+// Fetch + paint the registered editor installs. Called when the Editor tab opens
+// and after any register/remove.
+async function renderEditor(): Promise<void> {
+  const panel = document.getElementById("editor-panel");
+  if (!panel) return;
+  let installs: EditorInstall[];
+  try {
+    installs = await invoke<EditorInstall[]>("list_editor_installs");
+  } catch (err) {
+    panel.innerHTML = `<div class="warn">Couldn't load editor installs: ${escape(String(err))}</div>`;
+    return;
+  }
+  state.editorInstalls = installs;
+  if (installs.length === 0) {
+    panel.innerHTML = `<p class="muted">No editor installs registered yet. Click <strong>Register editor…</strong> and choose your UT4 editor folder (the one containing <code>Engine\\</code> and <code>UnrealTournament\\</code>).</p>`;
+    return;
+  }
+  panel.innerHTML = installs
+    .map((e) => {
+      const cl = e.engine_changelist != null ? `CL ${e.engine_changelist}` : "CL unknown";
+      const bid = e.engine_build_id ? escape(e.engine_build_id.slice(0, 8)) : "—";
+      const root = escape(e.root);
+      return `
+      <div class="status" style="display:flex;justify-content:space-between;align-items:center;gap:12px;margin-bottom:8px">
+        <div style="min-width:0">
+          <div><strong>${escape(e.label)}</strong></div>
+          <div class="muted" style="font-size:.85em;word-break:break-all"><code>${root}</code></div>
+          <div class="muted" style="font-size:.8em">${cl} · engine ${bid}</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-shrink:0">
+          <button type="button" data-ed-action="launch" data-ed-root="${root}">Launch</button>
+          <button type="button" class="link-btn" data-ed-action="remove" data-ed-root="${root}">Remove</button>
+        </div>
+      </div>`;
+    })
+    .join("");
+}
+
+// Pick a folder and register it as an editor install.
+async function registerEditorInstall(): Promise<void> {
+  setEditorMsg("");
+  let picked: string | string[] | null;
+  try {
+    picked = await open({ directory: true, multiple: false, title: "Choose your UT4 editor install folder" });
+  } catch (err) {
+    console.error("dialog open failed:", err);
+    return;
+  }
+  if (!picked) return;
+  const path = Array.isArray(picked) ? picked[0] : picked;
+  try {
+    await invoke<EditorInstall>("add_editor_install", { path, label: null });
+    await renderEditor();
+  } catch (err) {
+    setEditorMsg(
+      `<div class="warn"><code>${escape(path)}</code> isn't a UT4 editor install — it needs <code>Engine/Binaries/Win64/UE4Editor.exe</code> and <code>UnrealTournament/UnrealTournament.uproject</code>. (${escape(String(err))})</div>`,
+    );
+  }
+}
+
+async function launchEditorInstall(root: string): Promise<void> {
+  setEditorMsg("");
+  try {
+    await invoke("launch_editor_install", { root });
+  } catch (err) {
+    setEditorMsg(`<div class="warn">Couldn't launch the editor: ${escape(String(err))}</div>`);
+  }
+}
+
+async function removeEditorInstall(root: string): Promise<void> {
+  const ok = await confirm(
+    `Forget this editor install?\n\n${root}\n\nThis only removes it from the launcher — no files on disk are touched.`,
+    { title: "Remove editor install", kind: "warning" },
+  );
+  if (!ok) return;
+  try {
+    await invoke("remove_editor_install", { root });
+    await renderEditor();
+  } catch (err) {
+    setEditorMsg(`<div class="warn">${escape(String(err))}</div>`);
+  }
+}
+
+// Delegated row actions — the Launch/Remove buttons are re-rendered on each refresh.
+document.getElementById("view-editor")?.addEventListener("click", (ev) => {
+  const btn = (ev.target as HTMLElement | null)?.closest<HTMLElement>("[data-ed-action]");
+  if (!btn) return;
+  const root = btn.dataset.edRoot ?? "";
+  if (!root) return;
+  if (btn.dataset.edAction === "launch") void launchEditorInstall(root);
+  else if (btn.dataset.edAction === "remove") void removeEditorInstall(root);
+});
+document
+  .getElementById("editor-register")
+  ?.addEventListener("click", () => void registerEditorInstall());
+
 // ---- tabs ------------------------------------------------------------------
 
 function switchView(name: string): void {
@@ -5919,6 +6043,8 @@ function switchView(name: string): void {
     .forEach((v) => v.classList.toggle("active", v.id === `view-${name}`));
   // Load the live server list whenever Servers is opened (cheap + fresh).
   if (name === "servers") void renderServers();
+  // Load registered editor installs whenever the Editor tab is opened.
+  if (name === "editor") void renderEditor();
 }
 document.querySelectorAll<HTMLButtonElement>(".nav").forEach((btn) => {
   btn.addEventListener("click", () => switchView(btn.dataset.nav ?? "home"));
