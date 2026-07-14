@@ -138,6 +138,31 @@ pub fn build_tree_plugins(build_tree: &Path) -> Vec<String> {
     names
 }
 
+/// Stock UT4 plugins that ship with the editor (Epic's, plus vendor/sample ones).
+/// Excluded from the auto-discovered sideload list so the Editor panel shows the
+/// author's plugins — not CorsairRGB / RazerChroma / WebMRecord / samples. A
+/// plugin explicitly published in the signed manifest is shown regardless.
+const STOCK_PLUGINS: &[&str] = &[
+    "CorsairRGB",
+    "RazerChroma",
+    "WebMRecord",
+    "Substance",
+    "SampleGameMode",
+    "SampleMutator",
+    "PackageContent",
+    "ContentOnly",
+    "Online",
+    "CustomBot",
+    "NotForLicensees",
+];
+
+/// Whether `plugin` is a stock UT4 plugin that ships with the editor (see
+/// [`STOCK_PLUGINS`]). Case-insensitive.
+#[must_use]
+pub fn is_stock_plugin(plugin: &str) -> bool {
+    STOCK_PLUGINS.iter().any(|s| s.eq_ignore_ascii_case(plugin))
+}
+
 /// Order-independent SHA-256 fingerprint of the editor plugin on disk under
 /// `editor_root`: its `<plugin>.uplugin` plus every file under `Binaries/`, each
 /// SHA-256'd and combined in sorted relative-path order. Equals the fingerprint
@@ -538,6 +563,17 @@ mod tests {
         assert_eq!(build_tree_plugins(bt), vec!["NetcodePlus".to_string()]);
         // A tree with no Plugins/ → empty.
         assert!(build_tree_plugins(&tmp.path().join("nope")).is_empty());
+    }
+
+    #[test]
+    fn is_stock_plugin_matches_case_insensitively() {
+        assert!(is_stock_plugin("CorsairRGB"));
+        assert!(is_stock_plugin("razerchroma"));
+        assert!(is_stock_plugin("WebMRecord"));
+        // The author's plugins are not stock.
+        assert!(!is_stock_plugin("NetcodePlus"));
+        assert!(!is_stock_plugin("UTVehicles"));
+        assert!(!is_stock_plugin("LiandriMapForge"));
     }
 
     fn entry(version: u32, engine_build_id: Option<&str>) -> EditorPluginEntry {

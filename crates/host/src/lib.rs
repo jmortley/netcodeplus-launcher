@@ -47,8 +47,8 @@ pub use crate::editor::{
 };
 pub use crate::editor_plugin::{
     build_tree_plugins, content_hash as editor_plugin_content_hash,
-    install_zip as install_editor_plugin_zip, plan_editor_plugin, plugin_dir as editor_plugin_dir,
-    sideload_from_build as sideload_editor_plugin_from_build,
+    install_zip as install_editor_plugin_zip, is_stock_plugin, plan_editor_plugin,
+    plugin_dir as editor_plugin_dir, sideload_from_build as sideload_editor_plugin_from_build,
     zip_content_hash as editor_plugin_zip_content_hash, EditorPluginAction, EditorPluginDecision,
 };
 pub use crate::elevate::{dir_writable, run_elevated, shell_launch, ElevateError};

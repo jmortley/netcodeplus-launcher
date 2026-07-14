@@ -269,7 +269,12 @@ pub async fn editor_plugin_status(
     let mut names: BTreeSet<String> = BTreeSet::new();
     names.extend(manifest.editor_plugins.keys().cloned());
     names.extend(synced.keys().cloned());
-    names.extend(present.intersection(&buildable).cloned());
+    names.extend(
+        present
+            .intersection(&buildable)
+            .filter(|p| !ncp_host::is_stock_plugin(p))
+            .cloned(),
+    );
 
     let mut out = Vec::with_capacity(names.len());
     for plugin in names {
