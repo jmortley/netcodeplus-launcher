@@ -221,12 +221,11 @@ pub fn default_editor_args() -> Vec<String> {
     ]
 }
 
-/// Read `(BuildId, Changelist)` from `<root>/Engine/Binaries/Win64/UE4Editor.modules`.
-/// Both are `None` if the file is missing or not the expected JSON — a missing
-/// stamp is informational only (it never blocks registration or launch).
+/// Parse `(BuildId, Changelist)` from any `UE4Editor.modules` file — the engine's
+/// or a plugin's. Both `None` if the file is missing or not the expected JSON.
 #[must_use]
-pub fn read_engine_stamp(root: &Path) -> (Option<String>, Option<u64>) {
-    let Ok(bytes) = std::fs::read(engine_modules(root)) else {
+pub fn read_modules_stamp(modules_path: &Path) -> (Option<String>, Option<u64>) {
+    let Ok(bytes) = std::fs::read(modules_path) else {
         return (None, None);
     };
     let Ok(value) = serde_json::from_slice::<serde_json::Value>(&bytes) else {
@@ -238,6 +237,15 @@ pub fn read_engine_stamp(root: &Path) -> (Option<String>, Option<u64>) {
         .map(str::to_string);
     let changelist = value.get("Changelist").and_then(serde_json::Value::as_u64);
     (build_id, changelist)
+}
+
+/// Read `(BuildId, Changelist)` from `<root>/Engine/Binaries/Win64/UE4Editor.modules`
+/// — the install's canonical engine stamp. Editor installs carry no
+/// `Engine/Build/Build.version`, so this is the CL source for an install. A
+/// missing stamp is informational only (it never blocks registration or launch).
+#[must_use]
+pub fn read_engine_stamp(root: &Path) -> (Option<String>, Option<u64>) {
+    read_modules_stamp(&engine_modules(root))
 }
 
 /// Whole milliseconds since the Unix epoch, matching [`crate::state::PakStamp`]'s

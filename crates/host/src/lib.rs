@@ -42,8 +42,8 @@ mod zip_safety;
 
 pub use crate::dotnet::windowsdesktop_runtime_present;
 pub use crate::editor::{
-    check_editor_install, launch_editor_install, EditorError, EditorInstall, SyncSource,
-    SyncedPlugin,
+    check_editor_install, launch_editor_install, read_engine_stamp, read_modules_stamp,
+    EditorError, EditorInstall, SyncSource, SyncedPlugin,
 };
 pub use crate::editor_plugin::{
     content_hash as editor_plugin_content_hash, install_zip as install_editor_plugin_zip,

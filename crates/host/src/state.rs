@@ -154,6 +154,14 @@ pub struct LauncherState {
     #[serde(default)]
     pub editor_installs: HashMap<String, EditorInstall>,
 
+    /// The local UT4 **build tree** project dir (the one holding `Plugins/`, e.g.
+    /// `C:\UnrealTournament\UnrealTournament`), used as the source for dev
+    /// **sideloads** of freshly-built editor-plugin binaries into a registered
+    /// editor install. `None` until the author points the launcher at it. A
+    /// Windows dev-only convenience; irrelevant to players.
+    #[serde(default)]
+    pub build_tree: Option<PathBuf>,
+
     /// Highest manifest `sequence` the launcher has ever accepted.
     /// Persisted so a later run rejects any manifest carrying a lower
     /// sequence — an active-attacker replay/downgrade of an older,
@@ -338,6 +346,7 @@ impl Default for LauncherState {
             ut4_account_id: None,
             installed_plugins: HashMap::new(),
             editor_installs: HashMap::new(),
+            build_tree: None,
             highest_manifest_sequence: 0,
             installed_launcher_path: None,
             installed_launcher_version: None,
