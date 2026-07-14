@@ -6,7 +6,9 @@
 use std::collections::{HashMap, HashSet};
 use std::fs;
 
-use ncp_host::{state, LauncherState, OnboardingState, PakStamp, Priority, StateError};
+use ncp_host::{
+    state, EditorInstall, LauncherState, OnboardingState, PakStamp, Priority, StateError,
+};
 use ncp_manifest::Sha256Digest;
 use ncp_planner::{InstalledPlugin, LocalInstall, LocalPak};
 use semver::Version;
@@ -42,6 +44,31 @@ fn sample_state() -> LauncherState {
             version: 324,
             sha256: Sha256Digest::from_bytes([3u8; 32]),
             content_hash: Some("deadbeef".to_string()),
+        },
+    );
+
+    let mut editor_installs = HashMap::new();
+    editor_installs.insert(
+        "C:/LAEditorUT4/UnrealTournamentEditor".to_string(),
+        EditorInstall {
+            root: "C:/LAEditorUT4/UnrealTournamentEditor".into(),
+            label: "LAEditor".to_string(),
+            editor_exe: "C:/LAEditorUT4/UnrealTournamentEditor/Engine/Binaries/Win64/UE4Editor.exe"
+                .into(),
+            project:
+                "C:/LAEditorUT4/UnrealTournamentEditor/UnrealTournament/UnrealTournament.uproject"
+                    .into(),
+            engine_build_id: Some("7a4ea563-ab00-4f14-8e9c-20ca0c9aa851".to_string()),
+            engine_changelist: Some(3_525_360),
+            launch_args: vec![
+                "UnrealTournament".to_string(),
+                "-log".to_string(),
+                "-ddc=noshared".to_string(),
+                "-d3d11".to_string(),
+                "-sm5".to_string(),
+            ],
+            added_at_ms: 1_700_000_000_000,
+            last_sync_at_ms: None,
         },
     );
 
@@ -82,6 +109,7 @@ fn sample_state() -> LauncherState {
         ut4_display_name: Some("phantaci".to_string()),
         ut4_account_id: Some("64bf8c6d81004e88823d577abe157373".to_string()),
         installed_plugins,
+        editor_installs,
         highest_manifest_sequence: 42,
         installed_launcher_path: Some("C:/Games/UT4-Community-Launcher-0.2.0.exe".to_string()),
         installed_launcher_version: Some("0.2.0".to_string()),

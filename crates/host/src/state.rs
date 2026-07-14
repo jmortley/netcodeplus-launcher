@@ -21,6 +21,7 @@ use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
 use tracing::debug;
 
+use crate::editor::EditorInstall;
 use crate::error::{Result, StateError};
 use crate::launch::{LinuxLaunchSettings, Priority};
 
@@ -144,6 +145,14 @@ pub struct LauncherState {
     /// source of truth.
     #[serde(default)]
     pub installed_plugins: HashMap<String, InstalledPlugin>,
+
+    /// Registered UT4 **editor** installs, keyed by root path string (e.g.
+    /// `C:\LAEditorUT4\UnrealTournamentEditor`). Distinct from play installs and
+    /// from [`Self::installed_plugins`]: an editor tree is the one a mapper/author
+    /// authors in, launched via `UE4Editor.exe`. Populated when the user registers
+    /// an editor from the Editor tab; Phase 1 records synced-plugin state per entry.
+    #[serde(default)]
+    pub editor_installs: HashMap<String, EditorInstall>,
 
     /// Highest manifest `sequence` the launcher has ever accepted.
     /// Persisted so a later run rejects any manifest carrying a lower
@@ -328,6 +337,7 @@ impl Default for LauncherState {
             ut4_display_name: None,
             ut4_account_id: None,
             installed_plugins: HashMap::new(),
+            editor_installs: HashMap::new(),
             highest_manifest_sequence: 0,
             installed_launcher_path: None,
             installed_launcher_version: None,

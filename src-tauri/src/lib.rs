@@ -7,6 +7,7 @@
 
 mod auth;
 mod commands;
+mod editor_commands;
 mod elevated;
 mod gaming_mode;
 mod installer;
@@ -247,6 +248,11 @@ pub fn run() {
             installer::install_editor,
             installer::cancel_editor_download,
             installer::launch_editor,
+            editor_commands::list_editor_installs,
+            editor_commands::add_editor_install,
+            editor_commands::remove_editor_install,
+            editor_commands::set_editor_label,
+            editor_commands::launch_editor_install,
             installer::openal_info,
             installer::install_openal,
             auth::ut4_login,

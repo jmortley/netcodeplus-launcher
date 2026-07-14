@@ -18,6 +18,7 @@ pub mod compat;
 pub mod config;
 pub mod disk;
 pub mod dotnet;
+pub mod editor;
 pub mod elevate;
 mod error;
 pub mod extract;
@@ -39,6 +40,7 @@ pub mod swap;
 mod zip_safety;
 
 pub use crate::dotnet::windowsdesktop_runtime_present;
+pub use crate::editor::{check_editor_install, launch_editor_install, EditorError, EditorInstall};
 pub use crate::elevate::{dir_writable, run_elevated, shell_launch, ElevateError};
 pub use crate::error::{Result, StateError};
 pub use crate::extract::{
