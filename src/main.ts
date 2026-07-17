@@ -271,6 +271,18 @@ interface ConfigState {
   engine_ini_read_only: boolean;
 }
 
+interface ModIniState {
+  ini_exists: boolean;
+  has_backup: boolean;
+  read_only: boolean;
+}
+
+interface ModPresetInfo {
+  id: string;
+  label: string;
+  blurb: string;
+}
+
 interface NewsItem {
   title: string;
   body: string;
@@ -334,6 +346,7 @@ const pickButton = document.getElementById("pick-dir") as HTMLButtonElement;
 const versionLabel = document.getElementById("version")!;
 const statsPanel = document.getElementById("stats-panel")!;
 const configPanel = document.getElementById("config-panel")!;
+const modiniPanel = document.getElementById("modini-panel")!;
 const newsPanel = document.getElementById("news-panel")!;
 const serversPanel = document.getElementById("servers-panel")!;
 
@@ -2674,6 +2687,7 @@ async function loadAll() {
     // ncp://connect deep links (cold-start URL + live listener).
     void wireDeepLinks();
     void renderConfig();
+    void renderModIni();
     void renderAddons();
     void renderLauncherUpdate();
     void renderLauncherCleanup();
@@ -5691,6 +5705,80 @@ async function restoreConfig() {
     const s = document.getElementById("cfg-status");
     if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
     console.error("restore_engine_config failed:", err);
+  }
+}
+
+// Competitive Mod.ini presets card — curated NetcodePlus configs from top
+// players, applied through `apply_mod_preset` as a section merge (identity
+// and unrelated sections untouched; `.ncpbak` backup once; refused while
+// UT4 runs because the game rewrites Mod.ini on exit).
+async function renderModIni(flash?: { text: string; cls: "ok" | "warn" }) {
+  let st: ModIniState;
+  let presets: ModPresetInfo[];
+  try {
+    st = await invoke<ModIniState>("mod_config_state");
+    presets = await invoke<ModPresetInfo[]>("mod_preset_list");
+  } catch (err) {
+    modiniPanel.innerHTML = `<div class="warn">${escape(String(err))}</div>`;
+    return;
+  }
+
+  const readOnlyWarn = st.read_only
+    ? `<div class="alert">⚠ Your <code>Mod.ini</code> is read-only, so Apply can't write to it. Clear the read-only flag in Explorer first if you want a preset.</div>`
+    : "";
+  const rows = presets
+    .map(
+      (p) => `
+    <div class="discord-btns"><button type="button" data-preset="${escape(p.id)}">Apply ${escape(p.label)}</button></div>
+    <p class="src">${escape(p.blurb)}</p>`,
+    )
+    .join("");
+  modiniPanel.innerHTML = `
+    <p>One-click <strong>NetcodePlus <code>Mod.ini</code> presets</strong> from top players — hitsounds, forced models and team colours, gib/ragdoll and visibility settings. A preset replaces only the sections it defines; your identity and any other tweaks are left untouched, and your original is backed up before the first apply. Close UT4 first — the game rewrites <code>Mod.ini</code> on exit.</p>
+    ${readOnlyWarn}
+    ${rows}
+    <div class="discord-btns">
+      <button id="modini-restore" type="button"${st.has_backup ? "" : " disabled"}>Restore Mod.ini backup</button>
+    </div>
+    <div id="modini-status" class="launch-status"></div>`;
+
+  for (const el of modiniPanel.querySelectorAll<HTMLButtonElement>("button[data-preset]")) {
+    const id = el.dataset.preset ?? "";
+    const label = presets.find((p) => p.id === id)?.label ?? id;
+    el.addEventListener("click", () => void applyModPreset(id, label));
+  }
+  document
+    .getElementById("modini-restore")
+    ?.addEventListener("click", () => void restoreModIni());
+
+  if (flash) {
+    const s = document.getElementById("modini-status");
+    if (s) s.innerHTML = `<span class="${flash.cls}">${escape(flash.text)}</span>`;
+  }
+}
+
+async function applyModPreset(id: string, label: string): Promise<void> {
+  try {
+    await invoke("apply_mod_preset", { presetId: id });
+    await renderModIni({
+      text: `Applied ${label}. It takes effect next time UT4 starts.`,
+      cls: "ok",
+    });
+  } catch (err) {
+    const s = document.getElementById("modini-status");
+    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("apply_mod_preset failed:", err);
+  }
+}
+
+async function restoreModIni(): Promise<void> {
+  try {
+    await invoke("restore_mod_config");
+    await renderModIni({ text: "Restored your previous Mod.ini.", cls: "ok" });
+  } catch (err) {
+    const s = document.getElementById("modini-status");
+    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("restore_mod_config failed:", err);
   }
 }
 

@@ -14,6 +14,13 @@
 //! once to `Engine.ini.ncpbak` so [`restore`] is a one-click undo. We never
 //! overwrite the file wholesale: doing so would strip a player's
 //! connectivity and log them out.
+//!
+//! The same machinery powers the shipped competitive **`Mod.ini` presets**
+//! ([`mod_presets`]/[`apply_mod_preset`]): curated NetcodePlus section sets
+//! captured from top players' configs, applied as a section merge into
+//! `Saved/Config/Mod.ini` with the identical once-only `.ncpbak` backup.
+//! Identity sections (`[Identifiers]`, `[OldIdentifiers]`) are stripped from
+//! the presets at authoring time and, being unmanaged, survive every apply.
 
 use std::io::{ErrorKind, Write};
 use std::path::{Path, PathBuf};
@@ -198,6 +205,9 @@ pub enum ConfigError {
     /// Restore was requested but no backup exists.
     #[error("no backup to restore at {0}")]
     NoBackup(PathBuf),
+    /// An unknown `Mod.ini` preset id was requested.
+    #[error("unknown Mod.ini preset: {0}")]
+    UnknownPreset(String),
     /// Underlying filesystem error.
     #[error(transparent)]
     Io(#[from] std::io::Error),
@@ -369,6 +379,114 @@ pub fn restore(ini: &Path) -> ConfigResult<()> {
         Err(e) => return Err(e.into()),
     };
     write_atomic(ini, &text)
+}
+
+// ===================================================================
+// Competitive Mod.ini presets
+// ===================================================================
+
+/// A shipped competitive `Mod.ini` preset: a curated set of NetcodePlus
+/// sections captured from a top player's config, sanitized at authoring
+/// time (no identity, consent, or machine-state sections).
+pub struct ModPreset {
+    /// Stable id the UI passes back to [`apply_mod_preset`].
+    pub id: &'static str,
+    /// Human label, e.g. `iCTF (Tox)`.
+    pub label: &'static str,
+    /// One-line description for the UI card.
+    pub blurb: &'static str,
+    /// The preset's ini text. Only its sections are applied; preamble
+    /// comment lines are ignored by the merge.
+    ini: &'static str,
+}
+
+/// The shipped presets, in display order.
+static MOD_PRESETS: [ModPreset; 2] = [
+    ModPreset {
+        id: "ictf-tox",
+        label: "iCTF (Tox)",
+        blurb: "tOx-X's instagib CTF setup — team colours, hitsounds, \
+                invisible IG skin, kill sounds.",
+        ini: include_str!("presets/mod_ictf_tox.ini"),
+    },
+    ModPreset {
+        id: "dueler-phantaci",
+        label: "Dueler (Phantaci)",
+        blurb: "phantaci's duel setup — bright forced models, Quake \
+                hitsounds, minimal gibs and ragdolls.",
+        ini: include_str!("presets/mod_dueler_phantaci.ini"),
+    },
+];
+
+/// The shipped competitive `Mod.ini` presets, in display order.
+#[must_use]
+pub fn mod_presets() -> &'static [ModPreset] {
+    &MOD_PRESETS
+}
+
+/// What the UI needs to render the Mod.ini presets card.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ModIniState {
+    /// Whether `Mod.ini` exists yet. Applying a preset creates it if not
+    /// (unlike `Engine.ini`, the plugin fills in the rest on next run).
+    pub ini_exists: bool,
+    /// Whether a `.ncpbak` restore point exists.
+    pub has_backup: bool,
+    /// Whether `Mod.ini` is read-only (apply would fail).
+    pub read_only: bool,
+}
+
+/// Read the current `Mod.ini` state for the UI.
+#[must_use]
+pub fn read_mod_state(ini: &Path) -> ModIniState {
+    ModIniState {
+        ini_exists: ini.is_file(),
+        has_backup: backup_path(ini).is_file(),
+        read_only: is_read_only(ini),
+    }
+}
+
+/// Apply a shipped preset to `ini` as a **section merge**: every section
+/// the preset defines replaces the same-named section in the player's file
+/// (created if absent); all other sections — `[Identifiers]`, personal
+/// tweaks the preset doesn't cover — are preserved verbatim. A missing
+/// `Mod.ini` (plugin never configured) starts from empty. The pristine
+/// original is backed up once before the first write, so [`restore`] on
+/// the same path is a one-click undo.
+///
+/// # Errors
+/// [`ConfigError::UnknownPreset`] for an id not in [`mod_presets`], or
+/// [`ConfigError::Io`]/[`ConfigError::AtomicWrite`] on filesystem errors.
+pub fn apply_mod_preset(ini: &Path, preset_id: &str) -> ConfigResult<()> {
+    let preset = mod_presets()
+        .iter()
+        .find(|p| p.id == preset_id)
+        .ok_or_else(|| ConfigError::UnknownPreset(preset_id.to_string()))?;
+
+    let existing = match std::fs::read_to_string(ini) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+
+    // Back up the pristine original exactly once — only when there is one
+    // (a freshly-created Mod.ini leaves nothing to restore to).
+    if !existing.is_empty() {
+        let backup = backup_path(ini);
+        if !backup.exists() {
+            write_atomic(&backup, &existing)?;
+        }
+    }
+
+    let mut file = IniFile::parse(&existing);
+    for sec in &IniFile::parse(preset.ini).sections {
+        file.replace_body(
+            section_inner(&sec.header),
+            &sec.header,
+            &sec.body.join("\n"),
+        );
+    }
+    write_atomic(ini, &file.render())
 }
 
 /// True if every required `[OnlineSubsystemMcp.*]` section is present and
@@ -850,6 +968,124 @@ Protocol=https
         // Default tweaks => async loading off (competitive baseline).
         assert!(out.contains("net.AllowAsyncLoading=0"));
         assert!(out.contains("r.OneFrameThreadLag=1"));
+    }
+
+    // ── Mod.ini presets ────────────────────────────────────────────────
+
+    const MOD_SAMPLE: &str = "\
+[Identifiers]
+IDArray=abc123_Someone
+
+[Hitsounds.Enemy]
+Volume=1.000000
+Pitch=1.000000
+SoundID=Old Sound
+
+[MyCustomSection]
+Keep=1
+";
+
+    #[test]
+    fn mod_preset_merge_replaces_only_its_sections() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Mod.ini");
+        std::fs::write(&ini, MOD_SAMPLE).unwrap();
+
+        apply_mod_preset(&ini, "ictf-tox").unwrap();
+        let out = std::fs::read_to_string(&ini).unwrap();
+
+        // Unmanaged sections survive verbatim — identity above all.
+        assert!(out.contains("[Identifiers]"));
+        assert!(out.contains("IDArray=abc123_Someone"));
+        assert!(out.contains("[MyCustomSection]"));
+        assert!(out.contains("Keep=1"));
+        // The preset-owned section was replaced wholesale.
+        assert!(!out.contains("SoundID=Old Sound"));
+        assert!(!out.contains("Volume=1.000000"));
+        assert!(out.contains("[TeamSkins.Enable]"));
+    }
+
+    #[test]
+    fn mod_preset_creates_missing_ini_without_backup() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Mod.ini");
+
+        apply_mod_preset(&ini, "dueler-phantaci").unwrap();
+        assert!(ini.is_file());
+        assert!(!backup_path(&ini).exists());
+        let out = std::fs::read_to_string(&ini).unwrap();
+        assert!(out.contains("[ForceModels]"));
+        // Preamble comments from the preset file must not leak into the
+        // player's Mod.ini.
+        assert!(!out.contains("SECTION MERGE"));
+    }
+
+    #[test]
+    fn mod_preset_backup_taken_once_then_restores() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Mod.ini");
+        std::fs::write(&ini, MOD_SAMPLE).unwrap();
+
+        apply_mod_preset(&ini, "ictf-tox").unwrap();
+        apply_mod_preset(&ini, "dueler-phantaci").unwrap();
+        // The pristine pre-preset original is what the backup holds.
+        assert_eq!(
+            std::fs::read_to_string(backup_path(&ini)).unwrap(),
+            MOD_SAMPLE
+        );
+        restore(&ini).unwrap();
+        assert_eq!(std::fs::read_to_string(&ini).unwrap(), MOD_SAMPLE);
+    }
+
+    #[test]
+    fn mod_preset_unknown_id_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Mod.ini");
+        let err = apply_mod_preset(&ini, "nope").unwrap_err();
+        assert!(matches!(err, ConfigError::UnknownPreset(_)));
+    }
+
+    #[test]
+    fn shipped_mod_presets_are_sane_and_sanitized() {
+        let mut seen = std::collections::HashSet::new();
+        for p in mod_presets() {
+            assert!(seen.insert(p.id), "duplicate preset id {}", p.id);
+            let parsed = IniFile::parse(p.ini);
+            assert!(
+                parsed.sections.len() > 3,
+                "preset {} has too few sections",
+                p.id
+            );
+            // The sanitization contract: nothing identity-, consent-, or
+            // machine-state-shaped may ever ship in a preset. Scan what the
+            // merge actually applies — the parsed sections — not the raw
+            // file, whose preamble comments legitimately DOCUMENT what was
+            // stripped.
+            let applied: String = parsed
+                .sections
+                .iter()
+                .map(|s| format!("{}\n{}\n", s.header, s.body.join("\n")))
+                .collect();
+            let lower = applied.to_lowercase();
+            for banned in [
+                "[identifiers]",
+                "[oldidentifiers]",
+                "idarray",
+                "[hubtools]",
+                "[logosplash]",
+                "[botrestrictions]",
+                "takescreenshot",
+                "bseenfirstrunmenu",
+                "hasaccepted",
+                "highresscreenshotpostmatch",
+            ] {
+                assert!(
+                    !lower.contains(banned),
+                    "preset {} contains banned token {banned}",
+                    p.id
+                );
+            }
+        }
     }
 
     #[test]

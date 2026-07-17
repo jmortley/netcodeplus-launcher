@@ -1628,6 +1628,68 @@ pub fn clear_engine_ini_readonly(app: tauri::AppHandle) -> Result<(), String> {
     ncp_host::config::clear_read_only(&engine_ini(&app)?).map_err(|e| e.to_string())
 }
 
+/// The active install's `Mod.ini` path — NetcodePlus reads it from the
+/// `Saved/Config` directory that also holds the per-platform Engine.ini
+/// folder, so it is derived from [`engine_ini`] (`…/Config/<Platform>NoEditor/
+/// Engine.ini` → `…/Config/Mod.ini`) and works for both the Windows
+/// Documents layout and the Linux in-prefix layout.
+fn mod_ini(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let engine = engine_ini(app)?;
+    let config_dir = engine
+        .parent()
+        .and_then(Path::parent)
+        .ok_or_else(|| "could not locate your Mod.ini".to_string())?;
+    Ok(config_dir.join("Mod.ini"))
+}
+
+/// Serializable descriptor of a shipped Mod.ini preset for the UI.
+#[derive(Debug, serde::Serialize)]
+pub struct ModPresetInfo {
+    pub id: &'static str,
+    pub label: &'static str,
+    pub blurb: &'static str,
+}
+
+/// The shipped competitive Mod.ini presets, in display order.
+#[tauri::command]
+pub fn mod_preset_list() -> Vec<ModPresetInfo> {
+    ncp_host::config::mod_presets()
+        .iter()
+        .map(|p| ModPresetInfo {
+            id: p.id,
+            label: p.label,
+            blurb: p.blurb,
+        })
+        .collect()
+}
+
+/// Current Mod.ini state for the presets card.
+#[tauri::command]
+pub fn mod_config_state(app: tauri::AppHandle) -> Result<ncp_host::config::ModIniState, String> {
+    Ok(ncp_host::config::read_mod_state(&mod_ini(&app)?))
+}
+
+/// Apply a shipped competitive Mod.ini preset (section merge; the pristine
+/// original is backed up once). Refused while UT4 runs — the game rewrites
+/// Mod.ini on exit and would clobber the preset.
+#[tauri::command]
+pub fn apply_mod_preset(app: tauri::AppHandle, preset_id: String) -> Result<(), String> {
+    if shipping_client_running() {
+        return Err("Close UT4 to apply a Mod.ini preset.".to_string());
+    }
+    ncp_host::config::apply_mod_preset(&mod_ini(&app)?, &preset_id).map_err(|e| e.to_string())
+}
+
+/// Restore Mod.ini from the launcher's `.ncpbak` backup. Same running-game
+/// guard as apply, for the same clobber reason.
+#[tauri::command]
+pub fn restore_mod_config(app: tauri::AppHandle) -> Result<(), String> {
+    if shipping_client_running() {
+        return Err("Close UT4 to restore your Mod.ini.".to_string());
+    }
+    ncp_host::config::restore(&mod_ini(&app)?).map_err(|e| e.to_string())
+}
+
 /// Open an install's NetcodePlus plugin folder in the OS file manager. Only ever
 /// opens a real *directory* under the given install root — never an arbitrary
 /// webview path, and never a file, so there is no exec surface.
