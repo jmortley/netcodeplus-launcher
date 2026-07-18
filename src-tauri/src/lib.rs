@@ -223,6 +223,7 @@ pub fn run() {
             commands::delete_old_launcher,
             commands::dismiss_launcher_cleanup,
             commands::apply_engine_config,
+            commands::save_engine_tweaks,
             commands::restore_engine_config,
             commands::repair_master_server,
             commands::clear_engine_ini_readonly,

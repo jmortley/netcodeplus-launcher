@@ -336,20 +336,7 @@ pub fn clear_read_only(ini: &Path) -> ConfigResult<()> {
 /// [`ConfigError::IniNotFound`] if the ini does not exist, or
 /// [`ConfigError::Io`] on a filesystem error.
 pub fn apply(ini: &Path, tweaks: &EngineTweaks, set_openal_audio: bool) -> ConfigResult<()> {
-    let text = match std::fs::read_to_string(ini) {
-        Ok(t) => t,
-        Err(e) if e.kind() == ErrorKind::NotFound => {
-            return Err(ConfigError::IniNotFound(ini.to_path_buf()))
-        }
-        Err(e) => return Err(e.into()),
-    };
-
-    // Back up the pristine original exactly once, so Restore always returns
-    // to the pre-launcher config no matter how many times Apply runs.
-    let backup = backup_path(ini);
-    if !backup.exists() {
-        write_atomic(&backup, &text)?;
-    }
+    let text = read_ini_with_backup(ini)?;
 
     let mut ini_file = IniFile::parse(&text);
     ini_file.replace_body(SEC_CONSOLE, HDR_CONSOLE, CONSOLE_VARIABLES);
@@ -359,6 +346,59 @@ pub fn apply(ini: &Path, tweaks: &EngineTweaks, set_openal_audio: bool) -> Confi
         u8::from(tweaks.allow_async_loading),
     );
     ini_file.replace_body(SEC_SYSTEM, HDR_SYSTEM, &system_body);
+    set_tweak_keys(&mut ini_file, tweaks);
+    if set_openal_audio {
+        ini_file.set_key(SEC_AUDIO, HDR_AUDIO, "AudioDeviceModuleName", "ALAudio");
+    }
+
+    write_atomic(ini, &ini_file.render())
+}
+
+/// Save ONLY the editable knobs into `ini`, leaving everything else — the
+/// competitive-baseline sections included — exactly as the player has it.
+/// Same backup-once semantics as [`apply`], so Restore covers both paths.
+///
+/// # Errors
+/// [`ConfigError::IniNotFound`] if the ini does not exist, or
+/// [`ConfigError::Io`] on a filesystem error.
+pub fn save_tweaks(ini: &Path, tweaks: &EngineTweaks) -> ConfigResult<()> {
+    let text = read_ini_with_backup(ini)?;
+
+    let mut ini_file = IniFile::parse(&text);
+    set_tweak_keys(&mut ini_file, tweaks);
+    // apply() carries this inside its [SystemSettings] body replace; here the
+    // knob is merged on its own, leaving the rest of the section alone.
+    ini_file.set_key(
+        SEC_SYSTEM,
+        HDR_SYSTEM,
+        "net.AllowAsyncLoading",
+        if tweaks.allow_async_loading { "1" } else { "0" },
+    );
+
+    write_atomic(ini, &ini_file.render())
+}
+
+/// Read the ini for a mutating operation, backing up the pristine original
+/// exactly once so Restore always returns to the pre-launcher config no
+/// matter how many times Apply/Save run.
+fn read_ini_with_backup(ini: &Path) -> ConfigResult<String> {
+    let text = match std::fs::read_to_string(ini) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => {
+            return Err(ConfigError::IniNotFound(ini.to_path_buf()))
+        }
+        Err(e) => return Err(e.into()),
+    };
+    let backup = backup_path(ini);
+    if !backup.exists() {
+        write_atomic(&backup, &text)?;
+    }
+    Ok(text)
+}
+
+/// The editable knobs shared by [`apply`] and [`save_tweaks`] (async loading
+/// is handled by each caller: baseline body vs standalone key).
+fn set_tweak_keys(ini_file: &mut IniFile, tweaks: &EngineTweaks) {
     ini_file.set_key(
         SEC_ENGINE,
         HDR_ENGINE,
@@ -377,17 +417,12 @@ pub fn apply(ini: &Path, tweaks: &EngineTweaks, set_openal_audio: bool) -> Confi
         "DisplayGamma",
         &format!("{:.6}", tweaks.display_gamma),
     );
-    if set_openal_audio {
-        ini_file.set_key(SEC_AUDIO, HDR_AUDIO, "AudioDeviceModuleName", "ALAudio");
-    }
     // Voice-pool size applies to every audio device (XAudio2 and OpenAL), so
     // it is written regardless of the OpenAL override.
     let channels = tweaks
         .max_audio_channels
         .clamp(MAX_AUDIO_CHANNELS_MIN, MAX_AUDIO_CHANNELS_MAX);
     ini_file.set_key(SEC_AUDIO, HDR_AUDIO, "MaxChannels", &channels.to_string());
-
-    write_atomic(ini, &ini_file.render())
 }
 
 /// Restore `ini` from its `.ncpbak` backup.
@@ -992,6 +1027,46 @@ Protocol=https
         };
         apply(&ini, &tweaks, true).unwrap();
         assert_eq!(std::fs::read_to_string(backup_path(&ini)).unwrap(), SAMPLE);
+    }
+
+    #[test]
+    fn save_tweaks_writes_only_the_knobs() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Engine.ini");
+        std::fs::write(&ini, SAMPLE).unwrap();
+
+        let tweaks = EngineTweaks {
+            frame_rate_cap: 470.0,
+            smooth_frame_rate: false,
+            display_gamma: 2.5,
+            allow_async_loading: true,
+            max_audio_channels: 48,
+        };
+        save_tweaks(&ini, &tweaks).unwrap();
+        let out = std::fs::read_to_string(&ini).unwrap();
+
+        // The knobs landed…
+        assert!(out.contains("FrameRateCap=470.000000"));
+        assert!(out.contains("DisplayGamma=2.500000"));
+        assert!(out.contains("MaxChannels=48"));
+        assert!(out.contains("net.AllowAsyncLoading=1"));
+        // …but none of the competitive baseline did (SAMPLE has no
+        // [ConsoleVariables] body from us and Save must not add one),
+        assert!(!out.contains("r.Streaming.PoolSize"));
+        assert!(!out.contains("r.OneFrameThreadLag"));
+        // …the device override is Apply's job,
+        assert_eq!(out.matches("AudioDeviceModuleName=ALAudio").count(), 2);
+        // …and the pristine original was backed up for Restore.
+        assert_eq!(std::fs::read_to_string(backup_path(&ini)).unwrap(), SAMPLE);
+        assert_eq!(read_tweaks(&out).max_audio_channels, 48);
+    }
+
+    #[test]
+    fn save_tweaks_on_missing_ini_errors() {
+        let dir = tempfile::tempdir().unwrap();
+        let err =
+            save_tweaks(&dir.path().join("Engine.ini"), &EngineTweaks::default()).unwrap_err();
+        assert!(matches!(err, ConfigError::IniNotFound(_)));
     }
 
     #[test]

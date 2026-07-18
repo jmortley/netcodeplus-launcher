@@ -5080,7 +5080,7 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
     ? `<div class="alert">⚠ Your <code>Engine.ini</code> is read-only, so Apply can't write to it. If you set it read-only on purpose, leave it; otherwise <button id="cfg-make-writable" type="button" class="link-btn">make it writable</button> and apply again.</div>`
     : "";
   configPanel.innerHTML = `
-    <p>Applies a <strong>complete, competitively-tuned <code>Engine.ini</code> baseline</strong> — high FPS, still readable. The controls below let you <strong>customize a few parts</strong> of that config; the rest is applied as-is. Your existing <code>Engine.ini</code> is backed up before the first apply, and your online/login settings are left untouched.</p>
+    <p><strong>Save settings</strong> writes just the controls below into your <code>Engine.ini</code> — nothing else changes. <strong>Apply competitive config</strong> additionally lays down the <strong>complete, competitively-tuned baseline</strong> — high FPS, still readable. Either way your existing <code>Engine.ini</code> is backed up before the first write, and your online/login settings are left untouched.</p>
     ${readOnlyWarn}
     <div class="controls">
       <label>Frame rate cap
@@ -5099,6 +5099,7 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
     <p class="src">UT4 plays at most <strong>MaxChannels</strong> sounds at once and silently drops the quietest extras — in busy fights that can be the jump pad or rocket load behind you. <strong>48</strong> is a safe bump if you notice missing sounds; 64 if they persist. Slightly more CPU per step up.</p>
     ${audioLine}
     <div class="discord-btns">
+      <button id="cfg-save" type="button">Save settings</button>
       <button id="cfg-apply" type="button">Apply competitive config</button>
       <button id="cfg-restore" type="button"${cfg.has_backup ? "" : " disabled"}>Restore backup</button>
     </div>
@@ -5110,6 +5111,7 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
   if (root) {
     document.getElementById("open-openal")?.addEventListener("click", () => void revealOpenal(root));
   }
+  document.getElementById("cfg-save")?.addEventListener("click", () => void saveTweaks());
   document.getElementById("cfg-apply")?.addEventListener("click", () => void applyConfig(openal));
   document.getElementById("cfg-restore")?.addEventListener("click", () => void restoreConfig());
   document.getElementById("cfg-make-writable")?.addEventListener("click", () => void doClearReadonly());
@@ -5695,21 +5697,35 @@ function voiceOptions(current: number): string {
     .join("");
 }
 
-async function applyConfig(setOpenalAudio: boolean) {
+// The current values of the editable controls, defaults filled in for
+// anything unparsable. Shared by Save (knobs only) and Apply (full baseline).
+function readTweakInputs() {
   const fps = Number((document.getElementById("cfg-fps") as HTMLInputElement).value);
   const gamma = Number((document.getElementById("cfg-gamma") as HTMLInputElement).value);
-  const smooth = (document.getElementById("cfg-smooth") as HTMLInputElement).checked;
-  const allowAsync = (document.getElementById("cfg-async") as HTMLInputElement).checked;
   const voices = Number((document.getElementById("cfg-voices") as HTMLSelectElement).value);
+  return {
+    frameRateCap: Number.isFinite(fps) ? fps : 360,
+    smoothFrameRate: (document.getElementById("cfg-smooth") as HTMLInputElement).checked,
+    displayGamma: Number.isFinite(gamma) ? gamma : 3,
+    allowAsyncLoading: (document.getElementById("cfg-async") as HTMLInputElement).checked,
+    maxAudioChannels: Number.isFinite(voices) ? voices : 32,
+  };
+}
+
+async function saveTweaks() {
   try {
-    await invoke("apply_engine_config", {
-      frameRateCap: Number.isFinite(fps) ? fps : 360,
-      smoothFrameRate: smooth,
-      displayGamma: Number.isFinite(gamma) ? gamma : 3,
-      allowAsyncLoading: allowAsync,
-      maxAudioChannels: Number.isFinite(voices) ? voices : 32,
-      setOpenalAudio,
-    });
+    await invoke("save_engine_tweaks", readTweakInputs());
+    await renderConfig({ text: "Settings saved. Restart UT4 for them to take effect.", cls: "ok" });
+  } catch (err) {
+    const s = document.getElementById("cfg-status");
+    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("save_engine_tweaks failed:", err);
+  }
+}
+
+async function applyConfig(setOpenalAudio: boolean) {
+  try {
+    await invoke("apply_engine_config", { ...readTweakInputs(), setOpenalAudio });
     await renderConfig({ text: "Applied. Restart UT4 for it to take effect.", cls: "ok" });
   } catch (err) {
     const s = document.getElementById("cfg-status");

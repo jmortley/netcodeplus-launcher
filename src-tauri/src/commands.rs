@@ -1617,6 +1617,28 @@ pub fn apply_engine_config(
         .map_err(|e| e.to_string())
 }
 
+/// Save ONLY the editable knobs (frame-rate cap, smooth, gamma, async
+/// loading, MaxChannels) into Engine.ini — no competitive baseline, no
+/// audio-device override. Same backup-once semantics as apply.
+#[tauri::command]
+pub fn save_engine_tweaks(
+    app: tauri::AppHandle,
+    frame_rate_cap: f64,
+    smooth_frame_rate: bool,
+    display_gamma: f64,
+    allow_async_loading: bool,
+    max_audio_channels: u32,
+) -> Result<(), String> {
+    let tweaks = ncp_host::config::EngineTweaks {
+        frame_rate_cap,
+        smooth_frame_rate,
+        display_gamma,
+        allow_async_loading,
+        max_audio_channels,
+    };
+    ncp_host::config::save_tweaks(&engine_ini(&app)?, &tweaks).map_err(|e| e.to_string())
+}
+
 /// Restore Engine.ini from the launcher's `.ncpbak` backup.
 #[tauri::command]
 pub fn restore_engine_config(app: tauri::AppHandle) -> Result<(), String> {
