@@ -420,8 +420,9 @@ const state = {
   fillingQueues: [] as FillingQueue[],
   ut4: null as Ut4Auth | null,
   trendMode: "" as string,
-  // Discord Rich Presence opt-in (default off; mirrors discord_presence_enabled).
-  discordPresence: false,
+  // Discord Rich Presence (default ON; mirrors discord_presence_enabled —
+  // an explicit off from the Settings toggle is persisted and respected).
+  discordPresence: true,
 };
 
 function escape(value: string): string {
@@ -2574,7 +2575,7 @@ function applyPrefs(prefs: LauncherState) {
   state.launcherToken = prefs.launcher_token;
   state.utpugsToken = prefs.utpugs_launcher_token;
   state.unrealpugsToken = prefs.unrealpugs_launcher_token;
-  state.discordPresence = prefs.discord_presence_enabled ?? false;
+  state.discordPresence = prefs.discord_presence_enabled ?? true;
   linuxLaunch = prefs.linux_launch ?? null;
   linuxGpuAccel = prefs.linux_gpu_accel ?? false;
   linuxGamingMode = prefs.linux_gaming_mode ?? false;
@@ -6542,9 +6543,9 @@ const DISCOVERY_ITEMS: DiscoveryItem[] = [
     id: "rich-presence",
     surfaces: ["firstRun", "catchUp"],
     title: "Show your PUG status on Discord",
-    body: `<p>Opt in to Discord Rich Presence and the launcher broadcasts your
-      PUG state to your Discord profile — handy for letting friends see you're
-      queued or in a match. It's off by default; enable it in Settings.</p>`,
+    body: `<p>Discord Rich Presence broadcasts your PUG state to your Discord
+      profile — handy for letting friends see you're queued or in a match.
+      It's on by default; turn it off in Settings if you'd rather not.</p>`,
     navTo: "settings",
     navLabel: "Open Settings",
   },

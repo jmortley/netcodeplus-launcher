@@ -1,4 +1,4 @@
-//! Discord Rich Presence — opt-in, presence-only.
+//! Discord Rich Presence — on by default (Settings toggle to disable), presence-only.
 //!
 //! Broadcasts the launcher user's PUG state (idle / in queue / live) to their
 //! Discord profile via the local Discord client's IPC socket. No network calls,

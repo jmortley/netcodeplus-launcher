@@ -54,9 +54,9 @@ verifiable end to end** (no bundled secrets, no telemetry, source public), so
   Home flags when a queue is **filling up** so you can hop in, and you can
   **watch a live PUG** to learn a mode with no sign-up. Link your account once
   for the modes that need it (the in-app steps walk you through it).
-- **Discord Rich Presence** *(opt-in, off by default)* — show your current PUG
-  status on your Discord profile, with a button friends can click to grab the
-  launcher. Toggle it in Settings.
+- **Discord Rich Presence** *(on by default; toggle off in Settings)* — show
+  your current PUG status on your Discord profile, with a button friends can
+  click to grab the launcher.
 - **Your stats** — link your ut4stats.com profile to see per-mode rating,
   K/D, per-weapon accuracy, and recent matches (with links back to ut4stats).
 - **Performance config + add-ons** — optionally merge a competitive `Engine.ini`

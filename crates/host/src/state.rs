@@ -110,10 +110,11 @@ pub struct LauncherState {
     #[serde(default)]
     pub unrealpugs_launcher_token: Option<String>,
 
-    /// Whether Discord Rich Presence is enabled (opt-in; default off). When on,
-    /// the launcher broadcasts the user's PUG state to their Discord profile.
-    /// See `src-tauri/src/presence.rs`.
-    #[serde(default)]
+    /// Whether Discord Rich Presence is enabled (default ON since 1.7.2 —
+    /// user call 2026-07-18; an explicit `false` from the Settings toggle is
+    /// respected). When on, the launcher broadcasts the user's PUG state to
+    /// their Discord profile. See `src-tauri/src/presence.rs`.
+    #[serde(default = "default_presence_enabled")]
     pub discord_presence_enabled: bool,
 
     /// UT4 master-server account username the user logged in with, used as the
@@ -319,6 +320,10 @@ fn default_channel() -> String {
     DEFAULT_CHANNEL.to_string()
 }
 
+fn default_presence_enabled() -> bool {
+    true
+}
+
 fn default_window_action() -> String {
     "minimize".to_string()
 }
@@ -340,7 +345,7 @@ impl Default for LauncherState {
             launcher_token: None,
             utpugs_launcher_token: None,
             unrealpugs_launcher_token: None,
-            discord_presence_enabled: false,
+            discord_presence_enabled: default_presence_enabled(),
             ut4_username: None,
             ut4_display_name: None,
             ut4_account_id: None,
