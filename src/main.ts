@@ -6545,7 +6545,8 @@ const DISCOVERY_ITEMS: DiscoveryItem[] = [
     title: "Show your PUG status on Discord",
     body: `<p>Discord Rich Presence broadcasts your PUG state to your Discord
       profile — handy for letting friends see you're queued or in a match.
-      It's on by default; turn it off in Settings if you'd rather not.</p>`,
+      New installs have it on by default; the Settings toggle always
+      decides.</p>`,
     navTo: "settings",
     navLabel: "Open Settings",
   },
@@ -6576,11 +6577,11 @@ const DISCOVERY_ITEMS: DiscoveryItem[] = [
   {
     id: "rich-presence-default-on",
     surfaces: ["whatsNew"],
-    title: "Your PUG status now shows on Discord",
+    title: "Show your PUG status on Discord",
     body: `<p>Discord Rich Presence — your queue/match status on your Discord
-      profile — is now <strong>on by default</strong> so friends can see when
-      you're queued. If you already turned it off, your choice is kept. Rather
-      keep it private? The toggle is in Settings.</p>`,
+      profile — is now <strong>on by default for new installs</strong>. Your
+      install keeps its current setting, so if you want friends to see when
+      you're queued, flip it on in Settings.</p>`,
     navTo: "settings",
     navLabel: "Open Settings",
   },
