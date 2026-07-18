@@ -261,6 +261,7 @@ interface EngineTweaks {
   smooth_frame_rate: boolean;
   display_gamma: number;
   allow_async_loading: boolean;
+  max_audio_channels: number;
 }
 
 interface ConfigState {
@@ -5090,8 +5091,12 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
         <input id="cfg-gamma" type="number" min="1" max="5" step="0.1" value="${escape(String(t.display_gamma))}" />
       </label>
       <label class="cfg-check"><input id="cfg-async" type="checkbox"${t.allow_async_loading ? " checked" : ""} /> Allow async loading (Blitz / flag-run safe)</label>
+      <label>Max sounds at once (MaxChannels)
+        <select id="cfg-voices">${voiceOptions(t.max_audio_channels)}</select>
+      </label>
     </div>
     <p class="src">Leave <strong>async loading</strong> on if you play Blitz (flag run) — it avoids load hitches that mode is prone to. Turn it off for slightly faster map loads in other modes (the competitive default).</p>
+    <p class="src">UT4 plays at most <strong>MaxChannels</strong> sounds at once and silently drops the quietest extras — in busy fights that can be the jump pad or rocket load behind you. <strong>48</strong> is a safe bump if you notice missing sounds; 64 if they persist. Slightly more CPU per step up.</p>
     ${audioLine}
     <div class="discord-btns">
       <button id="cfg-apply" type="button">Apply competitive config</button>
@@ -5676,17 +5681,33 @@ async function startEditorInstall(): Promise<void> {
   }
 }
 
+// Options for the MaxChannels select: the stock/bumped presets, plus the
+// current ini value as its own entry when someone hand-tuned something else
+// (so rendering the card never silently changes their setting).
+function voiceOptions(current: number): string {
+  const presets = [32, 48, 64];
+  const values = presets.includes(current) ? presets : [...presets, current].sort((a, b) => a - b);
+  return values
+    .map((v) => {
+      const label = v === 32 ? "32 (stock)" : v === 48 ? "48 (recommended bump)" : String(v);
+      return `<option value="${v}"${v === current ? " selected" : ""}>${label}</option>`;
+    })
+    .join("");
+}
+
 async function applyConfig(setOpenalAudio: boolean) {
   const fps = Number((document.getElementById("cfg-fps") as HTMLInputElement).value);
   const gamma = Number((document.getElementById("cfg-gamma") as HTMLInputElement).value);
   const smooth = (document.getElementById("cfg-smooth") as HTMLInputElement).checked;
   const allowAsync = (document.getElementById("cfg-async") as HTMLInputElement).checked;
+  const voices = Number((document.getElementById("cfg-voices") as HTMLSelectElement).value);
   try {
     await invoke("apply_engine_config", {
       frameRateCap: Number.isFinite(fps) ? fps : 360,
       smoothFrameRate: smooth,
       displayGamma: Number.isFinite(gamma) ? gamma : 3,
       allowAsyncLoading: allowAsync,
+      maxAudioChannels: Number.isFinite(voices) ? voices : 32,
       setOpenalAudio,
     });
     await renderConfig({ text: "Applied. Restart UT4 for it to take effect.", cls: "ok" });
@@ -6576,6 +6597,7 @@ async function applyCompetitiveConfigFromOnboarding(statusEl: HTMLElement | null
       smoothFrameRate: false,
       displayGamma: 3,
       allowAsyncLoading: false,
+      maxAudioChannels: 32,
       setOpenalAudio: false,
     });
     if (statusEl)

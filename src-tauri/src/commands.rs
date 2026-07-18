@@ -1603,6 +1603,7 @@ pub fn apply_engine_config(
     smooth_frame_rate: bool,
     display_gamma: f64,
     allow_async_loading: bool,
+    max_audio_channels: u32,
     set_openal_audio: bool,
 ) -> Result<(), String> {
     let tweaks = ncp_host::config::EngineTweaks {
@@ -1610,6 +1611,7 @@ pub fn apply_engine_config(
         smooth_frame_rate,
         display_gamma,
         allow_async_loading,
+        max_audio_channels,
     };
     ncp_host::config::apply(&engine_ini(&app)?, &tweaks, set_openal_audio)
         .map_err(|e| e.to_string())

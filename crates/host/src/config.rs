@@ -160,7 +160,22 @@ pub struct EngineTweaks {
     /// is off (`=0`, faster map loads) but it can break Blitz / flag-run, so
     /// it's a per-player toggle. `true` writes `=1`, `false` writes `=0`.
     pub allow_async_loading: bool,
+    /// `MaxChannels` in `[Audio]` — how many sounds UT4 plays at once. The
+    /// engine default is 32 with no virtualization: once the pool is full,
+    /// quiet one-shots (a jump pad behind you, a distant rocket load) are
+    /// dropped outright. Busy NetcodePlus fights can exceed 32, so this is a
+    /// per-player knob; values are clamped to
+    /// [`MAX_AUDIO_CHANNELS_MIN`]..=[`MAX_AUDIO_CHANNELS_MAX`] on apply.
+    /// Applies to both the stock XAudio2 device and the UT4-OpenAL module.
+    pub max_audio_channels: u32,
 }
+
+/// Lower clamp for [`EngineTweaks::max_audio_channels`] — below the engine
+/// default would only make sounds drop more.
+pub const MAX_AUDIO_CHANNELS_MIN: u32 = 32;
+/// Upper clamp for [`EngineTweaks::max_audio_channels`] — each active voice
+/// costs mixer CPU (more so under OpenAL HRTF), so keep the ceiling sane.
+pub const MAX_AUDIO_CHANNELS_MAX: u32 = 128;
 
 impl Default for EngineTweaks {
     fn default() -> Self {
@@ -169,6 +184,7 @@ impl Default for EngineTweaks {
             smooth_frame_rate: false,
             display_gamma: 3.0,
             allow_async_loading: false,
+            max_audio_channels: 32,
         }
     }
 }
@@ -363,6 +379,12 @@ pub fn apply(ini: &Path, tweaks: &EngineTweaks, set_openal_audio: bool) -> Confi
     if set_openal_audio {
         ini_file.set_key(SEC_AUDIO, HDR_AUDIO, "AudioDeviceModuleName", "ALAudio");
     }
+    // Voice-pool size applies to every audio device (XAudio2 and OpenAL), so
+    // it is written regardless of the OpenAL override.
+    let channels = tweaks
+        .max_audio_channels
+        .clamp(MAX_AUDIO_CHANNELS_MIN, MAX_AUDIO_CHANNELS_MAX);
+    ini_file.set_key(SEC_AUDIO, HDR_AUDIO, "MaxChannels", &channels.to_string());
 
     write_atomic(ini, &ini_file.render())
 }
@@ -541,17 +563,20 @@ const fn bool_str(b: bool) -> &'static str {
     }
 }
 
-/// Read the three editable values out of `[/Script/UnrealTournament.UTGameEngine]`.
+/// Read the editable values out of `[/Script/UnrealTournament.UTGameEngine]`,
+/// `[SystemSettings]` and `[Audio]`.
 fn read_tweaks(text: &str) -> EngineTweaks {
     let mut t = EngineTweaks::default();
     let mut in_engine = false;
     let mut in_system = false;
+    let mut in_audio = false;
     for line in text.lines() {
         let l = line.trim();
         if l.starts_with('[') && l.ends_with(']') {
             let inner = section_inner(l);
             in_engine = inner.eq_ignore_ascii_case(SEC_ENGINE);
             in_system = inner.eq_ignore_ascii_case(SEC_SYSTEM);
+            in_audio = inner.eq_ignore_ascii_case(SEC_AUDIO);
             continue;
         }
         let Some((k, v)) = l.split_once('=') else {
@@ -572,6 +597,10 @@ fn read_tweaks(text: &str) -> EngineTweaks {
             }
         } else if in_system && k.eq_ignore_ascii_case("net.AllowAsyncLoading") {
             t.allow_async_loading = v == "1";
+        } else if in_audio && k.eq_ignore_ascii_case("MaxChannels") {
+            if let Ok(n) = v.parse() {
+                t.max_audio_channels = n;
+            }
         }
     }
     t
@@ -811,6 +840,8 @@ Protocol=https
         if set_audio {
             f.set_key(SEC_AUDIO, HDR_AUDIO, "AudioDeviceModuleName", "ALAudio");
         }
+        // Mirror apply()'s unconditional voice-pool write (default tweaks).
+        f.set_key(SEC_AUDIO, HDR_AUDIO, "MaxChannels", "32");
         f.render()
     }
 
@@ -855,8 +886,9 @@ Protocol=https
 
     #[test]
     fn audio_section_untouched_when_openal_absent() {
-        // With set_audio=false we never write the key; whatever the user
-        // already had is left exactly as-is (we don't add or remove).
+        // With set_audio=false we never write the DEVICE key; whatever the
+        // user already had is left exactly as-is (we don't add or remove).
+        // MaxChannels is a separate, always-written knob.
         let out = apply_to(SAMPLE, false);
         assert_eq!(out.matches("AudioDeviceModuleName=ALAudio").count(), 2);
     }
@@ -955,10 +987,59 @@ Protocol=https
             frame_rate_cap: 240.0,
             smooth_frame_rate: true,
             display_gamma: 2.0,
-            allow_async_loading: false,
+            ..EngineTweaks::default()
         };
         apply(&ini, &tweaks, true).unwrap();
         assert_eq!(std::fs::read_to_string(backup_path(&ini)).unwrap(), SAMPLE);
+    }
+
+    #[test]
+    fn applies_max_audio_channels_regardless_of_openal() {
+        // Default tweaks write the stock 32 explicitly, with or without the
+        // OpenAL device override.
+        let with_openal = apply_to(SAMPLE, true);
+        assert!(with_openal.contains("MaxChannels=32"));
+        // No OpenAL and no pre-existing [Audio] section: the voice-pool knob
+        // still lands, and no device override appears.
+        let without = apply_to("[Core.System]\nPaths=x\n", false);
+        assert!(without.contains("MaxChannels=32"));
+        assert!(!without.contains("AudioDeviceModuleName"));
+    }
+
+    #[test]
+    fn max_audio_channels_round_trips_and_clamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Engine.ini");
+        std::fs::write(&ini, SAMPLE).unwrap();
+
+        let tweaks = EngineTweaks {
+            max_audio_channels: 64,
+            ..EngineTweaks::default()
+        };
+        apply(&ini, &tweaks, true).unwrap();
+        let out = std::fs::read_to_string(&ini).unwrap();
+        assert!(out.contains("MaxChannels=64"));
+        assert_eq!(read_tweaks(&out).max_audio_channels, 64);
+
+        // Out-of-range values clamp instead of writing something the audio
+        // device would choke on.
+        let too_big = EngineTweaks {
+            max_audio_channels: 999,
+            ..EngineTweaks::default()
+        };
+        apply(&ini, &too_big, true).unwrap();
+        assert!(std::fs::read_to_string(&ini)
+            .unwrap()
+            .contains(&format!("MaxChannels={MAX_AUDIO_CHANNELS_MAX}")));
+
+        let too_small = EngineTweaks {
+            max_audio_channels: 8,
+            ..EngineTweaks::default()
+        };
+        apply(&ini, &too_small, true).unwrap();
+        assert!(std::fs::read_to_string(&ini)
+            .unwrap()
+            .contains(&format!("MaxChannels={MAX_AUDIO_CHANNELS_MIN}")));
     }
 
     #[test]
