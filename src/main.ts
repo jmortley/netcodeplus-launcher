@@ -6573,6 +6573,17 @@ const DISCOVERY_ITEMS: DiscoveryItem[] = [
   //     title: "Pick your Instagib queue",
   //     body: `<p>Choose iCTF or Elim before you queue …</p>`,
   //   },
+  {
+    id: "rich-presence-default-on",
+    surfaces: ["whatsNew"],
+    title: "Your PUG status now shows on Discord",
+    body: `<p>Discord Rich Presence — your queue/match status on your Discord
+      profile — is now <strong>on by default</strong> so friends can see when
+      you're queued. If you already turned it off, your choice is kept. Rather
+      keep it private? The toggle is in Settings.</p>`,
+    navTo: "settings",
+    navLabel: "Open Settings",
+  },
 ];
 
 // Vite replaces import.meta.env at build time; cast keeps tsc happy without a
