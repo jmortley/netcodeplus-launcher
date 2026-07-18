@@ -173,9 +173,10 @@ pub struct EngineTweaks {
 /// Lower clamp for [`EngineTweaks::max_audio_channels`] — below the engine
 /// default would only make sounds drop more.
 pub const MAX_AUDIO_CHANNELS_MIN: u32 = 32;
-/// Upper clamp for [`EngineTweaks::max_audio_channels`] — each active voice
-/// costs mixer CPU (more so under OpenAL HRTF), so keep the ceiling sane.
-pub const MAX_AUDIO_CHANNELS_MAX: u32 = 128;
+/// Upper clamp for [`EngineTweaks::max_audio_channels`] — the engine's own
+/// hard cap (`MAX_AUDIOCHANNELS` = 64); the audio device ignores anything
+/// above it, so writing more would just be a lie in the ini.
+pub const MAX_AUDIO_CHANNELS_MAX: u32 = 64;
 
 impl Default for EngineTweaks {
     fn default() -> Self {
