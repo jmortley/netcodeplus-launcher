@@ -152,6 +152,22 @@ pub fn run() {
     }
 
     builder
+        // Restore the last window size/position/maximized state on launch and
+        // save it on exit. Pure Rust lifecycle hook — no frontend command surface.
+        // The window's first-run default is windowed (tauri.conf.json
+        // maximized:false); this plugin overrides it from the saved state on every
+        // subsequent launch. SIZE|POSITION|MAXIMIZED only — deliberately NOT the
+        // default all-flags: persisting VISIBLE could reopen the launcher hidden
+        // after a minimized/tray close, and FULLSCREEN is not a state we set.
+        .plugin(
+            tauri_plugin_window_state::Builder::default()
+                .with_state_flags(
+                    tauri_plugin_window_state::StateFlags::SIZE
+                        | tauri_plugin_window_state::StateFlags::POSITION
+                        | tauri_plugin_window_state::StateFlags::MAXIMIZED,
+                )
+                .build(),
+        )
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())

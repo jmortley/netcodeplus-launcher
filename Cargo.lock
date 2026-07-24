@@ -2546,7 +2546,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-host"
-version = "1.7.2"
+version = "1.7.3"
 dependencies = [
  "dirs",
  "lnk",
@@ -2567,7 +2567,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-manifest"
-version = "1.7.2"
+version = "1.7.3"
 dependencies = [
  "chrono",
  "hex",
@@ -2582,7 +2582,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-net"
-version = "1.7.2"
+version = "1.7.3"
 dependencies = [
  "futures-util",
  "ncp-manifest",
@@ -2597,7 +2597,7 @@ dependencies = [
 
 [[package]]
 name = "ncp-planner"
-version = "1.7.2"
+version = "1.7.3"
 dependencies = [
  "chrono",
  "ncp-manifest",
@@ -2633,7 +2633,7 @@ dependencies = [
 
 [[package]]
 name = "netcodeplus-launcher"
-version = "1.7.2"
+version = "1.7.3"
 dependencies = [
  "chrono",
  "dirs",
@@ -2655,6 +2655,7 @@ dependencies = [
  "tauri-plugin-notification",
  "tauri-plugin-opener",
  "tauri-plugin-single-instance",
+ "tauri-plugin-window-state",
  "windows-sys 0.59.0",
  "x11rb",
 ]
@@ -4907,6 +4908,21 @@ dependencies = [
  "tracing",
  "windows-sys 0.60.2",
  "zbus",
+]
+
+[[package]]
+name = "tauri-plugin-window-state"
+version = "2.4.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "73736611e14142408d15353e21e3cca2f12a3cfb523ad0ce85999b6d2ef1a704"
+dependencies = [
+ "bitflags 2.11.1",
+ "log",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-plugin",
+ "thiserror 2.0.18",
 ]
 
 [[package]]

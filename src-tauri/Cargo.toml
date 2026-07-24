@@ -41,6 +41,11 @@ discord-rich-presence = "0.2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-single-instance = { version = "2", features = ["deep-link"] }
 
+# Remember window size / position / maximized state across launches, so the
+# launcher reopens the way the user left it instead of always maximizing. See
+# lib.rs (Builder) + tauri.conf.json (maximized:false = first-run default).
+tauri-plugin-window-state = "2"
+
 # Process enumeration for the connect flow — detect an already-running UT4 so
 # the launcher can offer the in-game `open` console command instead of spawning
 # a second game instance.
