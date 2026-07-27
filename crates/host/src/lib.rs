@@ -76,7 +76,7 @@ pub use crate::pak_install::{
 };
 pub use crate::plugin_install::{
     install_plugin_zip, install_plugin_zip_verified, plugin_content_hash, plugin_matches_zip,
-    plugin_zip_content_hash, PluginInstallError,
+    plugin_supports_env_auth, plugin_zip_content_hash, PluginInstallError, AUTH_ENV_VAR,
 };
 pub use crate::shortcut::{
     create_desktop_shortcut, create_desktop_shortcut_with, detect_outdated_launcher,

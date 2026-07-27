@@ -2024,9 +2024,9 @@ async function launch() {
   const status = document.getElementById("launch-status")!;
 
   status.textContent = "Launching…";
-  let authArgs: string[];
+  let auth: Ut4AuthLaunch;
   try {
-    authArgs = await ut4AuthArgs();
+    auth = await ut4AuthArgs(di.install.root);
   } catch (err) {
     if (handleReloginError(err, null)) return;
     status.innerHTML = `<span class="warn">UT4 login failed: ${escape(String(err))}</span>`;
@@ -2035,10 +2035,11 @@ async function launch() {
   try {
     await invoke("launch_game", {
       executable: di.install.executable,
-      args: [...profile.args, ...authArgs],
+      args: [...profile.args, ...auth.args],
       priority: state.priority,
       affinityMaskHex: state.affinityHex || null,
       windowAction: state.launchWindowAction,
+      env: auth.env,
     });
     persist();
     status.innerHTML = `<span class="ok">Launched: ${escape(profile.label)} (${escape(
@@ -2121,9 +2122,12 @@ async function doLaunchElevated(): Promise<void> {
   const profile =
     di.profiles.find((p) => p.label === state.profileLabel) ?? di.profiles[selectedProfileIndex(di)];
   const status = document.getElementById("admin-warn-status");
-  let authArgs: string[];
+  let auth: Ut4AuthLaunch;
   try {
-    authArgs = await ut4AuthArgs();
+    // No root argument on purpose: an elevated launch is created by the UAC
+    // broker, which does not inherit this process's environment, so the login
+    // code has to travel on the command line here even though that logs it.
+    auth = await ut4AuthArgs();
   } catch (err) {
     if (handleReloginError(err, null)) return;
     if (status) status.innerHTML = `<span class="warn">UT4 login failed: ${escape(String(err))}</span>`;
@@ -2134,7 +2138,7 @@ async function doLaunchElevated(): Promise<void> {
       // Pass the install root (an id the backend re-validates), not the exe path
       // — the backend resolves the executable itself (defense-in-depth).
       root: di.install.root,
-      args: [...profile.args, ...authArgs],
+      args: [...profile.args, ...auth.args],
       windowAction: state.launchWindowAction,
     });
     if (status) status.innerHTML = `<span class="ok">Launching as administrator…</span>`;
@@ -2231,19 +2235,43 @@ async function ut4Logout() {
   renderTopbarAuth();
 }
 
-// Returns the -AUTH_* args that log the game in via the launcher's session, or
-// [] when signed out (the game then shows its own login window). Throws
-// "RELOGIN_REQUIRED" when the stored session has expired.
-async function ut4AuthArgs(): Promise<string[]> {
-  if (!state.ut4?.logged_in) return [];
+// The launch args + extra environment that log the game in via the launcher's
+// session; both empty when signed out (the game then shows its own login
+// window). Throws "RELOGIN_REQUIRED" when the stored session has expired.
+type Ut4AuthLaunch = { args: string[]; env: Record<string, string> };
+
+// `root` is the install the game will be launched from — it decides whether the
+// exchange code can travel in the environment (see below). Omit it to force the
+// command-line form, which is what the elevated launch path must do: a UAC
+// launch goes through ShellExecute and does NOT inherit our environment.
+async function ut4AuthArgs(root?: string): Promise<Ut4AuthLaunch> {
+  if (!state.ut4?.logged_in) return { args: [], env: {} };
   const a = await invoke<{ username: string; exchange_code: string; account_id: string }>(
     "ut4_prepare_launch",
   );
-  const args = [
-    `-AUTH_LOGIN=${a.username}`,
-    `-AUTH_PASSWORD=${a.exchange_code}`,
-    `-AUTH_TYPE=exchangecode`,
-  ];
+  const args = [`-AUTH_LOGIN=${a.username}`, `-AUTH_TYPE=exchangecode`];
+  const env: Record<string, string> = {};
+
+  // The exchange code is a live login credential, and UE4 writes the whole
+  // command line into Saved/Logs/UnrealTournament.log and into every crash
+  // report — files players routinely post in public channels. Plugin builds that
+  // read the code from the environment get it that way and it never lands on
+  // disk. Older builds have no such pickup, so they still need the argument or
+  // the player simply fails to log in; ask the installed binary which it is.
+  let viaEnv = false;
+  if (root) {
+    try {
+      viaEnv = await invoke<boolean>("ut4_env_auth_supported", { root });
+    } catch (err) {
+      console.error("ut4_env_auth_supported failed:", err);
+      viaEnv = false;
+    }
+  }
+  if (viaEnv) {
+    env.NCP_AUTH_PASSWORD = a.exchange_code;
+  } else {
+    args.push(`-AUTH_PASSWORD=${a.exchange_code}`);
+  }
   // -epicuserid names the active account so the game boots into it instead of
   // showing the account picker. Only sent when captured (a session from before
   // account-id capture leaves it empty — the user re-logs in once to populate
@@ -2254,7 +2282,7 @@ async function ut4AuthArgs(): Promise<string[]> {
   if (a.account_id) {
     args.push(`-epicuserid=${a.account_id}`);
   }
-  return args;
+  return { args, env };
 }
 
 // On an expired session, flip to signed-out and re-render the login form. If a
@@ -3177,15 +3205,15 @@ async function connectTo(server: string, password: string, status: HTMLElement |
   const connectUrl = password ? `${server}?Password=${password}` : server;
   // The actual launch: resolve auth args, attach -ncpconnect, spawn the game.
   const doLaunch = async () => {
-    let authArgs: string[];
+    let auth: Ut4AuthLaunch;
     try {
-      authArgs = await ut4AuthArgs();
+      auth = await ut4AuthArgs(di.install.root);
     } catch (err) {
       if (handleReloginError(err, status)) return;
       if (status) status.innerHTML = `<span class="warn">UT4 login failed: ${escape(String(err))}</span>`;
       return;
     }
-    const args = [...profile.args, ...authArgs, `-ncpconnect=${connectUrl}`];
+    const args = [...profile.args, ...auth.args, `-ncpconnect=${connectUrl}`];
     if (status) status.textContent = "Connecting…";
     try {
       await invoke("launch_game", {
@@ -3194,6 +3222,7 @@ async function connectTo(server: string, password: string, status: HTMLElement |
         priority: state.priority,
         affinityMaskHex: state.affinityHex || null,
         windowAction: state.launchWindowAction,
+        env: auth.env,
       });
       if (status) status.innerHTML = `<span class="ok">Launched — connecting to ${escape(server)}…</span>`;
     } catch (err) {

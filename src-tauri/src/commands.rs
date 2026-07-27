@@ -78,6 +78,7 @@ pub fn launch_game(
     priority: String,
     affinity_mask_hex: Option<String>,
     window_action: String,
+    env: Option<std::collections::HashMap<String, String>>,
 ) -> Result<(), String> {
     let affinity_mask = match affinity_mask_hex {
         Some(s) => {
@@ -96,8 +97,18 @@ pub fn launch_game(
         .ok()
         .flatten()
         .and_then(|s| s.linux_launch);
-    ncp_host::launch(Path::new(&executable), &args, &opts, linux_launch.as_ref())
-        .map_err(|e| e.to_string())?;
+    // Extra environment for the child. Carries the login credential when the
+    // installed plugin picks it up from there instead of the command line —
+    // the command line is logged and put in crash reports, the environment is not.
+    let env: Vec<(String, String)> = env.unwrap_or_default().into_iter().collect();
+    ncp_host::launch(
+        Path::new(&executable),
+        &args,
+        &opts,
+        linux_launch.as_ref(),
+        &env,
+    )
+    .map_err(|e| e.to_string())?;
 
     // Linux gaming mode (opt-in): spawn the detached watchdog that keeps the
     // game window fullscreen+focused and hides the GNOME dock while playing.

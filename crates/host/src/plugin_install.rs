@@ -411,6 +411,64 @@ fn has_extra_load_bearing_file(
     Ok(false)
 }
 
+/// Environment variable the launcher uses to hand the one-shot Epic exchange
+/// code to the game instead of putting it on the command line.
+///
+/// The engine writes the whole command line into `Saved/Logs/UnrealTournament.log`
+/// and into the `CommandLine` property of every crash report, and players post
+/// those files publicly when asking for help — which leaked a live login
+/// credential. NetcodePlus builds that support this read the variable during
+/// module startup and append the value to the command line in memory, where the
+/// engine's already-written logging copies can no longer pick it up.
+pub const AUTH_ENV_VAR: &str = "NCP_AUTH_PASSWORD";
+
+/// Whether the NetcodePlus build installed under `root` takes the login code
+/// from [`AUTH_ENV_VAR`] rather than `-AUTH_PASSWORD`.
+///
+/// Probed by searching the plugin's shipping **client** DLL for the variable
+/// name, which the plugin's `TEXT("NCP_AUTH_PASSWORD")` literal leaves in the
+/// binary as UTF-16LE. (Linux runs the same Windows build under Wine, so the
+/// same probe answers for both platforms.)
+///
+/// Deliberately not a version check: client re-rolls ship under the same build
+/// number, so the version genuinely cannot distinguish a build with the handoff
+/// from one without — and being wrong in the optimistic direction means the code
+/// never reaches the game and the player silently fails to log in. Every doubt
+/// (no plugin, unreadable file, no match) answers `false`, which is just the
+/// long-standing command-line behaviour.
+#[must_use]
+pub fn plugin_supports_env_auth(root: &Path) -> bool {
+    let dir = netcodeplus_dir(root).join("Binaries").join("Win64");
+    let needle: Vec<u8> = AUTH_ENV_VAR
+        .encode_utf16()
+        .flat_map(u16::to_le_bytes)
+        .collect();
+    let Ok(entries) = fs::read_dir(&dir) else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if !path
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("dll"))
+        {
+            continue;
+        }
+        // Only the client DLL decides this: it is the one the game loads. An
+        // editor/server DLL left behind from another build must not vote.
+        let name = entry.file_name().to_string_lossy().to_ascii_lowercase();
+        if name.starts_with("ue4editor") || name.starts_with("ue4server") {
+            continue;
+        }
+        if let Ok(bytes) = fs::read(&path) {
+            if bytes.windows(needle.len()).any(|w| w == needle.as_slice()) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 /// A stable fingerprint of the load-bearing files on disk for the NetcodePlus
 /// plugin under `root`: the `.uplugin` plus every file under `Binaries/`, each
 /// SHA-256'd and combined in sorted relative-path order.
@@ -580,6 +638,72 @@ mod tests {
             .file_type()
             .is_symlink());
         assert!(!fs::symlink_metadata(&dll).unwrap().file_type().is_symlink());
+    }
+
+    /// Write a plugin folder whose client DLL contains `dll_bytes`, and return the
+    /// install root. Mirrors what the installer lays down.
+    fn plugin_folder_with_client_dll(tmp: &Path, dll_bytes: &[u8]) -> PathBuf {
+        let root = tmp.join("UT4");
+        let win64 = netcodeplus_dir(&root).join("Binaries").join("Win64");
+        fs::create_dir_all(&win64).unwrap();
+        fs::write(
+            netcodeplus_dir(&root).join("NetcodePlus.uplugin"),
+            br#"{"VersionName":"2.0"}"#,
+        )
+        .unwrap();
+        fs::write(win64.join("UE4-NetcodePlus-Win64-Shipping.dll"), dll_bytes).unwrap();
+        root
+    }
+
+    /// The variable name as it appears inside a compiled UE4 binary: the plugin's
+    /// `TEXT("NCP_AUTH_PASSWORD")` literal is UTF-16LE.
+    fn utf16_needle() -> Vec<u8> {
+        AUTH_ENV_VAR
+            .encode_utf16()
+            .flat_map(u16::to_le_bytes)
+            .collect()
+    }
+
+    #[test]
+    fn env_auth_probe_finds_the_marker_in_the_client_dll() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let mut dll = b"...arbitrary binary padding...".to_vec();
+        dll.extend_from_slice(&utf16_needle());
+        dll.extend_from_slice(b"...more padding...");
+        let root = plugin_folder_with_client_dll(tmp.path(), &dll);
+        assert!(plugin_supports_env_auth(&root));
+    }
+
+    #[test]
+    fn env_auth_probe_says_no_for_an_older_build_or_no_plugin() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+
+        // A build without the handoff: the code must still go on the command line,
+        // or the player cannot log in at all.
+        let root = plugin_folder_with_client_dll(tmp.path(), b"an older build, no marker");
+        assert!(!plugin_supports_env_auth(&root));
+
+        // No plugin installed at all.
+        assert!(!plugin_supports_env_auth(&tmp.path().join("empty")));
+    }
+
+    #[test]
+    fn env_auth_probe_ignores_editor_and_server_dlls() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        // Client DLL is an old build; editor/server DLLs left over from a newer one
+        // must not make us skip the command-line argument the client still needs.
+        let root = plugin_folder_with_client_dll(tmp.path(), b"an older build, no marker");
+        let win64 = netcodeplus_dir(&root).join("Binaries").join("Win64");
+        for name in [
+            "UE4Editor-NetcodePlus.dll",
+            "UE4Server-NetcodePlus-Win64-Shipping.dll",
+        ] {
+            fs::write(win64.join(name), utf16_needle()).unwrap();
+        }
+        assert!(!plugin_supports_env_auth(&root));
     }
 
     #[test]

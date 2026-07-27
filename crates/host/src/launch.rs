@@ -175,6 +175,11 @@ pub fn parse_mask_hex(s: &str) -> Result<Option<u64>, std::num::ParseIntError> {
 /// `cd`s there first). Priority is applied at creation; affinity, when
 /// requested, is pinned on the spawned child.
 ///
+/// `env` adds variables to the child's environment on top of the inherited one.
+/// It carries the login credential the game must not receive on its command
+/// line (see [`crate::plugin_install::AUTH_ENV_VAR`]): the engine writes the
+/// command line to its log and crash reports, but never the environment.
+///
 /// # Errors
 /// Returns the spawn error if the game process cannot start, or the OS
 /// error if pinning CPU affinity fails.
@@ -184,6 +189,7 @@ pub fn launch(
     args: &[String],
     opts: &LaunchOptions,
     _linux: Option<&LinuxLaunchSettings>,
+    env: &[(String, String)],
 ) -> std::io::Result<()> {
     use std::os::windows::process::CommandExt;
     use std::process::Command;
@@ -199,7 +205,10 @@ pub fn launch(
 
     let cwd = exe.parent().unwrap_or(exe);
     let mut command = Command::new(exe);
-    command.args(args).current_dir(cwd);
+    command
+        .args(args)
+        .envs(env.iter().map(|(k, v)| (k, v)))
+        .current_dir(cwd);
     match opts.priority {
         Priority::High => {
             command.creation_flags(HIGH_PRIORITY_CLASS);
@@ -246,6 +255,10 @@ fn set_process_affinity(child: &std::process::Child, mask: u64) -> std::io::Resu
 /// (a genuine native build, or a test). The Windows-only priority/affinity knobs
 /// are ignored.
 ///
+/// `env` adds variables to the child's environment; Wine passes the environment
+/// it was started with through to the Windows process, so the game reads them
+/// the same way it does on Windows.
+///
 /// # Errors
 /// Returns the spawn error if the game (or Wine) cannot start.
 #[cfg(not(windows))]
@@ -254,15 +267,20 @@ pub fn launch(
     args: &[String],
     _opts: &LaunchOptions,
     linux: Option<&LinuxLaunchSettings>,
+    env: &[(String, String)],
 ) -> std::io::Result<()> {
     use std::process::Command;
 
     if let Some(plan) = resolve_wine_launch(exe, args, linux) {
-        spawn_wine(&plan)?;
+        spawn_wine(&plan, env)?;
     } else {
         // No prefix anywhere (not a Wine setup, or a genuine native build/test).
         let cwd = exe.parent().unwrap_or(exe);
-        Command::new(exe).args(args).current_dir(cwd).spawn()?;
+        Command::new(exe)
+            .args(args)
+            .envs(env.iter().map(|(k, v)| (k, v)))
+            .current_dir(cwd)
+            .spawn()?;
     }
     Ok(())
 }
@@ -296,8 +314,11 @@ pub fn resolve_wine_launch(
 /// env vars (as literal `key=value` — never shell-expanded), working dir, and an
 /// optional command wrapper (`prefix_command`, e.g. `taskset …`). Fire-and-forget:
 /// the child is detached so the game outlives the launcher.
+///
+/// `extra` (the caller's env, e.g. the login credential) is applied last, so a
+/// Lutris config can never shadow it.
 #[cfg(not(windows))]
-fn spawn_wine(plan: &crate::linux::WineLaunch) -> std::io::Result<()> {
+fn spawn_wine(plan: &crate::linux::WineLaunch, extra: &[(String, String)]) -> std::io::Result<()> {
     use std::process::Command;
 
     let mut command = if plan.wrapper.is_empty() {
@@ -313,6 +334,7 @@ fn spawn_wine(plan: &crate::linux::WineLaunch) -> std::io::Result<()> {
         .args(&plan.args)
         .env("WINEPREFIX", &plan.wineprefix)
         .envs(plan.env.iter().map(|(k, v)| (k, v)))
+        .envs(extra.iter().map(|(k, v)| (k, v)))
         .current_dir(&plan.cwd);
     command.spawn()?;
     Ok(())

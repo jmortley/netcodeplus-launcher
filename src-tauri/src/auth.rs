@@ -333,6 +333,18 @@ pub async fn ut4_prepare_launch(app: tauri::AppHandle) -> Result<Ut4LaunchAuth, 
     })
 }
 
+/// Whether the NetcodePlus build installed at `root` accepts the exchange code
+/// through the environment instead of `-AUTH_PASSWORD`.
+///
+/// The frontend asks this per launch and only withholds the command-line
+/// argument when the answer is `true`, so a player on an older plugin still logs
+/// in exactly as before. See [`ncp_host::plugin_supports_env_auth`] for why this
+/// is a probe of the installed binary and not a version comparison.
+#[tauri::command]
+pub fn ut4_env_auth_supported(root: String) -> bool {
+    ncp_host::plugin_supports_env_auth(std::path::Path::new(&root))
+}
+
 /// Public account endpoint — resolves account IDs to display names. Auth-gated
 /// (needs a bearer), so it only works for a signed-in user.
 const ACCOUNT_URL: &str = "https://master-ut4.timiimit.com/account/api/public/account";

@@ -286,6 +286,7 @@ pub fn run() {
             auth::resolve_player_names,
             auth::ut4_logout,
             auth::ut4_prepare_launch,
+            auth::ut4_env_auth_supported,
             updates::fetch_and_verify_manifest,
             updates::compute_plan,
             updates::pak_status,
