@@ -290,6 +290,7 @@ pub fn run() {
             updates::fetch_and_verify_manifest,
             updates::compute_plan,
             updates::pak_status,
+            updates::set_pak_opt_out,
             updates::install_paks,
             updates::remove_installed_pak,
             updates::plugin_status,

@@ -2321,3 +2321,56 @@ body {
 .onb-reset-note {
   margin-left: 8px;
 }
+
+/* Pak picker — which content paks the launcher keeps up to date. Lives in the
+   dashboard's NetcodePlus card, under the paks status line. */
+.pak-choices {
+  margin: 0.4rem 0 0.2rem;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem;
+}
+.pak-choices > summary {
+  cursor: pointer;
+  font-size: 0.92rem;
+  color: var(--txt-dim);
+}
+.pak-choices > summary:hover {
+  color: var(--accent-hi);
+}
+.pak-choice-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+  margin-top: 0.35rem;
+}
+.pak-choice {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 0.22rem 0;
+  font-size: 0.9rem;
+}
+.pak-choice input {
+  flex: none;
+}
+.pak-choice input:disabled {
+  cursor: not-allowed;
+}
+.pak-choice-name {
+  min-width: 8.5rem;
+}
+.pak-tag {
+  flex: none;
+  font-size: 0.74rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  padding: 0.05rem 0.4rem;
+  border-radius: 999px;
+  border: 1px solid var(--line-blue);
+  color: var(--txt-dim);
+}
+.pak-tag-req {
+  border-color: var(--accent);
+  color: var(--accent-hi);
+}

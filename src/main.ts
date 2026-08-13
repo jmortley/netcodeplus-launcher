@@ -96,6 +96,19 @@ interface PakStatusResult {
   to_remove: PlanRemove[];
   keep_count: number;
   total_download_bytes: number;
+  catalogue: PakChoice[];
+}
+
+// One row of the pak checkbox list. `required` paks render as a ticked, disabled
+// box — the backend refuses to opt out of them, so the UI only reflects that.
+interface PakChoice {
+  id: string;
+  filename: string;
+  version: string;
+  size_bytes: number;
+  required: boolean;
+  opted_out: boolean;
+  installed: boolean;
 }
 interface PakInstallOutcome {
   id: string;
@@ -597,6 +610,71 @@ function surfaceHeroInstallError(message: string): void {
   renderHomeHero();
   const ls = document.getElementById("launch-status");
   if (ls) ls.innerHTML = `<span class="warn">${escape(message)}</span>`;
+}
+
+// The pak checkbox panel is a <details>, which loses its open state every time
+// the dash re-renders — and toggling a box re-renders. Remember it (plus the
+// last confirmation line) so the panel doesn't collapse under the user mid-edit.
+let pakChoicesOpen = false;
+let pakChoiceMsg = "";
+
+function pakLabel(id: string): string {
+  return HUB_PAK_LABELS[id] ?? id;
+}
+
+// The pak picker: which paks the launcher keeps up to date. Required paks render
+// ticked + disabled (the backend rejects opting out of them regardless). Shown
+// whenever the channel offers paks, including when everything is up to date —
+// otherwise a settled user would have no way to reach these at all.
+function pakChoicesHtml(pk: PakStatusResult): string {
+  if (!pk.catalogue.length) return "";
+  const rows = pk.catalogue
+    .map((c) => {
+      const mb = Math.round(c.size_bytes / (1024 * 1024));
+      const tag = c.required
+        ? `<span class="pak-tag pak-tag-req">Required</span>`
+        : `<span class="pak-tag">Recommended</span>`;
+      const state = c.installed
+        ? ""
+        : `<span class="muted"> · not installed</span>`;
+      return `<label class="pak-choice">
+        <input type="checkbox" data-pak="${escape(c.id)}"${c.opted_out ? "" : " checked"}${
+          c.required ? " disabled" : ""
+        } />
+        <span class="pak-choice-name">${escape(pakLabel(c.id))}</span>
+        ${tag}
+        <span class="muted">${mb} MB</span>${state}
+      </label>`;
+    })
+    .join("");
+  return `<details class="pak-choices"${pakChoicesOpen ? " open" : ""}>
+    <summary>Choose paks (${pk.catalogue.length})</summary>
+    <p class="src">Required paks are needed to play the NetcodePlus modes. The rest are strongly recommended — unticking one just stops the launcher updating it; the copy you already have stays where it is.</p>
+    <div class="pak-choice-list">${rows}</div>
+    <div id="pak-choice-status" class="launch-status">${pakChoiceMsg}</div>
+  </details>`;
+}
+
+// Tick / untick one pak. Checked = "keep this updated" = NOT opted out.
+async function onPakChoiceToggle(cb: HTMLInputElement): Promise<void> {
+  const id = cb.dataset.pak;
+  if (!id) return;
+  const wanted = cb.checked;
+  cb.disabled = true;
+  try {
+    await invoke("set_pak_opt_out", { pakId: id, optedOut: !wanted });
+    statusCache.paks = await invoke<PakStatusResult>("pak_status");
+    pakChoiceMsg = wanted
+      ? `<span class="ok">✓ ${escape(pakLabel(id))} will be kept up to date.</span>`
+      : `<span class="ok">${escape(pakLabel(id))} left as-is — the launcher won't update it, and your existing file stays.</span>`;
+  } catch (err) {
+    cb.checked = !wanted; // the write failed, so put the box back
+    pakChoiceMsg = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("set_pak_opt_out failed:", err);
+  } finally {
+    cb.disabled = false;
+  }
+  await renderDashStatus();
 }
 
 // Single-flight guard: concurrent doInstallPaks runs would race on the same-PID
@@ -1523,6 +1601,7 @@ async function renderDashStatus(): Promise<void> {
         <div id="pak-status" class="launch-status"></div>`,
       );
     }
+    lines.push(pakChoicesHtml(pk));
   }
   const lu = statusCache.launcher;
   if (lu) {
@@ -1579,6 +1658,16 @@ async function renderDashStatus(): Promise<void> {
   if (paksUpdate) {
     document.getElementById("pak-update-btn")?.addEventListener("click", () => {
       void doInstallPaks(document.getElementById("pak-status"));
+    });
+  }
+  const choices = el.querySelector<HTMLDetailsElement>("details.pak-choices");
+  if (choices) {
+    choices.addEventListener("toggle", () => {
+      pakChoicesOpen = choices.open;
+      if (!choices.open) pakChoiceMsg = ""; // don't resurrect a stale line on reopen
+    });
+    el.querySelectorAll<HTMLInputElement>("input[data-pak]").forEach((cb) => {
+      cb.addEventListener("change", () => void onPakChoiceToggle(cb));
     });
   }
 }
@@ -4116,6 +4205,8 @@ const HUB_PAK_LABELS: Record<string, string> = {
   instagibncp: "Instagib",
   sdom: "Sdom",
   ncwepmut: "Weapons",
+  ncstockweapons: "Stock Weapons",
+  mutannouncers: "Announcers",
 };
 
 // Normalize a hub name so UTCC's list matches the live server browser (strip

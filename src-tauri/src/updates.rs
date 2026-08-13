@@ -270,12 +270,42 @@ pub struct PakStatusResult {
     pub installed_count: usize,
     /// Paks to download (with reason + size), reusing the plan summary shape.
     pub to_download: Vec<PlanDownload>,
-    /// Paks to remove (gone from the channel, or opted out).
+    /// Paks to remove because they are gone from the channel.
+    ///
+    /// Opt-out removals are deliberately NOT listed: unticking a pak stops the
+    /// launcher maintaining it, it does not delete the file the player already
+    /// has (their hub may still be serving that version). Leaving them in would
+    /// also pin `up_to_date` to false forever, since the removal never happens.
     pub to_remove: Vec<PlanRemove>,
     /// Count already at the desired version + hash.
     pub keep_count: usize,
     /// Total bytes to download across `to_download`.
     pub total_download_bytes: u64,
+    /// Every pak the channel offers, with its required / opted-out / installed
+    /// state — drives the pak checkbox list. Sorted required-first then by id,
+    /// so the UI does not have to.
+    pub catalogue: Vec<PakChoice>,
+}
+
+/// One row of the pak checkbox list.
+#[derive(Debug, Serialize)]
+pub struct PakChoice {
+    /// Stable pak id (the manifest key) — what `set_pak_opt_out` takes.
+    pub id: String,
+    /// Filename in the paks dir.
+    pub filename: String,
+    /// Manifest version string.
+    pub version: String,
+    /// Download size.
+    pub size_bytes: u64,
+    /// `true` ⇒ the user cannot untick it. The planner rejects opting out of a
+    /// required pak outright (`PlanError::CannotOptOutOfRequired`), so this is
+    /// enforced below the UI, not just in it.
+    pub required: bool,
+    /// `true` ⇒ the user has unticked it, so it is no longer maintained.
+    pub opted_out: bool,
+    /// `true` ⇒ recorded as installed on this machine.
+    pub installed: bool,
 }
 
 /// Reconcile the recorded local install against what's actually in the paks dir
@@ -400,6 +430,15 @@ pub async fn pak_status(app: AppHandle) -> Result<PakStatusResult, String> {
         }
     }
 
+    // Drop any opt-out of a pak the manifest now marks REQUIRED before planning.
+    // The planner treats that combination as a hard error, so a stale opt-out
+    // left over from a manifest where the pak was optional would make every
+    // subsequent pak_status fail — self-heal instead of erroring at the user.
+    if prune_required_opt_outs(&manifest, &channel, &mut state) {
+        let path = state_path(&app)?;
+        ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+    }
+
     let plan = ncp_planner::plan(&manifest, &channel, &state.local_install, &state.opted_out)
         .map_err(|e| e.to_string())?;
 
@@ -413,16 +452,107 @@ pub async fn pak_status(app: AppHandle) -> Result<PakStatusResult, String> {
             .count()
     });
 
+    // Unticking a pak stops us maintaining it; it does not delete what the
+    // player already has. So opt-out removals are dropped here and never reach
+    // the UI or `up_to_date` (see PakStatusResult::to_remove).
+    let to_remove: Vec<PlanRemove> = plan
+        .to_remove
+        .iter()
+        .filter(|a| !matches!(a.reason, ncp_planner::RemoveReason::OptedOut))
+        .map(plan_remove)
+        .collect();
+
+    let mut catalogue: Vec<PakChoice> = manifest
+        .channels
+        .get(&channel)
+        .map(|c| {
+            c.paks
+                .iter()
+                .map(|(id, p)| PakChoice {
+                    id: id.clone(),
+                    filename: p.pak_filename.clone(),
+                    version: p.version.to_string(),
+                    size_bytes: p.size_bytes,
+                    required: p.required,
+                    opted_out: state.opted_out.contains(id),
+                    installed: state.local_install.paks.contains_key(id),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    // Required first, then alphabetical — a stable order regardless of the
+    // manifest's HashMap iteration order, which is not deterministic.
+    catalogue.sort_by(|a, b| b.required.cmp(&a.required).then_with(|| a.id.cmp(&b.id)));
+
     Ok(PakStatusResult {
         channel,
         paks_offered,
-        up_to_date: plan.is_no_op(),
+        up_to_date: plan.to_download.is_empty() && to_remove.is_empty(),
         installed_count,
         to_download: plan.to_download.iter().map(plan_download).collect(),
-        to_remove: plan.to_remove.iter().map(plan_remove).collect(),
+        to_remove,
         keep_count: plan.to_keep.len(),
         total_download_bytes: plan.total_download_bytes(),
+        catalogue,
     })
+}
+
+/// Remove from `state.opted_out` any id the channel now marks required (or that
+/// the channel no longer offers at all). Returns `true` when the set changed and
+/// the caller should persist. Keeps the launcher self-healing across a manifest
+/// that promotes an optional pak to required.
+fn prune_required_opt_outs(
+    manifest: &ncp_manifest::Manifest,
+    channel: &str,
+    state: &mut ncp_host::LauncherState,
+) -> bool {
+    let Some(ch) = manifest.channels.get(channel) else {
+        return false;
+    };
+    let before = state.opted_out.len();
+    state
+        .opted_out
+        .retain(|id| ch.paks.get(id).is_some_and(|p| !p.required));
+    state.opted_out.len() != before
+}
+
+/// Tick / untick one optional pak.
+///
+/// Unticking records the id in `opted_out`, which makes the planner stop
+/// offering updates for it; the file already on disk is left alone. Ticking it
+/// again resumes maintenance and re-downloads if it has since changed.
+///
+/// # Errors
+/// Rejects an unknown pak id, and refuses to untick a pak the manifest marks
+/// required — the planner would otherwise fail every later plan outright.
+#[tauri::command]
+pub async fn set_pak_opt_out(
+    app: AppHandle,
+    pak_id: String,
+    opted_out: bool,
+) -> Result<(), String> {
+    let (manifest, mut state, _, _) = fetch_verify(&app).await?;
+    let channel = state.channel.clone();
+    let pak = manifest
+        .channels
+        .get(&channel)
+        .and_then(|c| c.paks.get(&pak_id))
+        .ok_or_else(|| format!("unknown pak '{pak_id}' in channel '{channel}'"))?;
+
+    if opted_out && pak.required {
+        return Err(format!("'{pak_id}' is required and cannot be turned off"));
+    }
+
+    let changed = if opted_out {
+        state.opted_out.insert(pak_id)
+    } else {
+        state.opted_out.remove(&pak_id)
+    };
+    if changed {
+        let path = state_path(&app)?;
+        ncp_host::state::write(&path, &state).map_err(|e| e.to_string())?;
+    }
+    Ok(())
 }
 
 /// Map a planner [`ncp_planner::DownloadAction`] to the UI summary.
@@ -702,8 +832,17 @@ pub async fn install_paks(app: AppHandle) -> Result<Vec<PakInstallOutcome>, Stri
     }
     emit_pak_progress(&app, total, total, "");
 
-    // 3. Removes — paks gone from the channel or opted out.
-    for action in &plan.to_remove {
+    // 3. Removes — paks GONE FROM THE CHANNEL only.
+    //
+    // An opt-out is not a delete: unticking a pak means "stop maintaining this",
+    // and the copy already on disk stays because the player's hub may still be
+    // serving that exact version. Deleting it would break them on that hub for a
+    // choice that reads as "don't bother me about updates".
+    for action in plan
+        .to_remove
+        .iter()
+        .filter(|a| !matches!(a.reason, ncp_planner::RemoveReason::OptedOut))
+    {
         match ncp_host::remove_pak(&mod_paks_dir, &action.local_pak.pak_filename) {
             Ok(()) => {
                 state.local_install.paks.remove(&action.id);
