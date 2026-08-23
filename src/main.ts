@@ -5201,7 +5201,7 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
     ? `<div class="alert">⚠ Your <code>Engine.ini</code> is read-only, so Apply can't write to it. If you set it read-only on purpose, leave it; otherwise <button id="cfg-make-writable" type="button" class="link-btn">make it writable</button> and apply again.</div>`
     : "";
   configPanel.innerHTML = `
-    <p><strong>Save settings</strong> writes just the controls below into your <code>Engine.ini</code> — nothing else changes. <strong>Apply competitive config</strong> additionally lays down the <strong>complete, competitively-tuned baseline</strong> — high FPS, still readable. Either way your existing <code>Engine.ini</code> is backed up before the first write, and your online/login settings are left untouched.</p>
+    <p><strong>Save settings</strong> writes just the controls below into your <code>Engine.ini</code> — nothing else changes. <strong>Apply competitive config</strong> additionally lays down the <strong>complete, competitively-tuned baseline</strong> — high FPS, still readable. Either way your existing <code>Engine.ini</code> is backed up before the first write, and your online/login settings are left untouched. <strong>Close UT4 before saving</strong> — the game rewrites these same keys from its own Settings menu, and resetting your <code>Engine.ini</code> turns frame smoothing back on (an engine default that caps you near 62&nbsp;fps until it's explicitly off).</p>
     ${readOnlyWarn}
     <div class="controls">
       <label>Frame rate cap

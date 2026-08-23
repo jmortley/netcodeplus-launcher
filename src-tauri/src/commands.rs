@@ -1605,8 +1605,27 @@ pub fn reset_onboarding(app: tauri::AppHandle) -> Result<(), String> {
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
 }
 
+/// Engine.ini edits while UT4 is running are futile: the game holds its config
+/// in memory and rewrites the whole `[UTGameEngine]` section over ours — the
+/// in-game Settings OK button calls `GEngine->SaveConfig()` +
+/// `UTEngine->SaveConfig()`, and the first-run path saves it too. Whatever we
+/// wrote is silently reverted, which players then report as "the launcher
+/// keeps re-enabling smooth framerate" (field report 2026-08-23). Same guard
+/// the Mod.ini preset flow already uses, for the same clobber reason.
+fn refuse_engine_edit_while_running() -> Result<(), String> {
+    if shipping_client_running() {
+        return Err(
+            "Close UT4 first — the game rewrites Engine.ini from its own settings, \
+             which would silently undo these changes."
+                .to_string(),
+        );
+    }
+    Ok(())
+}
+
 /// Apply the competitive Engine.ini baseline plus the editable knobs,
-/// merging into the existing ini (backing it up first).
+/// merging into the existing ini (backing it up first). Refused while UT4
+/// runs (see [`refuse_engine_edit_while_running`]).
 #[tauri::command]
 pub fn apply_engine_config(
     app: tauri::AppHandle,
@@ -1617,6 +1636,7 @@ pub fn apply_engine_config(
     max_audio_channels: u32,
     set_openal_audio: bool,
 ) -> Result<(), String> {
+    refuse_engine_edit_while_running()?;
     let tweaks = ncp_host::config::EngineTweaks {
         frame_rate_cap,
         smooth_frame_rate,
@@ -1630,7 +1650,8 @@ pub fn apply_engine_config(
 
 /// Save ONLY the editable knobs (frame-rate cap, smooth, gamma, async
 /// loading, MaxChannels) into Engine.ini — no competitive baseline, no
-/// audio-device override. Same backup-once semantics as apply.
+/// audio-device override. Same backup-once semantics as apply, and the same
+/// running-game refusal.
 #[tauri::command]
 pub fn save_engine_tweaks(
     app: tauri::AppHandle,
@@ -1640,6 +1661,7 @@ pub fn save_engine_tweaks(
     allow_async_loading: bool,
     max_audio_channels: u32,
 ) -> Result<(), String> {
+    refuse_engine_edit_while_running()?;
     let tweaks = ncp_host::config::EngineTweaks {
         frame_rate_cap,
         smooth_frame_rate,
@@ -1650,9 +1672,11 @@ pub fn save_engine_tweaks(
     ncp_host::config::save_tweaks(&engine_ini(&app)?, &tweaks).map_err(|e| e.to_string())
 }
 
-/// Restore Engine.ini from the launcher's `.ncpbak` backup.
+/// Restore Engine.ini from the launcher's `.ncpbak` backup. Same running-game
+/// refusal as apply/save, for the same clobber reason.
 #[tauri::command]
 pub fn restore_engine_config(app: tauri::AppHandle) -> Result<(), String> {
+    refuse_engine_edit_while_running()?;
     ncp_host::config::restore(&engine_ini(&app)?).map_err(|e| e.to_string())
 }
 
