@@ -601,8 +601,17 @@ const fn bool_str(b: bool) -> &'static str {
 
 /// Read the editable values out of `[/Script/UnrealTournament.UTGameEngine]`,
 /// `[SystemSettings]` and `[Audio]`.
+///
+/// `bSmoothFrameRate` ABSENT is special: the engine then runs its BaseEngine.ini
+/// default — smoothing ON, clamped to the 22–62 fps `SmoothedFrameRateRange`.
+/// A fresh or player-reset `Engine.ini` therefore smooths (and caps at ~62 fps)
+/// even though our editable-default is `false`, so an absent key is reported as
+/// `true`: the UI checkbox must tell the truth or the player sees "unchecked"
+/// while the game visibly smooths (field report 2026-08-23). Saving then writes
+/// an explicit `False`, which is exactly the correction the player wants.
 fn read_tweaks(text: &str) -> EngineTweaks {
     let mut t = EngineTweaks::default();
+    let mut saw_smooth = false;
     let mut in_engine = false;
     let mut in_system = false;
     let mut in_audio = false;
@@ -626,6 +635,7 @@ fn read_tweaks(text: &str) -> EngineTweaks {
                 }
             } else if k.eq_ignore_ascii_case("bSmoothFrameRate") {
                 t.smooth_frame_rate = v.eq_ignore_ascii_case("true");
+                saw_smooth = true;
             } else if k.eq_ignore_ascii_case("DisplayGamma") {
                 if let Ok(n) = v.parse() {
                     t.display_gamma = n;
@@ -638,6 +648,10 @@ fn read_tweaks(text: &str) -> EngineTweaks {
                 t.max_audio_channels = n;
             }
         }
+    }
+    if !saw_smooth {
+        // Engine-effective value for a missing key (see doc comment above).
+        t.smooth_frame_rate = true;
     }
     t
 }
@@ -973,7 +987,23 @@ Protocol=https
     #[test]
     fn read_tweaks_defaults_when_absent() {
         let t = read_tweaks("[Core.System]\nPaths=x\n");
-        assert_eq!(t, EngineTweaks::default());
+        // Absent `bSmoothFrameRate` reports the ENGINE-effective value (true:
+        // BaseEngine.ini smooths + clamps to ~62 fps when the key is missing —
+        // see read_tweaks). Everything else reports the editable defaults.
+        assert!(t.smooth_frame_rate);
+        assert_eq!(
+            EngineTweaks {
+                smooth_frame_rate: false,
+                ..t
+            },
+            EngineTweaks::default()
+        );
+    }
+
+    #[test]
+    fn read_tweaks_explicit_smooth_false_reads_false() {
+        let ini = "[/Script/UnrealTournament.UTGameEngine]\nbSmoothFrameRate=False\n";
+        assert!(!read_tweaks(ini).smooth_frame_rate);
     }
 
     #[test]
