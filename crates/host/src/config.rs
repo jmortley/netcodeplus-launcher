@@ -168,6 +168,14 @@ pub struct EngineTweaks {
     /// [`MAX_AUDIO_CHANNELS_MIN`]..=[`MAX_AUDIO_CHANNELS_MAX`] on apply.
     /// Applies to both the stock XAudio2 device and the UT4-OpenAL module.
     pub max_audio_channels: u32,
+    /// `UnfocusedVolumeMultiplier` in `[Audio]` — how loud the game stays when
+    /// minimized / alt-tabbed. The engine default is 0.0 (full mute on focus
+    /// loss); 1.0 keeps match audio at full volume so a tabbed-out player
+    /// still hears the pug start. Latched once at game boot — a change needs a
+    /// UT4 restart. Clamped to 0.0..=1.0 on apply; honored by both stock
+    /// XAudio2 and the UT4-OpenAL module (both consume the app volume
+    /// multiplier the focus handler sets).
+    pub unfocused_volume: f64,
 }
 
 /// Lower clamp for [`EngineTweaks::max_audio_channels`] — below the engine
@@ -186,6 +194,7 @@ impl Default for EngineTweaks {
             display_gamma: 3.0,
             allow_async_loading: false,
             max_audio_channels: 32,
+            unfocused_volume: 0.0,
         }
     }
 }
@@ -423,6 +432,14 @@ fn set_tweak_keys(ini_file: &mut IniFile, tweaks: &EngineTweaks) {
         .max_audio_channels
         .clamp(MAX_AUDIO_CHANNELS_MIN, MAX_AUDIO_CHANNELS_MAX);
     ini_file.set_key(SEC_AUDIO, HDR_AUDIO, "MaxChannels", &channels.to_string());
+    // Background (alt-tab) volume — also device-independent, see the field doc.
+    let bg = tweaks.unfocused_volume.clamp(0.0, 1.0);
+    ini_file.set_key(
+        SEC_AUDIO,
+        HDR_AUDIO,
+        "UnfocusedVolumeMultiplier",
+        &format!("{bg:.6}"),
+    );
 }
 
 /// Restore `ini` from its `.ncpbak` backup.
@@ -646,6 +663,10 @@ fn read_tweaks(text: &str) -> EngineTweaks {
         } else if in_audio && k.eq_ignore_ascii_case("MaxChannels") {
             if let Ok(n) = v.parse() {
                 t.max_audio_channels = n;
+            }
+        } else if in_audio && k.eq_ignore_ascii_case("UnfocusedVolumeMultiplier") {
+            if let Ok(n) = v.parse() {
+                t.unfocused_volume = n;
             }
         }
     }
@@ -892,6 +913,12 @@ Protocol=https
         }
         // Mirror apply()'s unconditional voice-pool write (default tweaks).
         f.set_key(SEC_AUDIO, HDR_AUDIO, "MaxChannels", "32");
+        f.set_key(
+            SEC_AUDIO,
+            HDR_AUDIO,
+            "UnfocusedVolumeMultiplier",
+            "0.000000",
+        );
         f.render()
     }
 
@@ -1007,6 +1034,32 @@ Protocol=https
     }
 
     #[test]
+    fn unfocused_volume_round_trips_and_clamps() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Engine.ini");
+        std::fs::write(&ini, SAMPLE).unwrap();
+
+        let tweaks = EngineTweaks {
+            unfocused_volume: 0.3,
+            ..EngineTweaks::default()
+        };
+        save_tweaks(&ini, &tweaks).unwrap();
+        let out = std::fs::read_to_string(&ini).unwrap();
+        assert!(out.contains("UnfocusedVolumeMultiplier=0.300000"));
+        assert_eq!(read_tweaks(&out).unfocused_volume, 0.3);
+
+        // Out-of-range values clamp into the engine's meaningful 0..=1 band.
+        let loud = EngineTweaks {
+            unfocused_volume: 4.0,
+            ..EngineTweaks::default()
+        };
+        save_tweaks(&ini, &loud).unwrap();
+        let out = std::fs::read_to_string(&ini).unwrap();
+        assert!(out.contains("UnfocusedVolumeMultiplier=1.000000"));
+        assert_eq!(out.matches("UnfocusedVolumeMultiplier=").count(), 1);
+    }
+
+    #[test]
     fn apply_then_restore_round_trips_via_disk() {
         let dir = tempfile::tempdir().unwrap();
         let ini = dir.path().join("Engine.ini");
@@ -1071,6 +1124,7 @@ Protocol=https
             display_gamma: 2.5,
             allow_async_loading: true,
             max_audio_channels: 48,
+            unfocused_volume: 1.0,
         };
         save_tweaks(&ini, &tweaks).unwrap();
         let out = std::fs::read_to_string(&ini).unwrap();
@@ -1079,6 +1133,7 @@ Protocol=https
         assert!(out.contains("FrameRateCap=470.000000"));
         assert!(out.contains("DisplayGamma=2.500000"));
         assert!(out.contains("MaxChannels=48"));
+        assert!(out.contains("UnfocusedVolumeMultiplier=1.000000"));
         assert!(out.contains("net.AllowAsyncLoading=1"));
         // …but none of the competitive baseline did (SAMPLE has no
         // [ConsoleVariables] body from us and Save must not add one),

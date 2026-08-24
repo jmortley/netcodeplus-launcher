@@ -275,6 +275,7 @@ interface EngineTweaks {
   display_gamma: number;
   allow_async_loading: boolean;
   max_audio_channels: number;
+  unfocused_volume: number;
 }
 
 interface ConfigState {
@@ -5212,6 +5213,9 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
         <input id="cfg-gamma" type="number" min="1" max="5" step="0.1" value="${escape(String(t.display_gamma))}" />
       </label>
       <label class="cfg-check"><input id="cfg-async" type="checkbox"${t.allow_async_loading ? " checked" : ""} /> Allow async loading (Blitz / flag-run safe)</label>
+      <label>Alt-tab audio volume (0 = mute, 1 = full)
+        <input id="cfg-bgvol" type="number" min="0" max="1" step="0.1" value="${escape(String(t.unfocused_volume))}" />
+      </label>
       <label>Max sounds at once (MaxChannels)
         <select id="cfg-voices">${voiceOptions(t.max_audio_channels)}</select>
       </label>
@@ -5824,12 +5828,14 @@ function readTweakInputs() {
   const fps = Number((document.getElementById("cfg-fps") as HTMLInputElement).value);
   const gamma = Number((document.getElementById("cfg-gamma") as HTMLInputElement).value);
   const voices = Number((document.getElementById("cfg-voices") as HTMLSelectElement).value);
+  const bgvol = Number((document.getElementById("cfg-bgvol") as HTMLInputElement).value);
   return {
     frameRateCap: Number.isFinite(fps) ? fps : 360,
     smoothFrameRate: (document.getElementById("cfg-smooth") as HTMLInputElement).checked,
     displayGamma: Number.isFinite(gamma) ? gamma : 3,
     allowAsyncLoading: (document.getElementById("cfg-async") as HTMLInputElement).checked,
     maxAudioChannels: Number.isFinite(voices) ? voices : 32,
+    unfocusedVolume: Number.isFinite(bgvol) ? bgvol : 0,
   };
 }
 
@@ -6747,6 +6753,7 @@ async function applyCompetitiveConfigFromOnboarding(statusEl: HTMLElement | null
       displayGamma: 3,
       allowAsyncLoading: false,
       maxAudioChannels: 32,
+      unfocusedVolume: 0,
       setOpenalAudio: false,
     });
     if (statusEl)

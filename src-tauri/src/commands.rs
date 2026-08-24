@@ -1626,6 +1626,9 @@ fn refuse_engine_edit_while_running() -> Result<(), String> {
 /// Apply the competitive Engine.ini baseline plus the editable knobs,
 /// merging into the existing ini (backing it up first). Refused while UT4
 /// runs (see [`refuse_engine_edit_while_running`]).
+// One flat parameter per panel field, mirroring the UI — a nested struct arg
+// would force the frontend to know Rust field casing for no reader benefit.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn apply_engine_config(
     app: tauri::AppHandle,
@@ -1634,6 +1637,7 @@ pub fn apply_engine_config(
     display_gamma: f64,
     allow_async_loading: bool,
     max_audio_channels: u32,
+    unfocused_volume: f64,
     set_openal_audio: bool,
 ) -> Result<(), String> {
     refuse_engine_edit_while_running()?;
@@ -1643,6 +1647,7 @@ pub fn apply_engine_config(
         display_gamma,
         allow_async_loading,
         max_audio_channels,
+        unfocused_volume,
     };
     ncp_host::config::apply(&engine_ini(&app)?, &tweaks, set_openal_audio)
         .map_err(|e| e.to_string())
@@ -1660,6 +1665,7 @@ pub fn save_engine_tweaks(
     display_gamma: f64,
     allow_async_loading: bool,
     max_audio_channels: u32,
+    unfocused_volume: f64,
 ) -> Result<(), String> {
     refuse_engine_edit_while_running()?;
     let tweaks = ncp_host::config::EngineTweaks {
@@ -1668,6 +1674,7 @@ pub fn save_engine_tweaks(
         display_gamma,
         allow_async_loading,
         max_audio_channels,
+        unfocused_volume,
     };
     ncp_host::config::save_tweaks(&engine_ini(&app)?, &tweaks).map_err(|e| e.to_string())
 }
