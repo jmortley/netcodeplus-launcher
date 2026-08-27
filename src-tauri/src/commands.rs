@@ -1789,6 +1789,32 @@ pub fn apply_mod_preset(app: tauri::AppHandle, preset_id: String) -> Result<(), 
     ncp_host::config::apply_mod_preset(&mod_ini(&app)?, &preset_id).map_err(|e| e.to_string())
 }
 
+/// Current NetcodePlus join waits for the Settings card. A missing Mod.ini is
+/// not an error — the defaults are then what is in force.
+#[tauri::command]
+pub fn join_wait_state(app: tauri::AppHandle) -> Result<ncp_host::config::JoinWaitState, String> {
+    Ok(ncp_host::config::read_join_wait(&mod_ini(&app)?))
+}
+
+/// Save the two join waits into `[NetcodePlus]` in Mod.ini. Refused while UT4
+/// runs for the same reason as a preset apply — the game rewrites Mod.ini on
+/// exit and would clobber the values.
+#[tauri::command]
+pub fn save_join_wait(
+    app: tauri::AppHandle,
+    profile_wait_seconds: u32,
+    no_signal_wait_seconds: u32,
+) -> Result<(), String> {
+    if shipping_client_running() {
+        return Err("Close UT4 to change your join settings.".to_string());
+    }
+    let tweaks = ncp_host::config::JoinWaitTweaks {
+        profile_wait_seconds,
+        no_signal_wait_seconds,
+    };
+    ncp_host::config::save_join_wait(&mod_ini(&app)?, &tweaks).map_err(|e| e.to_string())
+}
+
 /// Restore Mod.ini from the launcher's `.ncpbak` backup. Same running-game
 /// guard as apply, for the same clobber reason.
 #[tauri::command]

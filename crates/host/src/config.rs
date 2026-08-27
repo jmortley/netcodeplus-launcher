@@ -125,6 +125,8 @@ const SEC_AUDIO: &str = "Audio";
 const HDR_AUDIO: &str = "[Audio]";
 const SEC_SYSTEM: &str = "SystemSettings";
 const HDR_SYSTEM: &str = "[SystemSettings]";
+const SEC_NCP: &str = "NetcodePlus";
+const HDR_NCP: &str = "[NetcodePlus]";
 
 /// The community master-server host every `[OnlineSubsystemMcp.*]` section
 /// must point `Domain` at for online play to work.
@@ -519,6 +521,142 @@ pub fn read_mod_state(ini: &Path) -> ModIniState {
         has_backup: backup_path(ini).is_file(),
         read_only: is_read_only(ini),
     }
+}
+
+// -------------------------------------------------------------------
+// NetcodePlus join waits (Mod.ini `[NetcodePlus]`)
+// -------------------------------------------------------------------
+
+/// How long the plugin holds a launcher Join while your account data
+/// downloads, in seconds. Both land in `[NetcodePlus]` in `Mod.ini`, which is
+/// where every other NetcodePlus knob lives.
+///
+/// Clicking Join launches the game with `-ncpconnect=<server>`, and the plugin
+/// waits for your cloud profile — keybinds and account data — before it
+/// travels. Travelling early is what drops a player into a match with default
+/// binds, which the next profile save then writes back over the cloud copy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub struct JoinWaitTweaks {
+    /// `ConnectProfileWaitSeconds` — the budget once the download has actually
+    /// started. Measured on a healthy sign-in: login alone takes ~7.4s and the
+    /// profile lands around 8–12s, so the 45s default is ~4–5x headroom.
+    pub profile_wait_seconds: u32,
+    /// `ConnectNoSignalWaitSeconds` — the budget when the download never even
+    /// starts (offline, or sign-in did not get far enough to ask). Nothing is
+    /// coming, so this one is deliberately shorter.
+    pub no_signal_wait_seconds: u32,
+}
+
+/// Lower clamp for both waits. Below this a healthy-but-slow sign-in would be
+/// cut off, which re-creates the default-binds bug the wait exists to prevent.
+pub const JOIN_WAIT_MIN: u32 = 10;
+/// Upper clamp for both waits — past three minutes it is indistinguishable
+/// from a hang.
+pub const JOIN_WAIT_MAX: u32 = 180;
+
+impl Default for JoinWaitTweaks {
+    fn default() -> Self {
+        Self {
+            profile_wait_seconds: 45,
+            no_signal_wait_seconds: 25,
+        }
+    }
+}
+
+/// What the UI needs to render the join-wait card.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct JoinWaitState {
+    /// Whether `Mod.ini` exists yet. Saving creates it if not — the plugin
+    /// fills in everything else on the next run.
+    pub ini_exists: bool,
+    /// Whether `Mod.ini` is read-only (saving would fail).
+    pub read_only: bool,
+    /// Current values, falling back to [`JoinWaitTweaks::default`] per key for
+    /// anything absent or unparseable — the same fallback the plugin applies.
+    pub tweaks: JoinWaitTweaks,
+}
+
+/// Read one `[NetcodePlus]` integer key, or `None` when absent/unparseable.
+/// Values are stored as UE4 floats (`45.000000`), so parse permissively and
+/// round, rather than demanding an integer literal.
+fn ncp_key(file: &IniFile, key: &str) -> Option<u32> {
+    let sec = file.find(SEC_NCP)?;
+    sec.body.iter().rev().find_map(|l| {
+        let (k, v) = l.split_once('=')?;
+        if !k.trim().eq_ignore_ascii_case(key) {
+            return None;
+        }
+        let n = v.trim().parse::<f64>().ok()?;
+        if n.is_finite() && n >= 0.0 {
+            Some(n.round() as u32)
+        } else {
+            None
+        }
+    })
+}
+
+/// Read the current join waits for the UI. A missing `Mod.ini` is not an
+/// error — it just means the plugin has never been configured, so the
+/// defaults are what is in force.
+#[must_use]
+pub fn read_join_wait(ini: &Path) -> JoinWaitState {
+    let text = std::fs::read_to_string(ini).unwrap_or_default();
+    let file = IniFile::parse(&text);
+    let d = JoinWaitTweaks::default();
+    JoinWaitState {
+        ini_exists: ini.is_file(),
+        read_only: is_read_only(ini),
+        tweaks: JoinWaitTweaks {
+            profile_wait_seconds: ncp_key(&file, "ConnectProfileWaitSeconds")
+                .unwrap_or(d.profile_wait_seconds)
+                .clamp(JOIN_WAIT_MIN, JOIN_WAIT_MAX),
+            no_signal_wait_seconds: ncp_key(&file, "ConnectNoSignalWaitSeconds")
+                .unwrap_or(d.no_signal_wait_seconds)
+                .clamp(JOIN_WAIT_MIN, JOIN_WAIT_MAX),
+        },
+    }
+}
+
+/// Write the two join waits into `[NetcodePlus]`, merging them as individual
+/// keys so every other setting in the section — and every other section — is
+/// left verbatim. A missing `Mod.ini` starts from empty (same as
+/// [`apply_mod_preset`]); the pristine original is backed up once, so
+/// [`restore`] on the same path undoes this too. Values are clamped to
+/// [`JOIN_WAIT_MIN`]..=[`JOIN_WAIT_MAX`], matching the plugin's own clamp.
+///
+/// # Errors
+/// [`ConfigError::Io`]/[`ConfigError::AtomicWrite`] on filesystem errors.
+pub fn save_join_wait(ini: &Path, tweaks: &JoinWaitTweaks) -> ConfigResult<()> {
+    let existing = match std::fs::read_to_string(ini) {
+        Ok(t) => t,
+        Err(e) if e.kind() == ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.into()),
+    };
+    if !existing.is_empty() {
+        let backup = backup_path(ini);
+        if !backup.exists() {
+            write_atomic(&backup, &existing)?;
+        }
+    }
+
+    let mut file = IniFile::parse(&existing);
+    for (key, value) in [
+        (
+            "ConnectProfileWaitSeconds",
+            tweaks
+                .profile_wait_seconds
+                .clamp(JOIN_WAIT_MIN, JOIN_WAIT_MAX),
+        ),
+        (
+            "ConnectNoSignalWaitSeconds",
+            tweaks
+                .no_signal_wait_seconds
+                .clamp(JOIN_WAIT_MIN, JOIN_WAIT_MAX),
+        ),
+    ] {
+        file.set_key(SEC_NCP, HDR_NCP, key, &value.to_string());
+    }
+    write_atomic(ini, &file.render())
 }
 
 /// Apply a shipped preset to `ini` as a **section merge**: every section
@@ -1210,6 +1348,117 @@ Protocol=https
         // Default tweaks => async loading off (competitive baseline).
         assert!(out.contains("net.AllowAsyncLoading=0"));
         assert!(out.contains("r.OneFrameThreadLag=1"));
+    }
+
+    // ── NetcodePlus join waits ─────────────────────────────────────────
+
+    #[test]
+    fn join_wait_defaults_when_ini_missing() {
+        let dir = tempfile::tempdir().unwrap();
+        let st = read_join_wait(&dir.path().join("Mod.ini"));
+        assert!(!st.ini_exists);
+        assert_eq!(st.tweaks, JoinWaitTweaks::default());
+    }
+
+    #[test]
+    fn join_wait_round_trips() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Mod.ini");
+        save_join_wait(
+            &ini,
+            &JoinWaitTweaks {
+                profile_wait_seconds: 60,
+                no_signal_wait_seconds: 20,
+            },
+        )
+        .unwrap();
+
+        let st = read_join_wait(&ini);
+        assert!(st.ini_exists);
+        assert_eq!(st.tweaks.profile_wait_seconds, 60);
+        assert_eq!(st.tweaks.no_signal_wait_seconds, 20);
+    }
+
+    #[test]
+    fn join_wait_clamps_on_save_and_read() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Mod.ini");
+        save_join_wait(
+            &ini,
+            &JoinWaitTweaks {
+                profile_wait_seconds: 9_999,
+                no_signal_wait_seconds: 0,
+            },
+        )
+        .unwrap();
+        let st = read_join_wait(&ini);
+        assert_eq!(st.tweaks.profile_wait_seconds, JOIN_WAIT_MAX);
+        assert_eq!(st.tweaks.no_signal_wait_seconds, JOIN_WAIT_MIN);
+    }
+
+    #[test]
+    fn join_wait_merges_keys_leaving_everything_else_verbatim() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Mod.ini");
+        std::fs::write(
+            &ini,
+            "[Identifiers]
+IDArray=abc123_Someone
+
+[NetcodePlus]
+ElimMidGameShuffle=True
+",
+        )
+        .unwrap();
+
+        save_join_wait(&ini, &JoinWaitTweaks::default()).unwrap();
+        let out = std::fs::read_to_string(&ini).unwrap();
+
+        // Identity and the section's other NetcodePlus knobs survive — this is
+        // a key merge, not a section replace like a preset apply.
+        assert!(out.contains("IDArray=abc123_Someone"));
+        assert!(out.contains("ElimMidGameShuffle=True"));
+        assert!(out.contains("ConnectProfileWaitSeconds=45"));
+        assert!(out.contains("ConnectNoSignalWaitSeconds=25"));
+        // Pristine original backed up once, so Restore undoes this too.
+        assert!(backup_path(&ini).is_file());
+    }
+
+    #[test]
+    fn join_wait_reads_ue4_float_values() {
+        // The plugin reads these with GetFloat and UE4 rewrites its own keys in
+        // float form — "50.000000" must read back as 50, not fall to the default.
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Mod.ini");
+        std::fs::write(
+            &ini,
+            "[NetcodePlus]
+ConnectProfileWaitSeconds=50.000000
+ConnectNoSignalWaitSeconds=30.000000
+",
+        )
+        .unwrap();
+        let st = read_join_wait(&ini);
+        assert_eq!(st.tweaks.profile_wait_seconds, 50);
+        assert_eq!(st.tweaks.no_signal_wait_seconds, 30);
+    }
+
+    #[test]
+    fn join_wait_ignores_unparseable_values() {
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Mod.ini");
+        std::fs::write(
+            &ini,
+            "[NetcodePlus]
+ConnectProfileWaitSeconds=soon
+",
+        )
+        .unwrap();
+        let st = read_join_wait(&ini);
+        assert_eq!(
+            st.tweaks.profile_wait_seconds,
+            JoinWaitTweaks::default().profile_wait_seconds
+        );
     }
 
     // ── Mod.ini presets ────────────────────────────────────────────────

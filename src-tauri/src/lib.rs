@@ -249,6 +249,8 @@ pub fn run() {
             commands::mod_config_state,
             commands::apply_mod_preset,
             commands::restore_mod_config,
+            commands::join_wait_state,
+            commands::save_join_wait,
             commands::onboarding_status,
             commands::mark_features_seen,
             commands::complete_onboarding,

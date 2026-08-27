@@ -286,6 +286,12 @@ interface ConfigState {
   engine_ini_read_only: boolean;
 }
 
+interface JoinWaitState {
+  ini_exists: boolean;
+  read_only: boolean;
+  tweaks: { profile_wait_seconds: number; no_signal_wait_seconds: number };
+}
+
 interface ModIniState {
   ini_exists: boolean;
   has_backup: boolean;
@@ -361,6 +367,7 @@ const pickButton = document.getElementById("pick-dir") as HTMLButtonElement;
 const versionLabel = document.getElementById("version")!;
 const statsPanel = document.getElementById("stats-panel")!;
 const configPanel = document.getElementById("config-panel")!;
+const joinwaitPanel = document.getElementById("joinwait-panel")!;
 const modiniPanel = document.getElementById("modini-panel")!;
 const newsPanel = document.getElementById("news-panel")!;
 const serversPanel = document.getElementById("servers-panel")!;
@@ -2807,6 +2814,7 @@ async function loadAll() {
     // ncp://connect deep links (cold-start URL + live listener).
     void wireDeepLinks();
     void renderConfig();
+    void renderJoinWait();
     void renderModIni();
     void renderAddons();
     void renderLauncherUpdate();
@@ -6031,6 +6039,73 @@ async function restoreConfig() {
     const s = document.getElementById("cfg-status");
     if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
     console.error("restore_engine_config failed:", err);
+  }
+}
+
+// Join waits card — how long NetcodePlus holds a Join while your account data
+// downloads. Written into `[NetcodePlus]` in Mod.ini as individual keys, so
+// everything else in the file is left verbatim (`.ncpbak` backup once; refused
+// while UT4 runs because the game rewrites Mod.ini on exit).
+const JOIN_WAIT_MIN = 10;
+const JOIN_WAIT_MAX = 180;
+
+async function renderJoinWait(flash?: { text: string; cls: "ok" | "warn" }) {
+  let st: JoinWaitState;
+  try {
+    st = await invoke<JoinWaitState>("join_wait_state");
+  } catch (err) {
+    joinwaitPanel.innerHTML = `<div class="warn">${escape(String(err))}</div>`;
+    return;
+  }
+  const t = st.tweaks;
+  const readOnlyWarn = st.read_only
+    ? `<div class="alert">⚠ Your <code>Mod.ini</code> is read-only, so these can't be saved. Clear the read-only flag in Explorer first.</div>`
+    : "";
+
+  joinwaitPanel.innerHTML = `
+    <p>When you hit <strong>Join</strong>, NetcodePlus waits for your <strong>keybinds and account settings</strong> to finish downloading before it enters the server. Without that wait you can land in a match with <strong>default binds and no account data</strong> — and the next time the game saves your profile, those defaults get written over your real one. Close UT4 before saving — the game rewrites <code>Mod.ini</code> on exit.</p>
+    ${readOnlyWarn}
+    <div class="controls">
+      <label>Wait for your profile before joining (seconds)
+        <input id="jw-profile" type="number" min="${JOIN_WAIT_MIN}" max="${JOIN_WAIT_MAX}" step="5" value="${escape(String(t.profile_wait_seconds))}" />
+      </label>
+      <label>Give up if sign-in never starts (seconds)
+        <input id="jw-nosignal" type="number" min="${JOIN_WAIT_MIN}" max="${JOIN_WAIT_MAX}" step="5" value="${escape(String(t.no_signal_wait_seconds))}" />
+      </label>
+    </div>
+    <p class="src">A healthy sign-in takes around <strong>8–12 seconds</strong>, so the first box is deliberately generous — lowering it much below 20 risks joining before your binds arrive, which is the problem it exists to prevent. The second box covers the case where the download never begins at all (you're offline, or sign-in didn't get that far); nothing is coming, so it gives up sooner. Both accept ${JOIN_WAIT_MIN}–${JOIN_WAIT_MAX}.</p>
+    <div class="discord-btns">
+      <button id="jw-save" type="button"${st.read_only ? " disabled" : ""}>Save join settings</button>
+    </div>
+    <div id="jw-status" class="launch-status"></div>`;
+
+  document.getElementById("jw-save")?.addEventListener("click", () => void saveJoinWait());
+
+  if (flash) {
+    const s = document.getElementById("jw-status");
+    if (s) s.innerHTML = `<span class="${flash.cls}">${escape(flash.text)}</span>`;
+  }
+}
+
+async function saveJoinWait(): Promise<void> {
+  const num = (id: string, fallback: number): number => {
+    const raw = Number((document.getElementById(id) as HTMLInputElement | null)?.value);
+    if (!Number.isFinite(raw)) return fallback;
+    return Math.min(JOIN_WAIT_MAX, Math.max(JOIN_WAIT_MIN, Math.round(raw)));
+  };
+  try {
+    await invoke("save_join_wait", {
+      profileWaitSeconds: num("jw-profile", 45),
+      noSignalWaitSeconds: num("jw-nosignal", 25),
+    });
+    await renderJoinWait({
+      text: "Saved. Takes effect next time UT4 starts.",
+      cls: "ok",
+    });
+  } catch (err) {
+    const s = document.getElementById("jw-status");
+    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("save_join_wait failed:", err);
   }
 }
 
