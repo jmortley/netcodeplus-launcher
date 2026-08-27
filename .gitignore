@@ -34,3 +34,10 @@ Thumbs.db
 # Tooling caches
 .cache/
 
+# Mobile icon sets from `tauri icon` (src-tauri/icons/android|ios). This is a
+# desktop-only launcher — Windows + Linux — so the mobile targets are never
+# built and nothing references them. A stray run once left ~2MB of them
+# untracked, close enough to a release commit to get swept in by `git add -A`.
+# The desktop set that bundle.icon actually names IS tracked.
+src-tauri/icons/android/
+src-tauri/icons/ios/
