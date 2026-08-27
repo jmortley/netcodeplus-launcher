@@ -6,10 +6,12 @@ byte of it, a player who opts in gets sha-verified auto-updates from the
 signed manifest, and a player who opts out again is left with a provably
 clean install.
 
-> Status: **design draft — four decisions pending (§8).** Drafted 2026-08-23
-> against launcher `1.7.4` + the `perf-config-fixes` branch. No code written.
-> The §8 TBDs must be resolved with phantaci before §5 (install mechanics)
-> is implementable; everything else is buildable as specced.
+> Status: **decisions resolved — implementable.** Drafted 2026-08-23; §8
+> resolved with phantaci 2026-08-27 (answers inline) and §5 rewritten against
+> the on-disk reality: UT4AC is a standard sibling UE4 plugin, so the engine's
+> own plugin system is the loader and no custom loader exists or is needed.
+> One input still owed before the disclosure text ships: the evidence
+> retention window (§8 TBD-4 note).
 
 ## The core reality
 
@@ -125,22 +127,40 @@ New **optional** manifest block, shaped like `editor_plugins`:
 - The launcher never installs a version whose `min_plugin_version` exceeds
   the installed plugin — it shows "waiting for plugin update" instead.
 
-## 5. Install mechanics — blocked on TBD-1/TBD-2
+## 5. Install mechanics — RESOLVED (rewritten 2026-08-27 against dogfood reality)
 
-The intended architecture (to confirm against dogfood reality):
+UT4AC is a **standard sibling UE4 plugin**, not a module NetcodePlus loads.
+Ground truth from the dogfood artifact (`UT4AC.zip`, hand-unzipped by
+phantaci — today's only dogfooder):
 
-- **The open-source plugin is the loader.** NetcodePlus probes ONE canonical
-  path (proposal: `Plugins/NetcodePlus/AC/`), loads the module if present,
-  logs `[UT4AC] loaded <file> version <v>` to the client log, and is a clean
-  no-op when the directory is absent. The loader being open source is the
-  transparency story: anyone can read exactly when and how the closed code is
-  invoked, and verify that absence means inert.
-- The launcher's install = download → sha-verify → atomic write into that
-  directory (reuse the editor-plugin machinery: temp sibling, validate,
-  swap, roll back on failure). Uninstall = delete the directory + clear
-  consent. Both refuse while `UE4-Win64-Shipping.exe` runs.
-- Windows-only at first (the module is a Windows DLL; Linux is out of scope
-  until UT4AC itself is).
+- Install location: `<root>/UnrealTournament/Plugins/UT4AC/` — a normal
+  plugin folder beside NetcodePlus.
+- Artifact shape: a plugin-folder zip — `UT4AC.uplugin` at the root plus
+  `Binaries/**` (Win64 client/server/editor DLLs, Linux server `.so`; the
+  dogfood zip also carries PDBs — trimming them is a Phase-3 packaging call,
+  the installer doesn't care). Two modules: `UT4AC` (Runtime, Default phase,
+  Win+Linux — the review-only server/evidence side) and `UT4ACClient`
+  (Runtime, PostEngineInit, Win64-only). `EnabledByDefault: true`; declares
+  plugin dependencies on UnrealTournament + NetcodePlus.
+- **The engine's plugin system is the loader.** Folder present → UE4 loads
+  it like any other plugin; folder absent → nothing loads, engine-guaranteed.
+  That is a *stronger* absent-=-inert story than the drafted custom loader:
+  it rests on stock engine behavior anyone can verify, not on our code.
+  NetcodePlus's only role is **reporting** — AC presence + version in the
+  version-gate handshake so servers can enforce (§6).
+- Launcher install = download → sha-verify → extract via the NetcodePlus
+  plugin-install machinery **generalized by destination** (`plugin_install.rs`:
+  zip-slip guards, temp-sibling staging, well-formedness validation
+  [`UT4AC.uplugin` + `Binaries/`], atomic swap, rollback) — not
+  `editor_plugin.rs`, which targets the editor build tree. Uninstall =
+  delete `Plugins/UT4AC/` + clear the consent record. Both refuse while
+  `UE4-Win64-Shipping.exe` runs.
+- One artifact serves client and server (house style, like the NetcodePlus
+  zip): hub operators install the same zip by hand server-side; a client
+  only loads the Win64 client module.
+- Note: the dogfood tree carries `Config/DefaultUT4AC.ini` but the zip does
+  NOT — config is compiled-default today. If a config file ever joins the
+  artifact, extend the validation rule alongside.
 
 ## 6. Server-side enforcement (why opt-in stays real)
 
@@ -175,32 +195,41 @@ No mention on the dashboard, in onboarding, or in what's-new until installed
 — discoverability is the Add-ons tab plus server whispers (§6), which reach
 exactly the players who have a reason to care.
 
-## 8. Open questions (TBD — resolve with phantaci before §5)
+## 8. Open questions — RESOLVED with phantaci, 2026-08-27
 
-- **TBD-1 — load mechanism today.** How do dogfood testers run UT4AC right
-  now: does the plugin already contain a loader (and at what path), or is it
-  attached some other way? Decides whether §5's loader is new plugin work
-  (targeting 329) or already exists.
-- **TBD-2 — artifact shape.** One DLL or several files? Any config/sidecar
-  that belongs in the artifact? Decides the zip layout + validation rules.
-- **TBD-3 — version coupling.** Must the AC protocol version gate against the
-  plugin version (schema/proto coupling), i.e. is `min_plugin_version`
-  sufficient, or is it a two-way constraint (plugin also refuses too-old AC)?
-- **TBD-4 — telemetry disclosure.** Exact endpoint(s) the module reports to,
-  what is stored, for how long, and under what identifier — the disclosure
-  text (§3.2) cannot be written honestly without this.
+- **TBD-1 — load mechanism today.** *Resolved:* there is no loader and none
+  is needed. phantaci is the only dogfooder and hand-unzips `UT4AC.zip` into
+  `Plugins/UT4AC/`; the engine's plugin system loads it. Phase 1 therefore
+  shrinks to the **handshake presence/version report** in NetcodePlus (§5,
+  §6) — no loading code anywhere.
+- **TBD-2 — artifact shape.** *Resolved:* a plugin-folder zip —
+  `UT4AC.uplugin` + `Binaries/**` (two modules; full layout in §5). No
+  config sidecar in the artifact today. Validation = uplugin + Binaries
+  present, the same well-formedness rule as the NetcodePlus zip.
+- **TBD-3 — version coupling.** *Resolved:* **one-way** — the manifest's
+  `min_plugin_version` is sufficient; the plugin does not refuse an older AC
+  module.
+- **TBD-4 — telemetry disclosure.** *Resolved (endpoint + identifier):*
+  evidence goes to the **ut4stats Django backend** (the `UT4ACEvidenceBundle`
+  / `UT4ACPlayerEvidence` ingestion on `modernize-django42`, staff-only
+  review views), keyed to the player's Epic account id — the same identifier
+  every match stat already uses. **Still owed: the retention window** — the
+  disclosure text must state how long evidence is kept, and that number is
+  phantaci's call before Phase 3 activation (not blocking Phase 2 code).
 
 ## 9. Phased plan
 
-1. **Phase 0 — decisions.** Resolve §8. Write the disclosure text and commit
-   it to the repo (it version-controls the promise).
-2. **Phase 1 — plugin loader** (NetcodePlus repo, if TBD-1 says it's needed):
-   canonical path probe + logged load + presence in the version handshake.
-   Ships dormant in a normal plugin roll; inert without files.
+1. **Phase 0 — decisions.** ✅ Resolved 2026-08-27 (§8). Remaining sliver:
+   the retention number for the disclosure text, owed before Phase 3.
+2. **Phase 1 — handshake report** (NetcodePlus repo; shrunk by TBD-1): AC
+   presence + version in the version-gate handshake so servers can enforce.
+   No loader — the engine loads the sibling plugin itself. Ships dormant in
+   a normal plugin roll.
 3. **Phase 2 — launcher**: manifest schema block (+ absent-tolerance test),
-   consent store, installer/uninstaller commands (reusing editor-plugin
-   machinery + running-game guard), Add-ons card with the four states.
-   Ships in a normal launcher release; invisible without the manifest block.
+   consent store, installer/uninstaller commands (plugin-install machinery
+   generalized by destination + running-game guard), Add-ons card with the
+   four states. Ships in a normal launcher release; invisible without the
+   manifest block.
 4. **Phase 3 — activation**: upload the artifact to the NetcodePlusUT4
    releases page, add the `anticheat` block, bump sequence, sign, publish.
    Feature goes live for every launcher ≥ Phase 2 with zero further installs.
