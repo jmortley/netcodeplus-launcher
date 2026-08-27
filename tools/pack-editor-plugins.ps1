@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   Package UT4 editor-target plugin binaries into flat-root zips for the launcher's
   signed `editor_plugins` manifest channel (editor-install management, Phase 1).
