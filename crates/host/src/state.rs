@@ -32,6 +32,25 @@ pub const DEFAULT_CHANNEL: &str = "stable";
 ///
 /// Every field has a sensible default so a missing or partial state
 /// file degrades to "first run" behaviour rather than failing.
+/// The player's recorded UT4AC consent (docs/ANTICHEAT-OPTIN-DESIGN.md §3.1).
+///
+/// `consent_rev` is the manifest entry's monitoring-scope revision at the
+/// moment of the Install click; a live manifest carrying a HIGHER revision
+/// pauses updates and re-asks. `installed_version`/`installed_sha256` describe
+/// what is actually on disk so update checks are hash-driven like the plugin.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnticheatConsent {
+    /// ISO-8601 UTC timestamp of the consent click.
+    pub granted_at: String,
+    /// Monitoring-scope revision agreed to (from the manifest at grant time).
+    pub consent_rev: u32,
+    /// Module version currently installed (e.g. "1.0.9").
+    pub installed_version: String,
+    /// SHA-256 of the installed zip — drives "update available".
+    #[serde(default)]
+    pub installed_sha256: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct LauncherState {
     /// Detected or user-picked UT4 install root. `None` means the
@@ -59,6 +78,13 @@ pub struct LauncherState {
     /// Optional pak ids the user has opted out of.
     #[serde(default)]
     pub opted_out: HashSet<String>,
+
+    /// UT4AC anti-cheat consent record. `None` = never consented — the
+    /// launcher must not download a byte of the module. Cleared on uninstall.
+    /// Lives here (not in the game tree) so reinstalling UT4 cannot
+    /// resurrect consent. See docs/ANTICHEAT-OPTIN-DESIGN.md §3.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub anticheat_consent: Option<AnticheatConsent>,
 
     /// Display label of the launch profile the user last chose, so it
     /// can be re-selected on the next run.
@@ -336,6 +362,7 @@ impl Default for LauncherState {
             local_install: LocalInstall::default(),
             pak_stamps: HashMap::new(),
             opted_out: HashSet::new(),
+            anticheat_consent: None,
             launch_profile_label: None,
             launch_priority: Priority::default(),
             affinity_mask_hex: None,

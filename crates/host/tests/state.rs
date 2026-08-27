@@ -96,6 +96,7 @@ fn sample_state() -> LauncherState {
         local_install: LocalInstall { paks },
         pak_stamps,
         opted_out,
+        anticheat_consent: None,
         launch_profile_label: Some("Unreal Tournament 4 UU".to_string()),
         launch_priority: Priority::High,
         affinity_mask_hex: Some("FFC".to_string()),

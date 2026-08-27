@@ -72,6 +72,7 @@ fn manifest_with_channel(name: &str, paks: HashMap<String, ManifestPak>) -> Mani
         openal: None,
         launcher_linux: None,
         editor_plugins: HashMap::new(),
+        anticheat: HashMap::new(),
     }
 }
 

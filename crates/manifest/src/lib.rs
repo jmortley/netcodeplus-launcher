@@ -30,8 +30,8 @@ use tracing::debug;
 
 pub use crate::error::{Error, Result};
 pub use crate::schema::{
-    Channel, EditorPluginEntry, GameInstaller, HexError, LauncherEntry, Manifest, ManifestPak,
-    PluginEntry, Sha256Digest, SUPPORTED_SCHEMA_VERSION,
+    AnticheatEntry, Channel, EditorPluginEntry, GameInstaller, HexError, LauncherEntry, Manifest,
+    ManifestPak, PluginEntry, Sha256Digest, SUPPORTED_SCHEMA_VERSION,
 };
 
 impl Manifest {

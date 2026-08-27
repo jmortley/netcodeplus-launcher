@@ -81,6 +81,7 @@ fn sample_manifest(now: DateTime<Utc>) -> Manifest {
         openal: None,
         launcher_linux: None,
         editor_plugins: HashMap::new(),
+        anticheat: HashMap::new(),
     }
 }
 

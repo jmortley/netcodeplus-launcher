@@ -123,6 +123,17 @@ pub struct Manifest {
     /// pre-editor-plugin manifests and launchers interoperate both ways.
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub editor_plugins: HashMap<String, EditorPluginEntry>,
+
+    /// Signed **anti-cheat** modules, keyed by module id (today only
+    /// `"ut4ac"`). Strictly **opt-in**: the launcher never downloads an entry
+    /// without a locally recorded consent whose `consent_rev` matches (see
+    /// `docs/ANTICHEAT-OPTIN-DESIGN.md`). Same additive back-compat rule as
+    /// [`Self::editor_plugins`] — `#[serde(default)]` → empty map, so every
+    /// manifest shipped so far parses and pre-feature launchers ignore the
+    /// block entirely. Publishing the block is what activates the Add-ons
+    /// card (the editor-plugins dormant-activation trick).
+    #[serde(default, skip_serializing_if = "HashMap::is_empty")]
+    pub anticheat: HashMap<String, AnticheatEntry>,
 }
 
 /// The latest launcher build advertised by a [`Manifest`].
@@ -299,6 +310,56 @@ pub struct EditorPluginEntry {
     /// Engine changelist companion to [`Self::engine_build_id`].
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub engine_changelist: Option<u64>,
+}
+
+/// One signed **anti-cheat module** build advertised by a [`Manifest`]
+/// (keyed by module id in [`Manifest::anticheat`]; today only `"ut4ac"`).
+///
+/// The artifact is a plugin-folder zip (`UT4AC.uplugin` + `Binaries/**`)
+/// installed as a sibling UE4 plugin at
+/// `<root>/UnrealTournament/Plugins/UT4AC/`; the engine's own plugin system
+/// loads it when present and loads nothing when absent. Distribution trust is
+/// the standard chain (sha256 + size pinned here, inside the signed manifest).
+/// What makes this entry different is **consent**: [`Self::consent_rev`] names
+/// the monitoring-scope revision the player agreed to, and the launcher pauses
+/// updates and re-asks whenever the manifest's revision moves past the
+/// recorded one. See `docs/ANTICHEAT-OPTIN-DESIGN.md`.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct AnticheatEntry {
+    /// Module version, e.g. `"1.0.9"` (the uplugin's `VersionName` without any
+    /// dogfood suffix). Display + records; updates trigger on hash, not this.
+    pub version: String,
+
+    /// HTTPS URL of the module zip. **Untrusted** — integrity comes from
+    /// [`Self::sha256`].
+    pub url: String,
+
+    /// SHA-256 of the module **zip** bytes; extraction is refused on mismatch,
+    /// and a mismatch vs the recorded installed digest = "update available".
+    pub sha256: Sha256Digest,
+
+    /// Declared zip size in bytes; a download whose length differs is aborted.
+    pub size_bytes: u64,
+
+    /// Monotonic revision of the module's **monitoring scope**. Bumped when the
+    /// module starts observing something new; a bump past the player's recorded
+    /// consent pauses updates and returns the Add-ons card to review state.
+    pub consent_rev: u32,
+
+    /// Minimum NetcodePlus build this module version pairs with (one-way
+    /// coupling — resolved TBD-3). The launcher refuses to install/update the
+    /// module while the installed plugin build is older, showing "waiting for
+    /// plugin update" instead.
+    pub min_plugin_version: u32,
+
+    /// One-line "what changed in the monitoring scope" note, surfaced on the
+    /// review card when [`Self::consent_rev`] moves.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub disclosure_note: Option<String>,
+
+    /// Optional HTTPS page with the full versioned disclosure text.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub notes_url: Option<String>,
 }
 
 /// A single pak entry within a [`Channel`].
@@ -749,6 +810,53 @@ mod tests {
         }"#;
         let m: Manifest = serde_json::from_str(json).unwrap();
         assert!(m.editor_plugins.is_empty());
+    }
+
+    #[test]
+    fn manifest_without_anticheat_parses() {
+        // Back-compat: no `anticheat` key -> empty map (every manifest so far,
+        // and every manifest until Phase 3 activation).
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-08-27T00:00:00Z",
+            "expires_at": "2027-08-27T00:00:00Z",
+            "sequence": 63,
+            "min_launcher_version": "0.1.0",
+            "channels": {}
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        assert!(m.anticheat.is_empty());
+    }
+
+    #[test]
+    fn manifest_with_anticheat_round_trips() {
+        let json = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-08-27T00:00:00Z",
+            "expires_at": "2027-08-27T00:00:00Z",
+            "sequence": 64,
+            "min_launcher_version": "0.1.0",
+            "channels": {},
+            "anticheat": {
+                "ut4ac": {
+                    "version": "1.0.9",
+                    "url": "https://example.invalid/UT4AC-1.0.9.zip",
+                    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+                    "size_bytes": 33542770,
+                    "consent_rev": 1,
+                    "min_plugin_version": 328,
+                    "disclosure_note": "initial release"
+                }
+            }
+        }"#;
+        let m: Manifest = serde_json::from_str(json).unwrap();
+        let ac = m.anticheat.get("ut4ac").expect("ut4ac entry present");
+        assert_eq!(ac.version, "1.0.9");
+        assert_eq!(ac.consent_rev, 1);
+        assert_eq!(ac.min_plugin_version, 328);
+        assert_eq!(ac.notes_url, None);
+        let reparsed: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
+        assert_eq!(reparsed, m);
     }
 
     #[test]

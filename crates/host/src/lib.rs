@@ -76,8 +76,9 @@ pub use crate::pak_install::{
     install_pak, pak_file_stamp, pak_on_disk_digest, remove_pak, rename_pak,
 };
 pub use crate::plugin_install::{
-    install_plugin_zip, install_plugin_zip_verified, plugin_content_hash, plugin_matches_zip,
-    plugin_supports_env_auth, plugin_zip_content_hash, PluginInstallError, AUTH_ENV_VAR,
+    install_plugin_zip, install_plugin_zip_verified, install_ut4ac_zip, plugin_content_hash,
+    plugin_matches_zip, plugin_supports_env_auth, plugin_zip_content_hash, remove_ut4ac, ut4ac_dir,
+    PluginInstallError, AUTH_ENV_VAR,
 };
 pub use crate::repair::{clear_cache_dir, ems_dir, webcache_dir};
 pub use crate::shortcut::{
@@ -85,7 +86,9 @@ pub use crate::shortcut::{
     is_stale_pending, repoint_launcher_shortcut_if_present, schedule_delete_on_reboot,
     ShortcutError, ShortcutRepoint, LAUNCHER_SHORTCUT_NAME,
 };
-pub use crate::state::{LauncherState, OnboardingState, PakStamp, DEFAULT_CHANNEL};
+pub use crate::state::{
+    AnticheatConsent, LauncherState, OnboardingState, PakStamp, DEFAULT_CHANNEL,
+};
 pub use crate::stray::{remove_stray, scan_strays, StrayKind, StrayPlugin, StrayRemoveError};
 pub use crate::swap::{apply_binary_swap, swap_paths, SwapError};
 

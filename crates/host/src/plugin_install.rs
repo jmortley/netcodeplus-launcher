@@ -74,18 +74,20 @@ pub enum PluginInstallError {
 /// Result alias for plugin installation.
 pub type Result<T> = std::result::Result<T, PluginInstallError>;
 
-/// Best-effort removal of `.NetcodePlus.staging.*` / `.NetcodePlus.old.*`
-/// leftovers in `plugins_dir` from interrupted prior runs. Failures are ignored
-/// (a leftover we cannot delete simply stays; the install uses a PID-unique
-/// staging name so it does not collide).
-fn sweep_leftovers(plugins_dir: &Path) {
+/// Best-effort removal of `.{name}.staging.*` / `.{name}.old.*` leftovers in
+/// `plugins_dir` from interrupted prior runs. Failures are ignored (a leftover
+/// we cannot delete simply stays; installs use a PID-unique staging name so
+/// they do not collide).
+fn sweep_leftovers_for(plugins_dir: &Path, plugin_name: &str) {
+    let staging_prefix = format!(".{plugin_name}.staging.");
+    let old_prefix = format!(".{plugin_name}.old.");
     let Ok(entries) = fs::read_dir(plugins_dir) else {
         return;
     };
     for entry in entries.flatten() {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if name.starts_with(".NetcodePlus.staging.") || name.starts_with(".NetcodePlus.old.") {
+        if name.starts_with(&staging_prefix) || name.starts_with(&old_prefix) {
             remove_leftover_dir(&entry.path());
         }
     }
@@ -201,10 +203,59 @@ pub fn install_plugin_zip_verified(
 /// filesystem/zip errors. On any error the live plugin folder is left as it
 /// was before the call.
 pub fn install_plugin_zip(zip_path: &Path, root: &Path) -> Result<()> {
-    let dest = netcodeplus_dir(root); // <root>/UnrealTournament/Plugins/NetcodePlus
+    // <root>/UnrealTournament/Plugins/NetcodePlus
+    install_plugin_dir_zip(zip_path, &netcodeplus_dir(root), "NetcodePlus")
+}
+
+/// The UT4AC anti-cheat plugin directory under a game install root:
+/// `<root>/UnrealTournament/Plugins/UT4AC`. A standard sibling UE4 plugin —
+/// present = the engine loads it, absent = engine-guaranteed inert
+/// (docs/ANTICHEAT-OPTIN-DESIGN.md §5).
+#[must_use]
+pub fn ut4ac_dir(root: &Path) -> PathBuf {
+    crate::install::plugins_dir(root).join("UT4AC")
+}
+
+/// Install the UT4AC module zip (already sha-verified by the caller against
+/// the signed manifest) into [`ut4ac_dir`], with the same staging/validation/
+/// atomic-swap guarantees as the NetcodePlus installer.
+///
+/// # Errors
+/// See [`PluginInstallError`]; on any error the existing UT4AC folder (if any)
+/// is left as it was.
+pub fn install_ut4ac_zip(zip_path: &Path, root: &Path) -> Result<()> {
+    install_plugin_dir_zip(zip_path, &ut4ac_dir(root), "UT4AC")
+}
+
+/// Remove the UT4AC plugin folder entirely — the uninstall half of the opt-in
+/// contract. `Ok(true)` = removed, `Ok(false)` = was already absent. The
+/// caller clears the consent record alongside.
+///
+/// # Errors
+/// Any filesystem error other than the folder not existing (e.g. a file locked
+/// by a running game — the command layer refuses while UT4 runs for exactly
+/// this reason).
+pub fn remove_ut4ac(root: &Path) -> io::Result<bool> {
+    match fs::remove_dir_all(ut4ac_dir(root)) {
+        Ok(()) => Ok(true),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(false),
+        Err(e) => Err(e),
+    }
+}
+
+/// Install a plugin-folder zip into an arbitrary sibling plugin directory —
+/// the [`install_plugin_zip`] machinery generalized by destination, shared with
+/// the UT4AC anti-cheat installer (docs/ANTICHEAT-OPTIN-DESIGN.md §5). Same
+/// guarantees: zip-slip guard, temp-sibling staging, `{name}.uplugin` +
+/// `Binaries/` well-formedness validation, atomic swap with rollback.
+pub(crate) fn install_plugin_dir_zip(
+    zip_path: &Path,
+    dest: &Path,
+    plugin_name: &str,
+) -> Result<()> {
     let plugins_dir = dest
         .parent()
-        .ok_or_else(|| PluginInstallError::NoPluginsDir(dest.clone()))?
+        .ok_or_else(|| PluginInstallError::NoPluginsDir(dest.to_path_buf()))?
         .to_path_buf();
     fs::create_dir_all(&plugins_dir)?;
 
@@ -212,11 +263,11 @@ pub fn install_plugin_zip(zip_path: &Path, root: &Path) -> Result<()> {
     // (e.g. a crash, or an earlier failed elevated attempt). Best-effort: a
     // leftover we cannot remove is not fatal here. Doing this lets an elevated
     // run clean up an admin-owned leftover a prior elevated run left behind.
-    sweep_leftovers(&plugins_dir);
+    sweep_leftovers_for(&plugins_dir, plugin_name);
 
     // Stage into a temp sibling dir so a half-extraction never touches the live
     // folder. Unique-ish name; cleaned up on every exit path.
-    let staging = plugins_dir.join(format!(".NetcodePlus.staging.{}", std::process::id()));
+    let staging = plugins_dir.join(format!(".{plugin_name}.staging.{}", std::process::id()));
     if staging.exists() {
         fs::remove_dir_all(&staging)?;
     }
@@ -230,7 +281,9 @@ pub fn install_plugin_zip(zip_path: &Path, root: &Path) -> Result<()> {
 
     // The contents must be a well-formed plugin (files at the archive root, so
     // .uplugin + Binaries/ land directly in staging).
-    if !staging.join("NetcodePlus.uplugin").is_file() || !staging.join("Binaries").is_dir() {
+    if !staging.join(format!("{plugin_name}.uplugin")).is_file()
+        || !staging.join("Binaries").is_dir()
+    {
         let _ = fs::remove_dir_all(&staging);
         return Err(PluginInstallError::NotAPlugin);
     }
@@ -239,15 +292,15 @@ pub fn install_plugin_zip(zip_path: &Path, root: &Path) -> Result<()> {
     // old. If the final move fails, restore the old folder. Each fs op is
     // annotated so a failure names the exact step (the bare io::Error otherwise
     // just says "Access is denied" with no indication of which path).
-    let backup = plugins_dir.join(format!(".NetcodePlus.old.{}", std::process::id()));
+    let backup = plugins_dir.join(format!(".{plugin_name}.old.{}", std::process::id()));
     let had_existing = dest.exists();
     if had_existing {
         if backup.exists() {
             fs::remove_dir_all(&backup).map_err(|e| annotate(e, "remove stale backup", &backup))?;
         }
-        rename_with_retry(&dest, &backup).map_err(|e| annotate(e, "move existing aside", &dest))?;
+        rename_with_retry(dest, &backup).map_err(|e| annotate(e, "move existing aside", dest))?;
     }
-    match rename_with_retry(&staging, &dest)
+    match rename_with_retry(&staging, dest)
         .map_err(|e| annotate(e, "move new into place", &staging))
     {
         Ok(()) => {
@@ -259,7 +312,7 @@ pub fn install_plugin_zip(zip_path: &Path, root: &Path) -> Result<()> {
         Err(e) => {
             // Roll back: put the old folder back, drop staging.
             if had_existing {
-                let _ = fs::rename(&backup, &dest);
+                let _ = fs::rename(&backup, dest);
             }
             let _ = fs::remove_dir_all(&staging);
             Err(PluginInstallError::Io(e))
@@ -704,6 +757,67 @@ mod tests {
             fs::write(win64.join(name), utf16_needle()).unwrap();
         }
         assert!(!plugin_supports_env_auth(&root));
+    }
+
+    /// UT4AC artifact shape: `UT4AC.uplugin` + `Binaries/**` at the zip root.
+    fn make_ut4ac_zip(path: &Path) {
+        use std::io::Write;
+        let mut buf: Vec<u8> = Vec::new();
+        {
+            let opts = zip::write::SimpleFileOptions::default()
+                .compression_method(zip::CompressionMethod::Stored);
+            let mut w = zip::ZipWriter::new(io::Cursor::new(&mut buf));
+            w.start_file("UT4AC.uplugin", opts).unwrap();
+            w.write_all(br#"{"VersionName":"1.0.9"}"#).unwrap();
+            w.add_directory("Binaries/Win64/", opts).unwrap();
+            w.start_file("Binaries/Win64/UE4-UT4ACClient-Win64-Shipping.dll", opts)
+                .unwrap();
+            w.write_all(b"AC-client-bytes").unwrap();
+            w.finish().unwrap();
+        }
+        fs::write(path, &buf).unwrap();
+    }
+
+    #[test]
+    fn ut4ac_installs_to_its_own_plugin_dir_and_uninstalls_cleanly() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let zip_path = tmp.path().join("UT4AC.zip");
+        make_ut4ac_zip(&zip_path);
+        let root = tmp.path().join("UT4");
+
+        install_ut4ac_zip(&zip_path, &root).unwrap();
+        let dir = ut4ac_dir(&root);
+        assert!(dir.join("UT4AC.uplugin").is_file());
+        assert!(dir
+            .join("Binaries/Win64/UE4-UT4ACClient-Win64-Shipping.dll")
+            .is_file());
+        // Sibling of NetcodePlus, not inside it.
+        assert_eq!(
+            dir.parent().unwrap(),
+            netcodeplus_dir(&root).parent().unwrap()
+        );
+
+        // Uninstall = the folder is gone; absent = Ok(false), not an error.
+        assert!(remove_ut4ac(&root).unwrap());
+        assert!(!dir.exists());
+        assert!(!remove_ut4ac(&root).unwrap());
+    }
+
+    #[test]
+    fn ut4ac_install_rejects_a_zip_without_its_uplugin() {
+        use tempfile::TempDir;
+        let tmp = TempDir::new().unwrap();
+        let zip_path = tmp.path().join("NotAC.zip");
+        // A NetcodePlus-shaped zip is NOT a valid UT4AC artifact: the
+        // validation is name-specific, so a mixed-up upload cannot land in
+        // the anti-cheat slot.
+        make_plugin_zip(&zip_path, br#"{"VersionName":"2.0"}"#, b"DLL");
+        let root = tmp.path().join("UT4");
+
+        let err = install_ut4ac_zip(&zip_path, &root).unwrap_err();
+        assert!(matches!(err, PluginInstallError::NotAPlugin));
+        assert!(!ut4ac_dir(&root).exists());
     }
 
     #[test]

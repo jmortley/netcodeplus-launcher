@@ -5073,6 +5073,7 @@ async function renderAddons(): Promise<void> {
   }
   panel.innerHTML = `
     ${addons}
+    <div id="anticheat-section"></div>
     <div id="editor-install-section"></div>`;
   if (root) {
     document
@@ -5085,6 +5086,9 @@ async function renderAddons(): Promise<void> {
       .getElementById("get-openal-manual")
       ?.addEventListener("click", () => openExternal("https://github.com/main-exe/UT4-OpenAL/"));
     if (!hasOpenal && platformOs === "windows") void upgradeOpenalSection(root);
+    // Dormant until a signed manifest carries the anticheat block (Phase 3);
+    // Windows-only like the module itself.
+    if (platformOs === "windows") void upgradeAnticheatSection(root);
   }
   void renderEditorInstall();
 }
@@ -5157,6 +5161,135 @@ async function installOpenal(root: string): Promise<void> {
     if (btn) btn.disabled = false;
     const st = document.getElementById("openal-install-status");
     if (st) st.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+  }
+}
+
+// ---- UT4AC anti-cheat (strictly opt-in; docs/ANTICHEAT-OPTIN-DESIGN.md) ----
+
+// Mirror of the backend's AnticheatStatus DTO.
+interface AnticheatStatus {
+  offered: boolean;
+  state:
+    | "not_offered"
+    | "not_installed"
+    | "installed_current"
+    | "update_available"
+    | "review_required"
+    | "waiting_for_plugin";
+  version: string | null;
+  size_bytes: number;
+  consent_rev: number;
+  min_plugin_version: number;
+  disclosure_note: string | null;
+  notes_url: string | null;
+  installed_version: string | null;
+  consented_rev: number | null;
+  plugin_build: number | null;
+}
+
+// The compact disclosure shown in the consent dialog. The full versioned text
+// lives at the manifest's notes_url; this summary must stay honest on its own.
+function anticheatDisclosure(st: AnticheatStatus): string {
+  return [
+    `UT4AC ${st.version ?? ""} is the community anti-cheat module. Before installing, know exactly what you're agreeing to:`,
+    ``,
+    `• It is CLOSED SOURCE — unlike everything else this launcher installs. Anti-cheat effectiveness depends on that.`,
+    `• It runs only while UT4 runs, loaded by the game as a normal plugin. No background service. Uninstalling deletes it completely.`,
+    `• While you play, it collects match-integrity evidence (e.g. fire-event and render/memory integrity checks) and reports it to the community stats backend (ut4stats), stored under your Epic account id and reviewed by staff.`,
+    `• It never reads browsing data, does not keylog, and installs nothing kernel-mode.`,
+    ``,
+    `Installing is optional. Without it you can play everything except matches whose rules require UT4AC. Clicking "I agree" records your consent to this version of the module's monitoring (revision ${st.consent_rev}).`,
+  ].join("\n");
+}
+
+async function upgradeAnticheatSection(root: string): Promise<void> {
+  const st = await invoke<AnticheatStatus>("anticheat_status", { root }).catch(() => null);
+  const section = document.getElementById("anticheat-section");
+  // Absent manifest block = the feature does not exist. Leave the panel bare.
+  if (!section || !st || !st.offered) return;
+
+  const mb = (st.size_bytes / 1e6).toFixed(0);
+  const learn = st.notes_url
+    ? ` <button id="ac-learn" type="button" class="link-btn">Learn more</button>`
+    : "";
+  let body = "";
+  switch (st.state) {
+    case "installed_current":
+      body = `<div class="ok">✓ UT4AC ${escape(st.installed_version ?? "")} installed — anti-cheat matches will accept you.</div>
+        <div class="game-install-actions"><button id="ac-uninstall" type="button" class="link-btn">Uninstall</button>${learn}</div>`;
+      break;
+    case "update_available":
+      body = `<div><strong>UT4AC</strong> — update available: ${escape(st.installed_version ?? "?")} → ${escape(st.version ?? "?")} (${mb} MB), same monitoring scope you already approved.</div>
+        <div class="game-install-actions"><button id="ac-install" type="button">Update UT4AC</button><button id="ac-uninstall" type="button" class="link-btn">Uninstall</button>${learn}</div>`;
+      break;
+    case "waiting_for_plugin":
+      body = `<div><strong>UT4AC</strong> ${escape(st.version ?? "")} needs NetcodePlus build ${st.min_plugin_version}+ (you have ${st.plugin_build ?? "none"}). It will offer itself once the plugin updates.</div>
+        <div class="game-install-actions"><button id="ac-uninstall" type="button" class="link-btn">Uninstall</button>${learn}</div>`;
+      break;
+    case "review_required":
+      body = `<div class="warn">⚠ UT4AC wants to monitor something new${st.disclosure_note ? ` — ${escape(st.disclosure_note)}` : ""}. Your installed version keeps working; updates are paused until you review and approve the change.</div>
+        <div class="game-install-actions"><button id="ac-install" type="button">Review &amp; approve</button><button id="ac-uninstall" type="button" class="link-btn">Uninstall</button>${learn}</div>`;
+      break;
+    default:
+      // not_installed
+      body = `<div><strong>UT4AC</strong> — the optional community anti-cheat (${mb} MB). Some rated matches and cups require it; casual servers never check. Strictly opt-in: nothing is downloaded until you review what it does and agree.</div>
+        <div class="game-install-actions"><button id="ac-install" type="button">Review &amp; install</button>${learn}</div>`;
+  }
+  section.innerHTML = `<div class="game-install">${body}<div id="ac-status" class="launch-status"></div></div>`;
+
+  if (st.notes_url) {
+    const url = st.notes_url;
+    document.getElementById("ac-learn")?.addEventListener("click", () => openExternal(url));
+  }
+  document
+    .getElementById("ac-install")
+    ?.addEventListener("click", () => void doAnticheatInstall(root, st));
+  document
+    .getElementById("ac-uninstall")
+    ?.addEventListener("click", () => void doAnticheatUninstall(root));
+}
+
+// The Install/Approve click IS the consent act: the dialog shows the
+// disclosure, and the backend refuses if the manifest's consent_rev moved
+// after this dialog rendered (never record consent to unseen text).
+async function doAnticheatInstall(root: string, st: AnticheatStatus): Promise<void> {
+  const ok = await confirm(anticheatDisclosure(st), {
+    title: "UT4AC — review before installing",
+    kind: "warning",
+    okLabel: "I agree — install",
+    cancelLabel: "Cancel",
+  });
+  if (!ok) return;
+  const s = document.getElementById("ac-status");
+  if (s) s.innerHTML = `<span class="src">Downloading and verifying UT4AC…</span>`;
+  try {
+    await invoke<AnticheatStatus>("anticheat_install", {
+      root,
+      consentRev: st.consent_rev,
+    });
+    await upgradeAnticheatSection(root);
+  } catch (err) {
+    const s2 = document.getElementById("ac-status");
+    if (s2) s2.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("anticheat_install failed:", err);
+  }
+}
+
+async function doAnticheatUninstall(root: string): Promise<void> {
+  const ok = await confirm(
+    "Uninstall UT4AC? The module is deleted completely and your consent record is cleared. You can reinstall any time; matches that require UT4AC will decline you until then.",
+    { title: "Uninstall UT4AC", kind: "warning", okLabel: "Uninstall", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  try {
+    await invoke<AnticheatStatus>("anticheat_uninstall", { root });
+    await upgradeAnticheatSection(root);
+    const s = document.getElementById("ac-status");
+    if (s) s.innerHTML = `<span class="ok">UT4AC removed.</span>`;
+  } catch (err) {
+    const s = document.getElementById("ac-status");
+    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("anticheat_uninstall failed:", err);
   }
 }
 
