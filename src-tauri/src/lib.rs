@@ -193,6 +193,7 @@ pub fn run() {
             commands::launch_game,
             commands::game_requires_admin,
             commands::clear_game_requires_admin,
+            commands::repair_client_caches,
             commands::launch_game_elevated,
             commands::is_game_running,
             commands::load_state,

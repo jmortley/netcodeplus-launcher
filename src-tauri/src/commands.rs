@@ -149,6 +149,49 @@ pub fn clear_game_requires_admin(executable: String) -> Result<(), String> {
     ncp_host::compat::clear_requires_admin(Path::new(&executable)).map_err(|e| e.to_string())
 }
 
+/// Per-target outcome of [`repair_client_caches`] — human-ready strings the UI
+/// prints verbatim ("cleared" / "already clean" / "failed: …").
+#[derive(Debug, serde::Serialize)]
+pub struct CacheRepairOutcome {
+    /// The per-user CEF `webcache` under Documents.
+    pub webcache: String,
+    /// The selected install's `PersistentDownloadDir/EMS` cache.
+    pub ems: String,
+}
+
+/// The "delete webcache" folklore crash fix as a button: clear the two
+/// regenerable client caches (see `ncp_host::repair`). Per-target failures are
+/// reported in the outcome rather than failing the whole command, so one locked
+/// file still tells the player what did and didn't clear.
+///
+/// # Errors
+/// Only when UT4 is running — the caches are open then, and a partial delete of
+/// a live cache is exactly the corruption this button exists to fix.
+#[tauri::command]
+pub fn repair_client_caches(root: Option<String>) -> Result<CacheRepairOutcome, String> {
+    if shipping_client_running() {
+        return Err("Close Unreal Tournament, then try again.".into());
+    }
+    fn outcome(result: std::io::Result<bool>) -> String {
+        match result {
+            Ok(true) => "cleared".into(),
+            Ok(false) => "already clean".into(),
+            Err(e) => format!("failed: {e}"),
+        }
+    }
+    let webcache = match ncp_host::webcache_dir() {
+        Some(dir) => outcome(ncp_host::clear_cache_dir(&dir)),
+        None => "failed: no Documents folder on this system".into(),
+    };
+    let ems = match root.as_deref() {
+        Some(r) if !r.is_empty() => {
+            outcome(ncp_host::clear_cache_dir(&ncp_host::ems_dir(Path::new(r))))
+        }
+        _ => "skipped — no install selected".into(),
+    };
+    Ok(CacheRepairOutcome { webcache, ems })
+}
+
 /// Launch the game ELEVATED (one UAC prompt) — an escape hatch for setups that
 /// insist on it. NOT recommended: it runs the game as admin, and because it goes
 /// through the elevated-launch primitive the CPU priority/affinity knobs do not

@@ -5228,7 +5228,13 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
       <button id="cfg-apply" type="button">Apply competitive config</button>
       <button id="cfg-restore" type="button"${cfg.has_backup ? "" : " disabled"}>Restore backup</button>
     </div>
-    <div id="cfg-status" class="launch-status"></div>`;
+    <div id="cfg-status" class="launch-status"></div>
+    <h4 style="margin-top:18px">Repair</h4>
+    <p class="src">Crashing on join, or the in-game menus stopped loading? Two game caches can corrupt after a crash (the embedded browser's <code>webcache</code> and the <code>EMS</code> download cache). Deleting them is safe — UT4 rebuilds both on the next launch. Close the game first.</p>
+    <div class="discord-btns">
+      <button id="cfg-repair-caches" type="button">Repair client caches</button>
+    </div>
+    <div id="repair-status" class="launch-status"></div>`;
 
   document.getElementById("get-openal")?.addEventListener("click", () =>
     openExternal("https://github.com/main-exe/UT4-OpenAL/"),
@@ -5240,10 +5246,33 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
   document.getElementById("cfg-apply")?.addEventListener("click", () => void applyConfig(openal));
   document.getElementById("cfg-restore")?.addEventListener("click", () => void restoreConfig());
   document.getElementById("cfg-make-writable")?.addEventListener("click", () => void doClearReadonly());
+  document.getElementById("cfg-repair-caches")?.addEventListener("click", () => void doRepairCaches());
 
   if (flash) {
     const s = document.getElementById("cfg-status");
     if (s) s.innerHTML = `<span class="${flash.cls}">${escape(flash.text)}</span>`;
+  }
+}
+
+// The "delete webcache" folklore fix as a button: clears the CEF webcache
+// (per-user Documents tree) and the selected install's EMS download cache.
+// Both regenerate on next launch; the backend refuses while UT4 runs.
+async function doRepairCaches(): Promise<void> {
+  const s = document.getElementById("repair-status");
+  const ok = await confirm(
+    "Delete UT4's web cache and EMS download cache? Both are rebuilt automatically the next time the game starts — saved settings, binds, and stats are not touched. UT4 must be closed.",
+    { title: "Repair client caches", kind: "warning", okLabel: "Repair", cancelLabel: "Cancel" },
+  );
+  if (!ok) return;
+  try {
+    const out = await invoke<{ webcache: string; ems: string }>("repair_client_caches", {
+      root: state.installs[state.selInstall]?.install.root ?? null,
+    });
+    const cls = out.webcache.startsWith("failed") || out.ems.startsWith("failed") ? "warn" : "ok";
+    if (s) s.innerHTML = `<span class="${cls}">webcache: ${escape(out.webcache)} &nbsp;·&nbsp; EMS: ${escape(out.ems)}</span>`;
+  } catch (err) {
+    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("repair_client_caches failed:", err);
   }
 }
 
