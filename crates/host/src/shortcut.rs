@@ -225,10 +225,141 @@ pub fn repoint_launcher_shortcut_if_present(current_exe: &Path) -> ShortcutRepoi
     }
 }
 
-/// Non-Windows stub: there are no `.lnk` shortcuts to repoint.
+/// File name of the freedesktop `.desktop` entry the launcher manages on Linux
+/// — the app-grid / dock entry. Deterministic: it is the AppImage's embedded
+/// desktop file (named after the `netcodeplus-launcher` binary), copied into
+/// `~/.local/share/applications/` when the AppImage is desktop-integrated.
+#[cfg(not(windows))]
+const LINUX_DESKTOP_ENTRY: &str = "netcodeplus-launcher.desktop";
+
+/// The freedesktop `Exec` field code (`%u`, `%U`, `%f`, `%F`) at the end of an
+/// `Exec=` value, if any — preserved verbatim when the path is rewritten so the
+/// `ncp://` URL still reaches the launcher.
+#[cfg(not(windows))]
+fn exec_field_code(exec_value: &str) -> Option<&'static str> {
+    ["%u", "%U", "%f", "%F"]
+        .into_iter()
+        .find(|code| exec_value.trim_end().ends_with(code))
+}
+
+/// Escape a filesystem path for embedding inside a **double-quoted** freedesktop
+/// `Exec` argument. Per the Desktop Entry Spec, `"`, backtick, `$` and `\` must
+/// each be escaped with a preceding backslash. The single pass over the original
+/// chars escapes the backslash itself correctly (each reserved char, including
+/// `\`, gets exactly one `\` prepended). A path is only forbidden `/` and NUL, so
+/// these chars are otherwise legal and reachable.
+#[cfg(not(windows))]
+fn escape_quoted_exec(path: &str) -> String {
+    let mut out = String::with_capacity(path.len());
+    for ch in path.chars() {
+        if matches!(ch, '\\' | '"' | '$' | '`') {
+            out.push('\\');
+        }
+        out.push(ch);
+    }
+    out
+}
+
+/// (Linux) Rewrite of a `.desktop` file's contents so the `[Desktop Entry]`
+/// group's `Exec=` points at `appimage`, or `None` when it already does (or
+/// there is no such line). Only the main `[Desktop Entry]` group is touched —
+/// never a `[Desktop Action …]` sub-group. The path is written double-quoted
+/// with the spec's reserved chars escaped (see [`escape_quoted_exec`]) and any
+/// trailing field code preserved; every other line (Icon, StartupWMClass,
+/// Categories, MimeType, comments …) is left byte-for-byte intact. Pure — no
+/// filesystem access — so it unit-tests on any host.
+#[cfg(not(windows))]
+#[must_use]
+fn desktop_entry_repointed(appimage: &Path, existing: &str) -> Option<String> {
+    let appimage = appimage.to_str()?; // a non-UTF-8 path can't be a .desktop Exec
+    let mut out: Vec<String> = Vec::new();
+    let mut in_main_group = false;
+    let mut changed = false;
+    for line in existing.lines() {
+        let trimmed = line.trim();
+        if trimmed.starts_with('[') && trimmed.ends_with(']') {
+            in_main_group = trimmed == "[Desktop Entry]";
+            out.push(line.to_string());
+            continue;
+        }
+        if in_main_group {
+            if let Some(value) = line.strip_prefix("Exec=") {
+                let quoted = escape_quoted_exec(appimage);
+                let new_line = match exec_field_code(value) {
+                    Some(code) => format!("Exec=\"{quoted}\" {code}"),
+                    None => format!("Exec=\"{quoted}\""),
+                };
+                changed |= new_line != line;
+                out.push(new_line);
+                continue;
+            }
+        }
+        out.push(line.to_string());
+    }
+    if !changed {
+        return None;
+    }
+    let mut s = out.join("\n");
+    if existing.ends_with('\n') {
+        s.push('\n');
+    }
+    Some(s)
+}
+
+/// Atomically overwrite `path` with `contents` (temp file in the same dir +
+/// rename), preserving the file's existing permission bits.
+#[cfg(not(windows))]
+fn overwrite_desktop_entry(path: &Path, contents: &str) -> std::io::Result<()> {
+    use std::io::Write;
+    let dir = path.parent().unwrap_or_else(|| Path::new("."));
+    let orig_perms = std::fs::metadata(path).map(|m| m.permissions()).ok();
+    let mut tmp = tempfile::NamedTempFile::new_in(dir)?;
+    tmp.write_all(contents.as_bytes())?;
+    tmp.as_file().sync_all()?;
+    let file = tmp.persist(path).map_err(|e| e.error)?;
+    if let Some(perms) = orig_perms {
+        let _ = file.set_permissions(perms);
+    }
+    Ok(())
+}
+
+/// (Linux) Keep the managed app-grid / dock `.desktop` entry
+/// (`~/.local/share/applications/netcodeplus-launcher.desktop`) pointed at the
+/// AppImage running now — but only if it already exists. Heals the case where
+/// the AppImage was moved or re-downloaded to a new path: the freedesktop entry
+/// keeps its old `Exec=`, so the dock/"show apps" icon launches the stale (or
+/// vanished) binary. Overwrites the *same* file in place (never a second icon).
+///
+/// The passed `_current_exe` is ignored: inside an AppImage `current_exe()` is
+/// the transient FUSE mount (`/tmp/.mount_…`), so the real path is taken from
+/// the `APPIMAGE` env var instead. When not running as an AppImage (a `.deb`
+/// install or a dev build) there is nothing we own to repoint — returns
+/// [`ShortcutRepoint::NoShortcut`], so a packaged `.desktop` is never rewritten.
+/// The `ncp://` handler entry is repointed separately by the deep-link plugin's
+/// `register_all()` on every startup, so it is not touched here.
 #[cfg(not(windows))]
 pub fn repoint_launcher_shortcut_if_present(_current_exe: &Path) -> ShortcutRepoint {
-    ShortcutRepoint::NoShortcut
+    let Some(appimage) = crate::linux::appimage_path(std::env::var("APPIMAGE").ok().as_deref())
+    else {
+        return ShortcutRepoint::NoShortcut; // not an AppImage — nothing we manage
+    };
+    let Some(entry) = dirs::data_dir().map(|d| d.join("applications").join(LINUX_DESKTOP_ENTRY))
+    else {
+        return ShortcutRepoint::NoShortcut;
+    };
+    if !entry.is_file() {
+        return ShortcutRepoint::NoShortcut; // desktop-integrated users only
+    }
+    let Ok(existing) = std::fs::read_to_string(&entry) else {
+        return ShortcutRepoint::Failed;
+    };
+    match desktop_entry_repointed(&appimage, &existing) {
+        None => ShortcutRepoint::Repointed, // already correct — a no-op success
+        Some(updated) => match overwrite_desktop_entry(&entry, &updated) {
+            Ok(()) => ShortcutRepoint::Repointed,
+            Err(_) => ShortcutRepoint::Failed,
+        },
+    }
 }
 
 /// Schedule `path` for deletion on the next reboot.
@@ -435,5 +566,129 @@ mod tests {
             &v("0.2.4"),
             None,
         ));
+    }
+
+    // ---------- Linux .desktop repoint (pure logic) ---------------------
+
+    #[cfg(not(windows))]
+    const SAMPLE_DESKTOP: &str = "[Desktop Entry]\n\
+Type=Application\n\
+Name=UT4 Community Launcher\n\
+Comment=NetcodePlus update launcher and game runner.\n\
+Exec=/home/jeremy/Applications/UT4-Community-Launcher.AppImage %u\n\
+Icon=netcodeplus-launcher\n\
+StartupWMClass=netcodeplus-launcher\n\
+Terminal=false\n\
+Categories=Game;\n\
+MimeType=x-scheme-handler/ncp;\n";
+
+    #[cfg(not(windows))]
+    #[test]
+    fn desktop_repoint_rewrites_only_exec_and_preserves_field_code() {
+        let out = desktop_entry_repointed(
+            Path::new("/home/jeremy/Downloads/UT4-Community-Launcher-x86_64.AppImage"),
+            SAMPLE_DESKTOP,
+        )
+        .expect("path changed, so a rewrite is expected");
+        assert!(out
+            .contains("Exec=\"/home/jeremy/Downloads/UT4-Community-Launcher-x86_64.AppImage\" %u"));
+        // The stale path is gone; every other key is untouched.
+        assert!(!out.contains("/home/jeremy/Applications/"));
+        for keep in [
+            "Icon=netcodeplus-launcher",
+            "StartupWMClass=netcodeplus-launcher",
+            "Categories=Game;",
+            "MimeType=x-scheme-handler/ncp;",
+        ] {
+            assert!(out.contains(keep), "must preserve: {keep}");
+        }
+        assert!(out.ends_with('\n'), "trailing newline preserved");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn desktop_repoint_is_noop_when_already_current() {
+        let current = "[Desktop Entry]\nExec=\"/apps/cur.AppImage\" %u\nIcon=x\n";
+        assert_eq!(
+            desktop_entry_repointed(Path::new("/apps/cur.AppImage"), current),
+            None,
+            "already pointing here → no rewrite"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn desktop_repoint_adds_quotes_for_a_path_with_spaces() {
+        let existing = "[Desktop Entry]\nExec=/old/app %u\n";
+        let out = desktop_entry_repointed(Path::new("/home/a b/UT4 Launcher.AppImage"), existing)
+            .expect("changed");
+        assert!(out.contains("Exec=\"/home/a b/UT4 Launcher.AppImage\" %u"));
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn desktop_repoint_escapes_reserved_chars_in_the_path() {
+        // A path with the freedesktop-reserved chars ("`, `$`, backtick, `\`)
+        // must be escaped inside the double quotes, or the Exec is unparseable —
+        // the very stale/broken-launch class this repoint exists to fix.
+        let existing = "[Desktop Entry]\nExec=/old/app %u\n";
+        let out =
+            desktop_entry_repointed(Path::new(r#"/home/a"b/$x/`c/d\e/UT4.AppImage"#), existing)
+                .expect("changed");
+        let exec = out
+            .lines()
+            .find(|l| l.starts_with("Exec="))
+            .expect("has Exec");
+        assert_eq!(
+            exec, r#"Exec="/home/a\"b/\$x/\`c/d\\e/UT4.AppImage" %u"#,
+            "each reserved char gets exactly one backslash; got: {exec}"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn desktop_repoint_without_field_code_stays_without_one() {
+        let existing = "[Desktop Entry]\nExec=/old/app\n";
+        let out =
+            desktop_entry_repointed(Path::new("/new/app.AppImage"), existing).expect("changed");
+        assert!(
+            out.contains("Exec=\"/new/app.AppImage\"\n")
+                || out.trim_end().ends_with("\"/new/app.AppImage\"")
+        );
+        assert!(!out.contains("%u"), "must not invent a field code");
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn desktop_repoint_ignores_exec_in_action_groups() {
+        // A per-action Exec (in a [Desktop Action …] group) must NOT be rewritten
+        // — only the main [Desktop Entry] Exec is the launcher path.
+        let existing = "[Desktop Entry]\n\
+Exec=/old/app.AppImage %u\n\
+Actions=New;\n\
+\n\
+[Desktop Action New]\n\
+Name=New Window\n\
+Exec=/old/app.AppImage --new\n";
+        let out =
+            desktop_entry_repointed(Path::new("/new/app.AppImage"), existing).expect("changed");
+        assert!(
+            out.contains("Exec=\"/new/app.AppImage\" %u"),
+            "main Exec repointed"
+        );
+        assert!(
+            out.contains("Exec=/old/app.AppImage --new"),
+            "action Exec left untouched"
+        );
+    }
+
+    #[cfg(not(windows))]
+    #[test]
+    fn desktop_repoint_none_when_no_exec_line() {
+        let existing = "[Desktop Entry]\nName=Launcher\nIcon=x\n";
+        assert_eq!(
+            desktop_entry_repointed(Path::new("/new/app.AppImage"), existing),
+            None
+        );
     }
 }
