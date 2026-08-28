@@ -1684,6 +1684,7 @@ pub fn apply_engine_config(
     allow_async_loading: bool,
     max_audio_channels: u32,
     unfocused_volume: f64,
+    high_polling_mouse: bool,
     set_openal_audio: bool,
 ) -> Result<(), String> {
     refuse_engine_edit_while_running()?;
@@ -1694,6 +1695,7 @@ pub fn apply_engine_config(
         allow_async_loading,
         max_audio_channels,
         unfocused_volume,
+        high_polling_mouse,
     };
     ncp_host::config::apply(&engine_ini(&app)?, &tweaks, set_openal_audio)
         .map_err(|e| e.to_string())
@@ -1703,6 +1705,10 @@ pub fn apply_engine_config(
 /// loading, MaxChannels) into Engine.ini — no competitive baseline, no
 /// audio-device override. Same backup-once semantics as apply, and the same
 /// running-game refusal.
+// Same flat-argument shape as apply_engine_config above: tauri deserializes
+// command args individually, so a params struct would change the JS call site
+// for no gain.
+#[allow(clippy::too_many_arguments)]
 #[tauri::command]
 pub fn save_engine_tweaks(
     app: tauri::AppHandle,
@@ -1712,6 +1718,7 @@ pub fn save_engine_tweaks(
     allow_async_loading: bool,
     max_audio_channels: u32,
     unfocused_volume: f64,
+    high_polling_mouse: bool,
 ) -> Result<(), String> {
     refuse_engine_edit_while_running()?;
     let tweaks = ncp_host::config::EngineTweaks {
@@ -1721,6 +1728,7 @@ pub fn save_engine_tweaks(
         allow_async_loading,
         max_audio_channels,
         unfocused_volume,
+        high_polling_mouse,
     };
     ncp_host::config::save_tweaks(&engine_ini(&app)?, &tweaks).map_err(|e| e.to_string())
 }

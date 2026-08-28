@@ -178,6 +178,31 @@ pub struct EngineTweaks {
     /// XAudio2 and the UT4-OpenAL module (both consume the app volume
     /// multiplier the focus handler sets).
     pub unfocused_volume: f64,
+
+    /// `ncp.HighPollingMouseCoalesce` in `[ConsoleVariables]` — **experimental**,
+    /// NetcodePlus-only, default off.
+    ///
+    /// UE4.15 routes every mouse packet through Slate's hit-testing and widget
+    /// routing before the viewport sums them into one MouseX/MouseY for the
+    /// frame. At 4000-8000 Hz that per-packet work is pure overhead while the
+    /// game has the cursor captured and hidden. With this on, NetcodePlus sums
+    /// the deltas itself and submits them once per frame, skipping the routing.
+    ///
+    /// It does **not** reduce input latency — the batch is submitted in the same
+    /// frame, microseconds earlier — and it does not alter the deltas or the
+    /// sample count. **At 1000 Hz the saving is a wash**; it is measurable only
+    /// at 4-8 kHz and only while the mouse is moving. It stays out of the way of
+    /// menus, the editor, mouse smoothing, unfocused windows, visible-cursor
+    /// modes and absolute pointers (tablet / RDP / VM), all of which keep stock
+    /// Slate behaviour.
+    ///
+    /// Written as a cvar rather than a plain ini key: a `[ConsoleVariables]`
+    /// entry for a not-yet-registered variable is held by the engine and applied
+    /// when the plugin registers it (`ConfigCacheIni.cpp` `OnSetCVarFromIniEntry`
+    /// creates an `ECVF_Unregistered` placeholder for exactly this case), so it
+    /// reaches a plugin cvar that comes up after startup. Older NetcodePlus
+    /// builds without the cvar simply ignore it.
+    pub high_polling_mouse: bool,
 }
 
 /// Lower clamp for [`EngineTweaks::max_audio_channels`] — below the engine
@@ -197,6 +222,7 @@ impl Default for EngineTweaks {
             allow_async_loading: false,
             max_audio_channels: 32,
             unfocused_volume: 0.0,
+            high_polling_mouse: false,
         }
     }
 }
@@ -441,6 +467,15 @@ fn set_tweak_keys(ini_file: &mut IniFile, tweaks: &EngineTweaks) {
         HDR_AUDIO,
         "UnfocusedVolumeMultiplier",
         &format!("{bg:.6}"),
+    );
+    // Experimental NetcodePlus cvar. Written as an individual key AFTER apply()'s
+    // wholesale [ConsoleVariables] replace above, so the competitive baseline
+    // cannot silently drop the player's choice.
+    ini_file.set_key(
+        SEC_CONSOLE,
+        HDR_CONSOLE,
+        "ncp.HighPollingMouseCoalesce",
+        if tweaks.high_polling_mouse { "1" } else { "0" },
     );
 }
 
@@ -770,6 +805,7 @@ fn read_tweaks(text: &str) -> EngineTweaks {
     let mut in_engine = false;
     let mut in_system = false;
     let mut in_audio = false;
+    let mut in_console = false;
     for line in text.lines() {
         let l = line.trim();
         if l.starts_with('[') && l.ends_with(']') {
@@ -777,6 +813,7 @@ fn read_tweaks(text: &str) -> EngineTweaks {
             in_engine = inner.eq_ignore_ascii_case(SEC_ENGINE);
             in_system = inner.eq_ignore_ascii_case(SEC_SYSTEM);
             in_audio = inner.eq_ignore_ascii_case(SEC_AUDIO);
+            in_console = inner.eq_ignore_ascii_case(SEC_CONSOLE);
             continue;
         }
         let Some((k, v)) = l.split_once('=') else {
@@ -806,6 +843,8 @@ fn read_tweaks(text: &str) -> EngineTweaks {
             if let Ok(n) = v.parse() {
                 t.unfocused_volume = n;
             }
+        } else if in_console && k.eq_ignore_ascii_case("ncp.HighPollingMouseCoalesce") {
+            t.high_polling_mouse = v == "1";
         }
     }
     if !saw_smooth {
@@ -1251,6 +1290,40 @@ Protocol=https
     }
 
     #[test]
+    fn high_polling_cvar_survives_the_competitive_baseline() {
+        // apply() replaces the whole [ConsoleVariables] body with the fixed
+        // competitive set, so the knob is only safe because set_tweak_keys runs
+        // AFTER that. If the ordering is ever swapped, this catches it.
+        let dir = tempfile::tempdir().unwrap();
+        let ini = dir.path().join("Engine.ini");
+        std::fs::write(&ini, SAMPLE).unwrap();
+
+        let on = EngineTweaks {
+            high_polling_mouse: true,
+            ..EngineTweaks::default()
+        };
+        apply(&ini, &on, false).unwrap();
+        let out = std::fs::read_to_string(&ini).unwrap();
+        assert!(out.contains("ncp.HighPollingMouseCoalesce=1"));
+        assert!(read_tweaks(&out).high_polling_mouse);
+
+        // ...and turning it back off writes the explicit 0 rather than dropping
+        // the key, so the cvar is actively set to stock instead of left dangling
+        // from a previous run.
+        let off = EngineTweaks::default();
+        apply(&ini, &off, false).unwrap();
+        let out = std::fs::read_to_string(&ini).unwrap();
+        assert!(out.contains("ncp.HighPollingMouseCoalesce=0"));
+        assert!(!read_tweaks(&out).high_polling_mouse);
+    }
+
+    #[test]
+    fn high_polling_defaults_off_when_absent() {
+        // An ini that predates the knob must read as OFF, never as on.
+        assert!(!read_tweaks(SAMPLE).high_polling_mouse);
+    }
+
+    #[test]
     fn save_tweaks_writes_only_the_knobs() {
         let dir = tempfile::tempdir().unwrap();
         let ini = dir.path().join("Engine.ini");
@@ -1263,6 +1336,7 @@ Protocol=https
             allow_async_loading: true,
             max_audio_channels: 48,
             unfocused_volume: 1.0,
+            high_polling_mouse: true,
         };
         save_tweaks(&ini, &tweaks).unwrap();
         let out = std::fs::read_to_string(&ini).unwrap();

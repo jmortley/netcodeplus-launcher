@@ -276,6 +276,7 @@ interface EngineTweaks {
   allow_async_loading: boolean;
   max_audio_channels: number;
   unfocused_volume: number;
+  high_polling_mouse: boolean;
 }
 
 interface ConfigState {
@@ -5360,7 +5361,9 @@ async function renderConfig(flash?: { text: string; cls: "ok" | "warn" }) {
       <label>Max sounds at once (MaxChannels)
         <select id="cfg-voices">${voiceOptions(t.max_audio_channels)}</select>
       </label>
+      <label class="cfg-check"><input id="cfg-hipoll" type="checkbox"${t.high_polling_mouse ? " checked" : ""} /> <strong>Experimental:</strong> batch high-polling mouse input</label>
     </div>
+    <p class="src"><strong>Experimental — leave this off unless you are specifically testing it.</strong> Only worth trying if your mouse polls at <strong>4000&nbsp;Hz or higher</strong>. UT4 hands every single mouse packet to the UI layer before the game ever sees it; at 8000&nbsp;Hz that is 8000 trips through menu hit-testing per second while you are just aiming. With this on, NetcodePlus adds the movement up itself and hands the game one total per frame, skipping that work.<br><br><strong>It does not make your aim more responsive.</strong> The input still arrives in the same frame — microseconds earlier — and the movement values are identical, so it cannot change where you shoot. It only frees up CPU time. <strong>At 1000&nbsp;Hz there is nothing to save</strong> and you should expect to measure no difference at all. It stays out of the way in menus, with a visible cursor, with mouse smoothing on, and for drawing tablets or remote-desktop sessions, all of which keep normal behaviour. Needs a NetcodePlus build that has the feature; older ones ignore the setting.</p>
     <p class="src">Leave <strong>async loading</strong> on if you play Blitz (flag run) — it avoids load hitches that mode is prone to. Turn it off for slightly faster map loads in other modes (the competitive default).</p>
     <p class="src">UT4 plays at most <strong>MaxChannels</strong> sounds at once and silently drops the quietest extras — in busy fights that can be the jump pad or rocket load behind you. <strong>48</strong> is a safe bump if you notice missing sounds; 64 if they persist. Slightly more CPU per step up.</p>
     ${audioLine}
@@ -6006,6 +6009,7 @@ function readTweakInputs() {
     allowAsyncLoading: (document.getElementById("cfg-async") as HTMLInputElement).checked,
     maxAudioChannels: Number.isFinite(voices) ? voices : 32,
     unfocusedVolume: Number.isFinite(bgvol) ? bgvol : 0,
+    highPollingMouse: (document.getElementById("cfg-hipoll") as HTMLInputElement).checked,
   };
 }
 
