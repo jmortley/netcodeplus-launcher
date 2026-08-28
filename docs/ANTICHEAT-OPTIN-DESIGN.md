@@ -166,8 +166,22 @@ phantaci — today's only dogfooder):
 
 Mirrors the `NCPlusVersionGate` advisor pattern:
 
-- The plugin reports AC presence + version alongside its own version
-  handshake. Servers/rulesets carry an `ac_required` flag (cups, rated pugs).
+- **CORRECTED 2026-08-27 against the UT4AC source: NetcodePlus does NOT relay
+  this, and must not.** `UUT4AntiCheatComponent` already runs its own
+  client->server version handshake (`Client_ReportPluginVersion` ->
+  `Server_ReceivePluginVersion`): an **encrypted** JSON payload
+  (`UUT4AC::Decrypt`), gated on `IsOwningClientRPC()` + `WithValidation`,
+  rate-limited to 5s, length-bounded, with an enforced +/-120s **anti-replay
+  window**, and enforcement via `CompareSemver(Version, RequiredPluginVersion)`.
+  It owns its kick path too (`UUT4AC::KickPlayer` -> `GuaranteedKick`,
+  `KickThreshold` / `?UT4ACKick=`). A NetcodePlus-side report could only read
+  the version from `UT4AC.uplugin` -- a text file on the client's own disk --
+  and would relay it unencrypted with no replay window: a **spoofable second
+  source of truth** that can contradict the authenticated one.
+- What UT4AC structurally cannot see is **total absence**: a client with no
+  client module produces silence, not a mismatch. That, and only that, is what
+  a future `ac_required` flag would need to cover.
+- Servers/rulesets carry an `ac_required` flag (cups, rated pugs).
 - A player without UT4AC joining an AC-required match gets a clear whisper —
   *"This match requires UT4AC. It's an optional install in the launcher's
   Add-ons tab."* — and is moved to spectate or declined at match join,
@@ -212,7 +226,7 @@ exactly the players who have a reason to care.
 - **TBD-4 — telemetry disclosure.** *Resolved (endpoint + identifier):*
   evidence goes to the **ut4stats Django backend** (the `UT4ACEvidenceBundle`
   / `UT4ACPlayerEvidence` ingestion on `modernize-django42`, staff-only
-  review views), keyed to the player's Epic account id — the same identifier
+  review views), keyed to the player's **playerID** — the same identifier
   every match stat already uses. **Still owed: the retention window** — the
   disclosure text must state how long evidence is kept, and that number is
   phantaci's call before Phase 3 activation (not blocking Phase 2 code).
@@ -221,10 +235,13 @@ exactly the players who have a reason to care.
 
 1. **Phase 0 — decisions.** ✅ Resolved 2026-08-27 (§8). Remaining sliver:
    the retention number for the disclosure text, owed before Phase 3.
-2. **Phase 1 — handshake report** (NetcodePlus repo; shrunk by TBD-1): AC
-   presence + version in the version-gate handshake so servers can enforce.
-   No loader — the engine loads the sibling plugin itself. Ships dormant in
-   a normal plugin roll.
+2. ~~**Phase 1 — handshake report**~~ **DROPPED 2026-08-27** (see §6). UT4AC
+   already carries its own encrypted, replay-protected, semver-enforcing
+   version handshake, so a NetcodePlus relay would duplicate it with weaker
+   integrity. **Nothing is owed in the NetcodePlus repo.** Consequence:
+   `min_plugin_version` no longer needs to name a specific build — it means
+   only "NetcodePlus must be present", which UT4AC's own uplugin already
+   declares as a dependency, so the current shipped build is the honest value.
 3. **Phase 2 — launcher**: manifest schema block (+ absent-tolerance test),
    consent store, installer/uninstaller commands (plugin-install machinery
    generalized by destination + running-game guard), Add-ons card with the

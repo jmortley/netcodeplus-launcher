@@ -5203,7 +5203,7 @@ function anticheatDisclosure(st: AnticheatStatus): string {
     ``,
     `• It is CLOSED SOURCE — unlike everything else this launcher installs. Anti-cheat effectiveness depends on that.`,
     `• It runs only while UT4 runs, loaded by the game as a normal plugin. No background service. Uninstalling deletes it completely.`,
-    `• While you play, it collects match-integrity evidence (e.g. fire-event and render/memory integrity checks) and reports it to the community stats backend (ut4stats), stored under your Epic account id and reviewed by staff.`,
+    `• While you play, it collects match-integrity evidence (e.g. fire-event and render/memory integrity checks) and reports it to the community stats backend (ut4stats), stored under your playerID and reviewed by staff.`,
     `• It never reads browsing data, does not keylog, and installs nothing kernel-mode.`,
     ``,
     `Installing is optional. Without it you can play everything except matches whose rules require UT4AC. Clicking "I agree" records your consent to this version of the module's monitoring (revision ${st.consent_rev}).`,
