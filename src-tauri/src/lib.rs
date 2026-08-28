@@ -17,7 +17,7 @@ mod trust_root;
 mod updates;
 mod webview2;
 
-pub use elevated::{run_elevated_install, run_elevated_install_openal};
+pub use elevated::{run_elevated_install, run_elevated_install_openal, run_elevated_install_ut4ac};
 
 /// If we were relaunched by the verified self-update
 /// ([`crate::updates::download_and_apply_launcher_update`]), the previous

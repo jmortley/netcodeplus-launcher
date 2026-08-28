@@ -65,6 +65,57 @@ fn plugin_build_for(state: &ncp_host::LauncherState, root: &str) -> Option<u32> 
     state.installed_plugins.get(root).map(|p| p.version)
 }
 
+/// Re-launch this exe as administrator to install UT4AC into a protected root
+/// (one UAC prompt), mirroring the plugin installer's `elevate_install`.
+///
+/// The signed manifest and its detached signature are handed over as temp
+/// FILES, and the elevated child re-verifies them against the compiled-in trust
+/// root and takes the expected ZIP digest from that verified manifest. So none
+/// of these arguments are trusted for integrity — they only tell the child
+/// *what* to verify. Temp files are removed on every path.
+fn elevate_install_ut4ac(
+    zip_path: &Path,
+    manifest_json: &str,
+    manifest_sig: &str,
+    root: &Path,
+) -> Result<(), String> {
+    let exe = std::env::current_exe().map_err(|e| format!("cannot locate launcher exe: {e}"))?;
+    let dir = std::env::temp_dir();
+    let pid = std::process::id();
+    let mpath = dir.join(format!("ncp-ut4ac-manifest-{pid}.json"));
+    let spath = dir.join(format!("ncp-ut4ac-manifest-{pid}.json.minisig"));
+    std::fs::write(&mpath, manifest_json).map_err(|e| format!("cannot stage manifest: {e}"))?;
+    if let Err(e) = std::fs::write(&spath, manifest_sig) {
+        let _ = std::fs::remove_file(&mpath);
+        return Err(format!("cannot stage signature: {e}"));
+    }
+
+    let args = vec![
+        "--elevated-install-ut4ac".to_string(),
+        "--zip".to_string(),
+        zip_path.to_string_lossy().into_owned(),
+        "--manifest".to_string(),
+        mpath.to_string_lossy().into_owned(),
+        "--sig".to_string(),
+        spath.to_string_lossy().into_owned(),
+        "--root".to_string(),
+        root.to_string_lossy().into_owned(),
+    ];
+    let outcome = ncp_host::run_elevated(&exe, &args);
+    let _ = std::fs::remove_file(&mpath);
+    let _ = std::fs::remove_file(&spath);
+
+    match outcome {
+        Ok(0) => Ok(()),
+        Ok(_) => Err("the administrator install of UT4AC failed — close Unreal Tournament and any File Explorer window showing the Plugins folder, then try again"
+            .to_string()),
+        Err(ncp_host::ElevateError::Cancelled) => {
+            Err("you declined the administrator prompt, so UT4AC was not installed".to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
 /// Report the UT4AC offer/consent/install state for the Add-ons card.
 ///
 /// # Errors
@@ -138,7 +189,7 @@ pub async fn anticheat_install(
     if crate::commands::shipping_client_running() {
         return Err("Close Unreal Tournament, then try again.".into());
     }
-    let (manifest, state, _, _) = fetch_verify(&app).await?;
+    let (manifest, state, manifest_json, manifest_sig) = fetch_verify(&app).await?;
     let Some(entry) = manifest.anticheat.get(AC_ID).cloned() else {
         return Err("UT4AC is not currently offered by the update manifest.".into());
     };
@@ -171,9 +222,20 @@ pub async fn anticheat_install(
         let _ = std::fs::remove_file(&zip_path);
         return Err(format!("UT4AC download/verify failed: {e}"));
     }
-    let install_result = ncp_host::install_ut4ac_zip(&zip_path, Path::new(&root));
+    // The default UT4 install lives under Program Files, which an unelevated
+    // launcher cannot write: the bare call returns ERROR_ACCESS_DENIED (os
+    // error 5). The plugin installer has always deferred to a single elevated
+    // pass in exactly this case; shipping UT4AC without that fallback is what
+    // made "Review & install" fail for every Program Files install. The ZIP is
+    // deliberately NOT deleted until the elevated attempt is done with it.
+    let install_result = match ncp_host::install_ut4ac_zip(&zip_path, Path::new(&root)) {
+        Err(e) if crate::updates::is_permission_denied(&e) => {
+            elevate_install_ut4ac(&zip_path, &manifest_json, &manifest_sig, Path::new(&root))
+        }
+        other => other.map_err(|e| e.to_string()),
+    };
     let _ = std::fs::remove_file(&zip_path);
-    install_result.map_err(|e| e.to_string())?;
+    install_result?;
 
     // Record consent AFTER a successful install, against a FRESH state read so
     // a concurrent write during the download isn't clobbered (the install_paks

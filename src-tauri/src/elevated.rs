@@ -222,6 +222,159 @@ pub fn run_elevated_install(args: &[String]) -> i32 {
 /// (with the persisted replay floor), the expected ZIP hash comes from the
 /// VERIFIED manifest's `openal` entry (never a caller argument), the ZIP is
 /// re-hashed, and the root must be a genuine UT4 install. Exit `0` = installed.
+/// Run the elevated **UT4AC** worker: extract the anti-cheat module into
+/// `<root>/UnrealTournament/Plugins/UT4AC/`. Needed because the default UT4
+/// install lives under Program Files, which an unelevated launcher cannot
+/// write — the plugin installer has always deferred to an elevated pass on
+/// `ERROR_ACCESS_DENIED`, and the UT4AC path shipped without inheriting it
+/// (fixed in 1.7.6).
+///
+/// Args: `--zip <path>`, `--manifest <path>`, `--sig <path>`, `--root <path>`.
+///
+/// Identical trust boundary to the plugin and OpenAL workers, and for the same
+/// reason: the manifest + detached signature are re-verified here against the
+/// compiled-in trust root (with the persisted replay floor), the expected ZIP
+/// digest is taken from the VERIFIED manifest's `anticheat.ut4ac` entry rather
+/// than any argument, the ZIP is re-hashed before extraction, and the target
+/// must be a genuine UT4 install root. A local caller who can invoke this
+/// worker therefore still cannot make it write bytes of their choosing into a
+/// protected directory. Exit `0` = installed.
+pub fn run_elevated_install_ut4ac(args: &[String]) -> i32 {
+    let mut zip: Option<String> = None;
+    let mut manifest_path: Option<String> = None;
+    let mut sig_path: Option<String> = None;
+    let mut root: Option<String> = None;
+    let mut i = 0;
+    while i < args.len() {
+        match args[i].as_str() {
+            "--zip" => {
+                zip = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--manifest" => {
+                manifest_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--sig" => {
+                sig_path = args.get(i + 1).cloned();
+                i += 2;
+            }
+            "--root" => {
+                root = args.get(i + 1).cloned();
+                i += 2;
+            }
+            _ => i += 1,
+        }
+    }
+
+    let log_path = std::env::temp_dir().join("ncp-elevated-ut4ac.log");
+    let mut log = String::new();
+
+    let (Some(zip), Some(manifest_path), Some(sig_path), Some(root)) =
+        (zip, manifest_path, sig_path, root)
+    else {
+        log.push_str(
+            "elevated-ut4ac: missing --zip/--manifest/--sig/--root
+",
+        );
+        return finish(&log_path, &log, 125);
+    };
+    log.push_str(&format!(
+        "elevated-ut4ac: zip={zip} root={root}
+"
+    ));
+
+    let json = match std::fs::read(&manifest_path) {
+        Ok(b) => b,
+        Err(e) => {
+            log.push_str(&format!(
+                "cannot read manifest {manifest_path}: {e}
+"
+            ));
+            return finish(&log_path, &log, 125);
+        }
+    };
+    let sig = match std::fs::read_to_string(&sig_path) {
+        Ok(s) => s,
+        Err(e) => {
+            log.push_str(&format!(
+                "cannot read signature {sig_path}: {e}
+"
+            ));
+            return finish(&log_path, &log, 125);
+        }
+    };
+    let current_version = match semver::Version::parse(env!("CARGO_PKG_VERSION")) {
+        Ok(v) => v,
+        Err(e) => {
+            log.push_str(&format!(
+                "launcher version is not valid semver: {e}
+"
+            ));
+            return finish(&log_path, &log, 125);
+        }
+    };
+    let manifest = match ncp_manifest::Manifest::load_and_verify(
+        &json,
+        &sig,
+        &crate::trust_root::public_key(),
+        chrono::Utc::now(),
+        &current_version,
+        persisted_replay_floor(),
+    ) {
+        Ok(m) => m,
+        Err(e) => {
+            log.push_str(&format!(
+                "manifest verification FAILED: {e}
+"
+            ));
+            return finish(&log_path, &log, 125);
+        }
+    };
+    let Some(entry) = manifest.anticheat.get("ut4ac") else {
+        log.push_str(
+            "verified manifest advertises no anticheat.ut4ac entry
+",
+        );
+        return finish(&log_path, &log, 125);
+    };
+    let expected_sha = entry.sha256.to_string();
+    log.push_str(&format!(
+        "verified manifest seq={} ut4ac={} sha={expected_sha}
+",
+        manifest.sequence, entry.version
+    ));
+
+    // Only ever write into a genuine UT4 install root, exactly as the plugin
+    // worker does — an attacker cannot fabricate one somewhere they could not
+    // already write.
+    let mod_paks = ncp_host::default_mod_paks_dir().unwrap_or_default();
+    let root_path = Path::new(&root);
+    if ncp_host::check_install(root_path, mod_paks).is_none() {
+        log.push_str(&format!(
+            "REJECTED (not a UT4 install root): {root}
+"
+        ));
+        return finish(&log_path, &log, 125);
+    }
+    match ncp_host::install_ut4ac_zip_verified(Path::new(&zip), root_path, &expected_sha) {
+        Ok(()) => {
+            log.push_str(&format!(
+                "ok: {root}
+"
+            ));
+            finish(&log_path, &log, 0)
+        }
+        Err(e) => {
+            log.push_str(&format!(
+                "FAILED: {root}: {e}
+"
+            ));
+            finish(&log_path, &log, 1)
+        }
+    }
+}
+
 pub fn run_elevated_install_openal(args: &[String]) -> i32 {
     let mut zip: Option<String> = None;
     let mut manifest_path: Option<String> = None;

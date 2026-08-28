@@ -20,6 +20,11 @@ fn main() {
     if args.iter().any(|a| a == "--elevated-install-openal") {
         std::process::exit(netcodeplus_launcher_lib::run_elevated_install_openal(&args));
     }
+    // Same handoff for the UT4AC module: the default install lives under
+    // Program Files, so the unelevated write is denied (os error 5).
+    if args.iter().any(|a| a == "--elevated-install-ut4ac") {
+        std::process::exit(netcodeplus_launcher_lib::run_elevated_install_ut4ac(&args));
+    }
 
     netcodeplus_launcher_lib::run()
 }

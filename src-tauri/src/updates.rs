@@ -1505,7 +1505,7 @@ pub async fn verify_plugin(
 /// `ERROR_ACCESS_DENIED` (5), because `fs::rename` / `remove_dir_all` on a
 /// protected dir don't always map to the portable kind — we must not misclassify
 /// a Program Files denial as a hard failure (it would skip elevation).
-fn is_permission_denied(e: &ncp_host::PluginInstallError) -> bool {
+pub(crate) fn is_permission_denied(e: &ncp_host::PluginInstallError) -> bool {
     const ERROR_ACCESS_DENIED: i32 = 5;
     matches!(
         e,

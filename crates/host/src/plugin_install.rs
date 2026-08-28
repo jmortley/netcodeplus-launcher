@@ -233,6 +233,36 @@ pub fn install_ut4ac_zip(zip_path: &Path, root: &Path) -> Result<()> {
     install_plugin_dir_zip(zip_path, &ut4ac_dir(root), "UT4AC")
 }
 
+/// Hash-checked [`install_ut4ac_zip`] — the UT4AC twin of
+/// [`install_plugin_zip_verified`], and the only entry point the **elevated**
+/// worker uses.
+///
+/// The unelevated parent has already verified the download, but the elevated
+/// child must not trust that: between the parent's check and the child's write
+/// the temp ZIP sits in a world-writable directory, so an unprivileged local
+/// attacker could swap it and have the admin-integrity worker extract their
+/// bytes into Program Files. Re-hashing here closes that window, and the
+/// expected digest comes from the child's OWN re-verification of the signed
+/// manifest — never from a command-line argument.
+///
+/// # Errors
+/// [`PluginInstallError::HashMismatch`] when the bytes differ, otherwise the
+/// errors of [`install_ut4ac_zip`].
+pub fn install_ut4ac_zip_verified(
+    zip_path: &Path,
+    root: &Path,
+    expected_sha256_hex: &str,
+) -> Result<()> {
+    let got = file_sha256_hex(zip_path)?;
+    if !got.eq_ignore_ascii_case(expected_sha256_hex) {
+        return Err(PluginInstallError::HashMismatch {
+            expected: expected_sha256_hex.to_string(),
+            got,
+        });
+    }
+    install_ut4ac_zip(zip_path, root)
+}
+
 /// Remove the UT4AC plugin folder entirely — the uninstall half of the opt-in
 /// contract. `Ok(true)` = removed, `Ok(false)` = was already absent. The
 /// caller clears the consent record alongside.
