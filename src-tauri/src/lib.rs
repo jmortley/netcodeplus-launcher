@@ -294,6 +294,7 @@ pub fn run() {
             anticheat::anticheat_status,
             anticheat::anticheat_install,
             anticheat::anticheat_uninstall,
+            anticheat::anticheat_local_state,
             updates::fetch_and_verify_manifest,
             updates::compute_plan,
             updates::pak_status,

@@ -278,6 +278,39 @@ pub async fn anticheat_install(
     anticheat_status(app, Some(root)).await
 }
 
+/// Local-only UT4AC install facts for the connect-time PUG pre-flight — no
+/// network, no manifest. `dir_present` is the signal that matters for a join:
+/// the server-side eligibility gate (`bRequireClientTelemetry`) passes only a
+/// client whose UT4AC module actually loaded, and the plugin folder being
+/// present is what makes the engine mount it. `consented` is the launcher's
+/// own consent record, reported alongside (a hand-installed module can be
+/// present without one).
+#[derive(Debug, Serialize)]
+pub struct AnticheatLocalState {
+    pub dir_present: bool,
+    pub consented: bool,
+}
+
+/// Report [`AnticheatLocalState`] for `root`. Deliberately offline: this runs
+/// on every PUG Connect click, which must never wait on (or fail with) the
+/// signed-manifest fetch that [`anticheat_status`] performs.
+///
+/// # Errors
+/// Launcher-state read failures.
+#[tauri::command]
+pub fn anticheat_local_state(app: AppHandle, root: String) -> Result<AnticheatLocalState, String> {
+    let dir_present = ncp_host::ut4ac_dir(Path::new(&root)).is_dir();
+    let path = state_path(&app)?;
+    let consented = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .and_then(|s| s.anticheat_consent)
+        .is_some();
+    Ok(AnticheatLocalState {
+        dir_present,
+        consented,
+    })
+}
+
 /// Uninstall UT4AC: delete `Plugins/UT4AC/` and clear the consent record —
 /// one click, total, per the opt-in contract. Idempotent.
 ///

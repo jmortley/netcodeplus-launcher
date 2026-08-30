@@ -3288,11 +3288,98 @@ function wirePugModeBar(): void {
   document.getElementById("pug-token-clear")?.addEventListener("click", () => void saveLauncherToken(null));
 }
 
-// Shared connect path: resolve install + profile, attach the UT4 auth args and
-// the -ncpconnect target, then launch (which minimizes the launcher). Used by
-// both the PUG Connect button and the server browser. `status`, if given, gets
-// progress / error messages.
-async function connectTo(server: string, password: string, status: HTMLElement | null) {
+// ---- UT4AC pre-flight for PUG joins ----------------------------------------
+// PUG servers run UT4AC's server-side eligibility gate (bRequireClientTelemetry):
+// a client without the UT4AC module never confirms a telemetry provider and gets
+// kicked ~90 seconds after joining — with no hint BEFORE the join. Flag it at
+// Connect time instead. The check is local-only (is the plugin folder present in
+// the selected install) — a Connect click must never wait on a network fetch,
+// and a failed probe never blocks a join. The server enforces either way, so
+// this warns with an explicit "Connect anyway" rather than hard-blocking.
+interface AnticheatLocalState {
+  dir_present: boolean;
+  consented: boolean;
+}
+
+async function ut4acMissingLocally(root: string): Promise<boolean> {
+  try {
+    const st = await invoke<AnticheatLocalState>("anticheat_local_state", { root });
+    return !st.dir_present;
+  } catch (err) {
+    console.error("anticheat_local_state failed:", err);
+    return false;
+  }
+}
+
+// Whether a connect target (host:port, possibly with ?options appended) is one
+// of the CURRENT live PUG servers from the bot's /live feed. This is what flags
+// deep-link (ncp://) and server-browser joins that land on a live PUG game; the
+// PUG panels' own Connect/Spectate buttons pass requiresUt4ac explicitly, since
+// a freshly spun-up PUG server can reach them before the /live feed knows it.
+function isLivePugServer(target: string): boolean {
+  const addr = target.split("?")[0].trim().toLowerCase();
+  return (
+    addr.length > 0 &&
+    state.livePugs.some((p) => (p.server || "").trim().toLowerCase() === addr)
+  );
+}
+
+// Warn that this join needs UT4AC. Renders inline into `status` (the
+// promptServerPassword pattern) with a nav shortcut to the Add-ons card — where
+// the consent + install flow lives — and a "Connect anyway" escape hatch. Falls
+// back to a modal confirm when the caller has no status slot.
+async function warnUt4acRequired(
+  status: HTMLElement | null,
+  onConnectAnyway: () => void,
+): Promise<void> {
+  if (!status) {
+    const ok = await confirm(
+      "This PUG server requires the UT4AC anti-cheat, which isn't installed.\n\n" +
+        "Without it the server will kick you about 90 seconds after joining. " +
+        "Install it from the Add-ons tab first.\n\nConnect anyway?",
+      { title: "UT4AC required", kind: "warning" },
+    );
+    if (ok) onConnectAnyway();
+    return;
+  }
+  status.innerHTML =
+    `<div><span class="warn">This PUG server requires the <b>UT4AC</b> anti-cheat, which isn't ` +
+    `installed — you'd be kicked about 90 seconds after joining.</span></div>` +
+    `<div style="margin-top:6px;">` +
+    `<button type="button" class="link-btn" data-nav-to="addons">Get UT4AC on the Add-ons tab →</button>` +
+    `&nbsp;·&nbsp;` +
+    `<button type="button" class="link-btn" id="ut4ac-connect-anyway">Connect anyway</button>` +
+    `</div>`;
+  status
+    .querySelector<HTMLButtonElement>("#ut4ac-connect-anyway")
+    ?.addEventListener("click", () => onConnectAnyway());
+}
+
+// Shared connect entry: PUG-flagged joins (explicit from the PUG panels, or a
+// target matching a live PUG server) get the UT4AC pre-flight, then everything
+// proceeds through connectToNow. Used by the PUG Connect/Spectate buttons, the
+// server browser, and the ncp:// deep link.
+async function connectTo(
+  server: string,
+  password: string,
+  status: HTMLElement | null,
+  opts?: { requiresUt4ac?: boolean },
+) {
+  const requiresUt4ac = opts?.requiresUt4ac ?? isLivePugServer(server);
+  if (requiresUt4ac) {
+    const di = state.installs[state.selInstall];
+    if (di && (await ut4acMissingLocally(di.install.root))) {
+      await warnUt4acRequired(status, () => void connectToNow(server, password, status));
+      return;
+    }
+  }
+  await connectToNow(server, password, status);
+}
+
+// The actual connect path: resolve install + profile, attach the UT4 auth args
+// and the -ncpconnect target, then launch (which minimizes the launcher).
+// `status`, if given, gets progress / error messages.
+async function connectToNow(server: string, password: string, status: HTMLElement | null) {
   const di = state.installs[state.selInstall];
   if (!di) {
     if (status)
@@ -3359,7 +3446,10 @@ async function connectTo(server: string, password: string, status: HTMLElement |
 }
 
 async function connectToPug(server: string, password: string) {
-  await connectTo(server, password, document.getElementById("pug-status"));
+  // Explicit flag: a just-spawned PUG server can beat the /live feed here.
+  await connectTo(server, password, document.getElementById("pug-status"), {
+    requiresUt4ac: true,
+  });
 }
 
 // ---- ncp://connect deep link ----------------------------------------------
@@ -3541,7 +3631,8 @@ async function spectatePug(p: SpectatePug, status: HTMLElement | null) {
   const target = p.password
     ? `${p.server}?Password=${p.password}?SpectatorOnly=1`
     : `${p.server}?SpectatorOnly=1`;
-  await connectTo(target, "", status);
+  // Spectators are subject to the UT4AC eligibility gate too — flag explicitly.
+  await connectTo(target, "", status, { requiresUt4ac: true });
 }
 
 // ---- in-launcher PUG join (UTPugs / autopug, multi-mode) -------------------
@@ -3684,7 +3775,10 @@ async function utpugsSpectate() {
 }
 
 async function connectToUtpugs(server: string, password: string) {
-  await connectTo(server, password, document.getElementById("utpugs-status"));
+  // UTPugs servers come from utpugsStatus, not the /live feed — flag explicitly.
+  await connectTo(server, password, document.getElementById("utpugs-status"), {
+    requiresUt4ac: true,
+  });
 }
 
 function renderUtpugs(): void {
