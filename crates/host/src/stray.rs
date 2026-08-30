@@ -19,11 +19,31 @@
 //! shipped-content folder loads unconditionally and causes hard-to-diagnose
 //! content conflicts and crashes.
 //!
-//! Finally it finds **leftover install dirs** — `.NetcodePlus.old.*` (a moved-
-//! aside previous build) or `.NetcodePlus.staging.*` (an interrupted extraction)
+//! It finds **leftover install dirs** — `.NetcodePlus.old.*` / `.UT4AC.old.*`
+//! (a moved-aside previous build) or `.*.staging.*` (an interrupted extraction)
 //! in `<root>/UnrealTournament/Plugins/`. The installer normally clears these, but
 //! one can linger when it was file-locked by a running game; surfacing it here
 //! gives a way to clear it WITHOUT triggering a full plugin reinstall.
+//!
+//! It finds **loose plugin module files in the game's own binaries folder** —
+//! `<root>/UnrealTournament/Binaries/Win64/` holds exactly the five stock game
+//! modules on a clean install, but an old manual install guide had players copy
+//! plugin DLLs there. The engine's module loader finds DLLs there by name, so a
+//! stale `UE4-NetcodePlus-Win64-Shipping.dll` loads IN ADDITION to the real
+//! plugin: duplicated console objects, then the fatal "Objects have the same
+//! fully qualified name but different paths" assert before the menu (the
+//! 2026-08-29 field crash — installing UT4AC, whose descriptor forces
+//! NetcodePlus to resolve, is what surfaced the years-old stale copy).
+//!
+//! And it finds **renamed / relocated plugin copies that would actually mount**
+//! — e.g. `Plugins/NetcodePlusOld/` or `Plugins/backup/NetcodePlus/`. The scan
+//! mirrors `FPluginManager::FindPluginsInDirectory` (PluginManager.cpp:281-313):
+//! each directory level mounts the `.uplugin` files found right there, and the
+//! engine only descends into subdirectories when a level contains NONE. So a
+//! copy nested inside another plugin (`Plugins/UT4AC/NetcodePlus/`) never mounts
+//! and is deliberately NOT flagged, while a renamed sibling folder mounts a
+//! second copy alongside the canonical one — the same duplicate-load crash as
+//! `Engine/Plugins`.
 //!
 //! This module finds those stray copies so the UI can warn and offer a guarded
 //! one-click removal. Detection is read-only; removal lives in
@@ -88,14 +108,34 @@ pub enum StrayKind {
     /// kinds this is not a single fixed path — the [`StrayPlugin::path`] names the
     /// specific offending `.pak`.
     ContentPak,
-    /// A leftover `.NetcodePlus.old.*` (moved-aside previous build) or
-    /// `.NetcodePlus.staging.*` (interrupted extraction) directory in
+    /// A leftover `.NetcodePlus.old.*` / `.UT4AC.old.*` (moved-aside previous
+    /// build) or `.*.staging.*` (interrupted extraction) directory in
     /// `<root>/UnrealTournament/Plugins/`. The launcher's own installer normally
     /// clears these, but one can linger if it was file-locked by a running game
     /// (the phantaci report) — and a `.uplugin` still inside it can be picked up
     /// by the engine's recursive plugin scan. Variable path — [`StrayPlugin::path`]
     /// names the specific leftover dir.
     PluginLeftover,
+    /// A loose `*NetcodePlus*` / `*UT4AC*` FILE (stale DLL/PDB/.modules from an
+    /// old manual install) directly in `<root>/UnrealTournament/Binaries/Win64/`
+    /// — the game's OWN module folder, where the engine resolves module DLLs by
+    /// name. A stale plugin DLL there loads in addition to the real plugin and
+    /// asserts at startup with "Objects have the same fully qualified name but
+    /// different paths" (the 2026-08-29 field crash). A clean install has ZERO
+    /// such files (verified against a stock install: the five stock game modules
+    /// plus api-ms redists only), so this cannot false-positive. Variable path —
+    /// one stray per offending file.
+    ProjectBinariesFile,
+    /// A copy of NetcodePlus/UT4AC under a NON-canonical directory that the
+    /// engine WOULD actually mount — a renamed sibling (`Plugins/NetcodePlusOld/`,
+    /// `Plugins/NetcodePlus - Copy/`), a copy nested under a plain folder
+    /// (`Plugins/backup/NetcodePlus/`), or a hand-copy under `Engine/Plugins/`
+    /// beyond the fixed [`StrayKind::EnginePlugins`] slot (e.g.
+    /// `Engine/Plugins/UT4AC/`). Mount-reachability mirrors the engine's real
+    /// recursion rule (see the module docs), so a copy that can never load —
+    /// `Plugins/UT4AC/NetcodePlus/`, stopped by `UT4AC.uplugin` above it — is
+    /// NOT flagged. Variable path — the specific mountable copy's directory.
+    RenamedPluginCopy,
 }
 
 impl StrayKind {
@@ -123,12 +163,36 @@ impl StrayKind {
                  in the separate DownloadedPaks folder instead."
             }
             StrayKind::PluginLeftover => {
-                "A leftover NetcodePlus folder from a previous update is still in \
+                "A leftover plugin folder from a previous update is still in \
                  your Plugins folder. It's normally removed automatically, but one \
                  can get left behind if the game was open during an update — it can \
                  clutter or confuse the plugin, so it's safe to remove."
             }
+            StrayKind::ProjectBinariesFile => {
+                "A leftover NetcodePlus or UT4AC file from an old manual install \
+                 is in the game's own Binaries folder. The game loads it alongside \
+                 the real plugin, which makes UT4 crash the moment it opens."
+            }
+            StrayKind::RenamedPluginCopy => {
+                "A second copy of NetcodePlus or UT4AC (for example a renamed or \
+                 backup folder) is in a folder the game loads plugins from. Two \
+                 copies load at once, which makes UT4 crash the moment it opens."
+            }
         }
+    }
+
+    /// Whether this stray can make a SECOND NetcodePlus/UT4AC copy load — or
+    /// stop the real one from loading at all. These are the shapes behind the
+    /// duplicate-module startup assert, so `anticheat_install` refuses while one
+    /// is present: UT4AC's descriptor hard-depends on NetcodePlus, and mounting
+    /// it forces a second NetcodePlus resolve, turning a latent stray into a
+    /// launch crash with no self-evident cause (the 2026-08-29 field report).
+    /// [`StrayKind::NestedTooDeep`] never mounts (the engine stops at the
+    /// canonical descriptor above it) and a misplaced content pak is unrelated
+    /// to module loading, so those two do not block the install.
+    #[must_use]
+    pub fn blocks_anticheat_install(self) -> bool {
+        !matches!(self, StrayKind::NestedTooDeep | StrayKind::ContentPak)
     }
 }
 
@@ -139,11 +203,13 @@ pub struct StrayPlugin {
     /// What kind of misplacement this is.
     pub kind: StrayKind,
     /// The exact path [`remove_stray`] should remove, which varies by `kind`:
-    /// a directory for [`StrayKind::EnginePlugins`], [`StrayKind::NestedTooDeep`]
-    /// and [`StrayKind::PluginLeftover`]; the loose `NetcodePlus.uplugin` FILE for
-    /// [`StrayKind::LooseInPluginsRoot`]; and the offending `.pak` FILE for
-    /// [`StrayKind::ContentPak`]. `remove_stray` re-derives/re-validates this per
-    /// kind before deleting, so it is never trusted blindly.
+    /// a directory for [`StrayKind::EnginePlugins`], [`StrayKind::NestedTooDeep`],
+    /// [`StrayKind::PluginLeftover`] and [`StrayKind::RenamedPluginCopy`]; the
+    /// loose `NetcodePlus.uplugin` FILE for [`StrayKind::LooseInPluginsRoot`];
+    /// the offending `.pak` FILE for [`StrayKind::ContentPak`]; and the offending
+    /// binaries FILE for [`StrayKind::ProjectBinariesFile`]. `remove_stray`
+    /// re-derives/re-validates this per kind before deleting, so it is never
+    /// trusted blindly.
     pub path: PathBuf,
 }
 
@@ -156,6 +222,142 @@ fn engine_plugins_dir(root: &Path) -> PathBuf {
 /// `<root>/UnrealTournament/Plugins` — the correct plugins parent.
 fn game_plugins_dir(root: &Path) -> PathBuf {
     root.join("UnrealTournament").join("Plugins")
+}
+
+/// `<root>/UnrealTournament/Binaries/Win64` — the GAME's own module folder,
+/// where the engine resolves project-module DLLs by name. Plugin binaries never
+/// belong here (they live under each plugin's own `Binaries/`), which is what
+/// makes the [`StrayKind::ProjectBinariesFile`] rule false-positive-free.
+fn project_binaries_win64(root: &Path) -> PathBuf {
+    root.join("UnrealTournament").join("Binaries").join("Win64")
+}
+
+/// Whether a filename in the project binaries folder marks a stray plugin file:
+/// any file whose name contains `netcodeplus` or `ut4ac` (case-insensitive —
+/// this catches every real-world shape at once: `UE4-NetcodePlus-Win64-
+/// Shipping.dll`, editor/server variants, `.pdb`s, stray `.modules`).
+fn is_stray_project_binaries_name(name: &str) -> bool {
+    let lower = name.to_ascii_lowercase();
+    lower.contains("netcodeplus") || lower.contains("ut4ac")
+}
+
+/// Every stray plugin FILE sitting directly in
+/// `<root>/UnrealTournament/Binaries/Win64/` (non-recursive — the engine only
+/// resolves module DLLs at that level), sorted for a stable order. Single
+/// source of truth for both [`scan_strays`] and the [`remove_stray`] safety
+/// re-check.
+fn stray_project_binaries_files(root: &Path) -> Vec<PathBuf> {
+    let Ok(entries) = std::fs::read_dir(project_binaries_win64(root)) else {
+        return Vec::new();
+    };
+    let mut files: Vec<PathBuf> = entries
+        .flatten()
+        .filter(|e| e.file_type().map(|t| t.is_file()).unwrap_or(false))
+        .filter(|e| is_stray_project_binaries_name(&e.file_name().to_string_lossy()))
+        .map(|e| e.path())
+        .collect();
+    files.sort();
+    files
+}
+
+/// The plugin descriptor filenames whose presence marks a NetcodePlus / UT4AC
+/// copy (compared case-insensitively).
+const MANAGED_PLUGIN_DESCRIPTORS: &[&str] = &["NetcodePlus.uplugin", "UT4AC.uplugin"];
+
+/// Depth cap for the mountable-copy walk. The engine's own recursion is
+/// unbounded, but a real Plugins tree is at most a few levels deep; the cap
+/// only guards against pathological/cyclic trees (junction cycles are already
+/// excluded by the reparse check in the walk).
+const RENAMED_COPY_MAX_DEPTH: usize = 8;
+
+/// Emulate `FPluginManager::FindPluginsInDirectory` (PluginManager.cpp:281-313)
+/// from `dir` downward: a directory level mounts the `.uplugin` files found
+/// right there, and the engine only descends when a level contains NONE.
+/// Appends to `out` every directory that would mount one of
+/// [`MANAGED_PLUGIN_DESCRIPTORS`]. Reparse points are never followed, so an
+/// attacker-planted junction can neither cycle the walk nor pull an outside
+/// tree into the flagged set.
+fn collect_mountable_copies(dir: &Path, depth: usize, out: &mut Vec<PathBuf>) {
+    if depth > RENAMED_COPY_MAX_DEPTH {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return;
+    };
+    let mut descriptors_here: Vec<String> = Vec::new();
+    let mut subdirs: Vec<PathBuf> = Vec::new();
+    for entry in entries.flatten() {
+        let Ok(file_type) = entry.file_type() else {
+            continue;
+        };
+        let name = entry.file_name().to_string_lossy().into_owned();
+        let is_uplugin = std::path::Path::new(&name)
+            .extension()
+            .is_some_and(|e| e.eq_ignore_ascii_case("uplugin"));
+        if file_type.is_file() && is_uplugin {
+            descriptors_here.push(name);
+        } else if file_type.is_dir() && !is_reparse_point(&entry.path()) {
+            subdirs.push(entry.path());
+        }
+    }
+    if !descriptors_here.is_empty() {
+        let has_managed = descriptors_here.iter().any(|n| {
+            MANAGED_PLUGIN_DESCRIPTORS
+                .iter()
+                .any(|d| d.eq_ignore_ascii_case(n))
+        });
+        if has_managed {
+            out.push(dir.to_path_buf());
+        }
+        // The engine stops descending at a level that has any descriptor —
+        // whatever sits deeper (e.g. Plugins/UT4AC/NetcodePlus/) can never
+        // mount and must NOT be flagged.
+        return;
+    }
+    for sub in subdirs {
+        collect_mountable_copies(&sub, depth + 1, out);
+    }
+}
+
+/// Every NON-canonical directory that would mount a NetcodePlus/UT4AC copy,
+/// across both plugin search roots (`UnrealTournament/Plugins/` and
+/// `Engine/Plugins/`), sorted for a stable order. The canonical
+/// `Plugins/NetcodePlus` + `Plugins/UT4AC` slots are skipped whole (their
+/// nested shapes belong to [`StrayKind::NestedTooDeep`]), leftover dirs are
+/// skipped ([`StrayKind::PluginLeftover`] claims them), and the literal
+/// `Engine/Plugins/NetcodePlus` is skipped ([`StrayKind::EnginePlugins`] claims
+/// it) — keeping every stray kind's path set disjoint. Single source of truth
+/// for both [`scan_strays`] and the [`remove_stray`] safety re-check.
+fn renamed_plugin_copy_dirs(root: &Path) -> Vec<PathBuf> {
+    let mut out = Vec::new();
+    if let Ok(entries) = std::fs::read_dir(game_plugins_dir(root)) {
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            let canonical =
+                name.eq_ignore_ascii_case("NetcodePlus") || name.eq_ignore_ascii_case("UT4AC");
+            if canonical || is_plugin_leftover_name(&name) || is_reparse_point(&entry.path()) {
+                continue;
+            }
+            collect_mountable_copies(&entry.path(), 1, &mut out);
+        }
+    }
+    if let Ok(entries) = std::fs::read_dir(root.join("Engine").join("Plugins")) {
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                continue;
+            }
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if name.eq_ignore_ascii_case("NetcodePlus") || is_reparse_point(&entry.path()) {
+                continue;
+            }
+            collect_mountable_copies(&entry.path(), 1, &mut out);
+        }
+    }
+    out.sort();
+    out
 }
 
 /// Whether `name` is a `.pak` that does NOT belong in the game's `Content/Paks`
@@ -192,11 +394,18 @@ fn misplaced_content_paks(root: &Path) -> Vec<PathBuf> {
 }
 
 /// Whether `name` is one of the launcher's own leftover install dirs — a
-/// moved-aside previous build (`.NetcodePlus.old.*`) or an interrupted
-/// extraction (`.NetcodePlus.staging.*`). Mirrors the prefixes
-/// `crate::plugin_install::sweep_leftovers` cleans, so the two never disagree.
+/// moved-aside previous build (`.{plugin}.old.*`) or an interrupted extraction
+/// (`.{plugin}.staging.*`), for both plugins the launcher installs. Mirrors the
+/// prefixes `crate::plugin_install::sweep_leftovers_for` cleans (it is called
+/// with both "NetcodePlus" and "UT4AC"), so the two never disagree.
 fn is_plugin_leftover_name(name: &str) -> bool {
-    name.starts_with(".NetcodePlus.old.") || name.starts_with(".NetcodePlus.staging.")
+    const LEFTOVER_PREFIXES: &[&str] = &[
+        ".NetcodePlus.old.",
+        ".NetcodePlus.staging.",
+        ".UT4AC.old.",
+        ".UT4AC.staging.",
+    ];
+    LEFTOVER_PREFIXES.iter().any(|p| name.starts_with(p))
 }
 
 /// Every leftover `.NetcodePlus.old.*` / `.NetcodePlus.staging.*` DIRECTORY
@@ -265,12 +474,33 @@ pub fn scan_strays(root: &Path) -> Vec<StrayPlugin> {
         });
     }
 
-    // 5. Leftover .NetcodePlus.old.* / .staging.* dirs the installer couldn't
-    //    clear (e.g. locked by a running game) — one stray per leftover.
+    // 5. Leftover .NetcodePlus.old.* / .UT4AC.old.* / .staging.* dirs the
+    //    installer couldn't clear (e.g. locked by a running game) — one stray
+    //    per leftover.
     for leftover in plugin_leftover_dirs(root) {
         strays.push(StrayPlugin {
             kind: StrayKind::PluginLeftover,
             path: leftover,
+        });
+    }
+
+    // 6. Loose *NetcodePlus* / *UT4AC* files in the game's own Binaries/Win64 —
+    //    stale module DLLs from an old manual install that double-load (the
+    //    2026-08-29 field crash) — one stray per offending file.
+    for file in stray_project_binaries_files(root) {
+        strays.push(StrayPlugin {
+            kind: StrayKind::ProjectBinariesFile,
+            path: file,
+        });
+    }
+
+    // 7. Renamed / relocated plugin copies that the engine would actually mount
+    //    (renamed siblings, copies under plain folders, hand-copies under
+    //    Engine/Plugins) — one stray per mountable copy.
+    for copy in renamed_plugin_copy_dirs(root) {
+        strays.push(StrayPlugin {
+            kind: StrayKind::RenamedPluginCopy,
+            path: copy,
         });
     }
 
@@ -360,13 +590,20 @@ fn path_crosses_reparse_point(root: &Path, target: &Path) -> bool {
 /// directory tree; [`StrayKind::LooseInPluginsRoot`] removes just the loose
 /// `NetcodePlus.uplugin` file (it cannot safely guess which other loose files
 /// belonged to the plugin, so it clears the marker and lets a clean install
-/// repopulate the correct folder). [`StrayKind::ContentPak`] and
-/// [`StrayKind::PluginLeftover`] have VARIABLE paths, so instead of recomputing a
-/// fixed location they re-derive the check by re-scanning: the delete proceeds
-/// only if the path is one the current scan still flags — ContentPak removes the
-/// one offending `.pak` (never the game's own `UnrealTournament.pak`, never a path
-/// outside `Content/Paks`); PluginLeftover removes the one leftover dir (only a
-/// `.NetcodePlus.old.*` / `.staging.*` directly in `Plugins/`).
+/// repopulate the correct folder). [`StrayKind::ContentPak`],
+/// [`StrayKind::PluginLeftover`], [`StrayKind::ProjectBinariesFile`] and
+/// [`StrayKind::RenamedPluginCopy`] have VARIABLE paths, so instead of
+/// recomputing a fixed location they re-derive the check by re-scanning: the
+/// delete proceeds only if the path is one the current scan still flags —
+/// ContentPak removes the one offending `.pak` (never the game's own
+/// `UnrealTournament.pak`, never a path outside `Content/Paks`); PluginLeftover
+/// removes the one leftover dir (only a `.NetcodePlus.old.*` / `.UT4AC.old.*` /
+/// `.staging.*` directly in `Plugins/`); ProjectBinariesFile removes the one
+/// offending file (never a stock module — the name filter admits only
+/// `*NetcodePlus*` / `*UT4AC*` files, which no clean install contains);
+/// RenamedPluginCopy removes the one mountable copy directory (never the
+/// canonical `Plugins/NetcodePlus` / `Plugins/UT4AC` slots, which the walk
+/// skips whole).
 ///
 /// Before any delete it also refuses if the path from `root` to the target
 /// crosses a symlink or junction ([`StrayRemoveError::UnsafePath`]) — the guard
@@ -405,10 +642,11 @@ pub fn remove_stray(root: &Path, stray: &StrayPlugin) -> Result<(), StrayRemoveE
 
     // PluginLeftover is also a variable path: re-scan the Plugins folder and only
     // delete `stray.path` if it is one of the leftover dirs scan CURRENTLY flags
-    // (`.NetcodePlus.old.*` / `.staging.*` directly in Plugins/). Same already-gone
-    // vs still-present handling as ContentPak. The command layer refuses to run
-    // this while UT4 is open (see `remove_stray_plugin`), so a game-locked leftover
-    // is caught up front with a plain "close UT4" message rather than failing here.
+    // (`.NetcodePlus.old.*` / `.UT4AC.old.*` / `.staging.*` directly in Plugins/).
+    // Same already-gone vs still-present handling as ContentPak. The command layer
+    // refuses to run this while UT4 is open (see `remove_stray_plugin`), so a
+    // game-locked leftover is caught up front with a plain "close UT4" message
+    // rather than failing here.
     if stray.kind == StrayKind::PluginLeftover {
         if !plugin_leftover_dirs(root).contains(&stray.path) {
             return if stray.path.exists() {
@@ -426,13 +664,53 @@ pub fn remove_stray(root: &Path, stray: &StrayPlugin) -> Result<(), StrayRemoveE
         return Ok(());
     }
 
+    // ProjectBinariesFile: variable path — only a FILE the current Binaries/Win64
+    // scan still flags may be removed (never a stock module, never a directory,
+    // never a path outside that folder). Same already-gone handling as above.
+    if stray.kind == StrayKind::ProjectBinariesFile {
+        if !stray_project_binaries_files(root).contains(&stray.path) {
+            return if stray.path.exists() {
+                Err(StrayRemoveError::NotAStray)
+            } else {
+                Ok(())
+            };
+        }
+        if path_crosses_reparse_point(root, &stray.path) {
+            return Err(StrayRemoveError::UnsafePath);
+        }
+        std::fs::remove_file(&stray.path)?;
+        return Ok(());
+    }
+
+    // RenamedPluginCopy: variable path — only a directory the current
+    // mountable-copy walk still flags may be removed. The walk itself never
+    // follows reparse points, and the chain guard below refuses a junction
+    // anywhere between root and the target.
+    if stray.kind == StrayKind::RenamedPluginCopy {
+        if !renamed_plugin_copy_dirs(root).contains(&stray.path) {
+            return if stray.path.exists() {
+                Err(StrayRemoveError::NotAStray)
+            } else {
+                Ok(())
+            };
+        }
+        if path_crosses_reparse_point(root, &stray.path) {
+            return Err(StrayRemoveError::UnsafePath);
+        }
+        std::fs::remove_dir_all(&stray.path)?;
+        return Ok(());
+    }
+
     let expected = match stray.kind {
         StrayKind::EnginePlugins => engine_plugins_dir(root),
         StrayKind::NestedTooDeep => game_plugins_dir(root)
             .join("NetcodePlus")
             .join("NetcodePlus"),
         StrayKind::LooseInPluginsRoot => game_plugins_dir(root).join("NetcodePlus.uplugin"),
-        StrayKind::ContentPak | StrayKind::PluginLeftover => {
+        StrayKind::ContentPak
+        | StrayKind::PluginLeftover
+        | StrayKind::ProjectBinariesFile
+        | StrayKind::RenamedPluginCopy => {
             unreachable!("variable-path kinds handled above")
         }
     };
@@ -817,6 +1095,299 @@ mod tests {
             &tmp.path().join("root"),
             std::path::Path::new("C:/Windows/System32/x.pak")
         ));
+    }
+
+    // ---- ProjectBinariesFile: loose plugin files in UnrealTournament/Binaries/Win64 ----
+
+    fn binaries_win64(root: &Path) -> PathBuf {
+        project_binaries_win64(root)
+    }
+
+    #[test]
+    fn detects_loose_plugin_files_in_project_binaries() {
+        let tmp = TempDir::new().unwrap();
+        let bin = binaries_win64(tmp.path());
+        mk_dir(&bin);
+        // The exact Nitro shape (2026-08-29): stale April DLLs + PDBs loose in the
+        // game's own module folder.
+        fs::write(bin.join("UE4-NetcodePlus-Win64-Shipping.dll"), b"stale").unwrap();
+        fs::write(bin.join("UE4Editor-NetcodePlus.pdb"), b"stale").unwrap();
+        fs::write(bin.join("ue4-ut4ac-win64-shipping.dll"), b"case").unwrap();
+        // Stock files that must NEVER be flagged.
+        fs::write(bin.join("UE4-Win64-Shipping.modules"), b"stock").unwrap();
+        fs::write(
+            bin.join("UE4-UnrealTournament-Win64-Shipping.dll"),
+            b"stock",
+        )
+        .unwrap();
+        fs::write(bin.join("api-ms-win-core-file-l1-2-0.dll"), b"redist").unwrap();
+        // A DIRECTORY with a matching name is not a module file — files only.
+        mk_dir(&bin.join("NetcodePlus"));
+
+        let files: Vec<_> = scan_strays(tmp.path())
+            .into_iter()
+            .filter(|s| s.kind == StrayKind::ProjectBinariesFile)
+            .map(|s| s.path)
+            .collect();
+        assert_eq!(files.len(), 3, "exactly the three loose plugin files");
+        assert!(files.contains(&bin.join("UE4-NetcodePlus-Win64-Shipping.dll")));
+        assert!(files.contains(&bin.join("UE4Editor-NetcodePlus.pdb")));
+        assert!(files.contains(&bin.join("ue4-ut4ac-win64-shipping.dll")));
+    }
+
+    #[test]
+    fn remove_project_binaries_file_deletes_only_that_file() {
+        let tmp = TempDir::new().unwrap();
+        let bin = binaries_win64(tmp.path());
+        mk_dir(&bin);
+        let stale = bin.join("UE4-NetcodePlus-Win64-Shipping.dll");
+        let stock = bin.join("UE4-UnrealTournament-Win64-Shipping.dll");
+        fs::write(&stale, b"stale").unwrap();
+        fs::write(&stock, b"stock").unwrap();
+
+        let stray = StrayPlugin {
+            kind: StrayKind::ProjectBinariesFile,
+            path: stale.clone(),
+        };
+        remove_stray(tmp.path(), &stray).unwrap();
+        assert!(!stale.exists(), "the stale plugin file is removed");
+        assert!(stock.is_file(), "the stock module must survive");
+    }
+
+    #[test]
+    fn remove_project_binaries_file_refuses_a_stock_module() {
+        let tmp = TempDir::new().unwrap();
+        let bin = binaries_win64(tmp.path());
+        mk_dir(&bin);
+        let stock = bin.join("UE4-UnrealTournament-Win64-Shipping.dll");
+        fs::write(&stock, b"stock").unwrap();
+        let evil = StrayPlugin {
+            kind: StrayKind::ProjectBinariesFile,
+            path: stock.clone(),
+        };
+        assert!(matches!(
+            remove_stray(tmp.path(), &evil),
+            Err(StrayRemoveError::NotAStray)
+        ));
+        assert!(stock.is_file(), "a stock module must not be deleted");
+    }
+
+    #[test]
+    fn remove_project_binaries_file_already_gone_is_benign_success() {
+        let tmp = TempDir::new().unwrap();
+        mk_dir(&binaries_win64(tmp.path()));
+        let gone = binaries_win64(tmp.path()).join("UE4-NetcodePlus.dll");
+        let stray = StrayPlugin {
+            kind: StrayKind::ProjectBinariesFile,
+            path: gone,
+        };
+        assert!(remove_stray(tmp.path(), &stray).is_ok());
+    }
+
+    // ---- RenamedPluginCopy: mountable duplicate copies ----
+
+    #[test]
+    fn detects_renamed_sibling_copy_but_not_canonical_or_other_plugins() {
+        let tmp = TempDir::new().unwrap();
+        let plugins = game_plugins_dir(tmp.path());
+        // Canonical installs — never flagged.
+        mk_dir(&plugins.join("NetcodePlus"));
+        fs::write(
+            plugins.join("NetcodePlus").join("NetcodePlus.uplugin"),
+            b"{}",
+        )
+        .unwrap();
+        mk_dir(&plugins.join("UT4AC"));
+        fs::write(plugins.join("UT4AC").join("UT4AC.uplugin"), b"{}").unwrap();
+        // An unrelated plugin — never flagged.
+        mk_dir(&plugins.join("UltiCross"));
+        fs::write(plugins.join("UltiCross").join("UltiCross.uplugin"), b"{}").unwrap();
+        // The renamed copies — both flagged.
+        let old_copy = plugins.join("NetcodePlusOld");
+        mk_dir(&old_copy);
+        fs::write(old_copy.join("NetcodePlus.uplugin"), b"{}").unwrap();
+        let space_copy = plugins.join("NetcodePlus - Copy");
+        mk_dir(&space_copy);
+        fs::write(space_copy.join("NetcodePlus.uplugin"), b"{}").unwrap();
+
+        let copies: Vec<_> = scan_strays(tmp.path())
+            .into_iter()
+            .filter(|s| s.kind == StrayKind::RenamedPluginCopy)
+            .map(|s| s.path)
+            .collect();
+        assert_eq!(copies.len(), 2, "exactly the two renamed copies");
+        assert!(copies.contains(&old_copy));
+        assert!(copies.contains(&space_copy));
+    }
+
+    #[test]
+    fn nested_copy_inside_another_plugin_is_dormant_and_not_flagged() {
+        // FPluginManager stops descending at the first directory level that has
+        // any .uplugin — so Plugins/UT4AC/NetcodePlus/ can NEVER mount and must
+        // not be flagged (flagging it would offer a pointless scary delete).
+        let tmp = TempDir::new().unwrap();
+        let plugins = game_plugins_dir(tmp.path());
+        let ut4ac = plugins.join("UT4AC");
+        mk_dir(&ut4ac);
+        fs::write(ut4ac.join("UT4AC.uplugin"), b"{}").unwrap();
+        let dormant = ut4ac.join("NetcodePlus");
+        mk_dir(&dormant);
+        fs::write(dormant.join("NetcodePlus.uplugin"), b"{}").unwrap();
+        // Same shape under a NON-canonical plugin: OtherPlugin has its own
+        // descriptor, so a NetcodePlus nested below it is dormant too.
+        let other = plugins.join("OtherPlugin");
+        mk_dir(&other);
+        fs::write(other.join("OtherPlugin.uplugin"), b"{}").unwrap();
+        let dormant2 = other.join("NetcodePlus");
+        mk_dir(&dormant2);
+        fs::write(dormant2.join("NetcodePlus.uplugin"), b"{}").unwrap();
+
+        assert!(
+            scan_strays(tmp.path())
+                .iter()
+                .all(|s| s.kind != StrayKind::RenamedPluginCopy),
+            "dormant nested copies must not be flagged"
+        );
+    }
+
+    #[test]
+    fn detects_copy_nested_under_a_plain_folder() {
+        // Plugins/backup/ has no descriptor, so the engine descends and mounts
+        // backup/NetcodePlus/ — flag exactly that inner directory, not backup/
+        // itself (backup/ may hold the user's other files).
+        let tmp = TempDir::new().unwrap();
+        let plugins = game_plugins_dir(tmp.path());
+        let backup = plugins.join("backup");
+        let inner = backup.join("NetcodePlus");
+        mk_dir(&inner);
+        fs::write(inner.join("NetcodePlus.uplugin"), b"{}").unwrap();
+        fs::write(backup.join("notes.txt"), b"keep me").unwrap();
+
+        let copies: Vec<_> = scan_strays(tmp.path())
+            .into_iter()
+            .filter(|s| s.kind == StrayKind::RenamedPluginCopy)
+            .map(|s| s.path)
+            .collect();
+        assert_eq!(copies, vec![inner.clone()]);
+
+        let stray = StrayPlugin {
+            kind: StrayKind::RenamedPluginCopy,
+            path: inner.clone(),
+        };
+        remove_stray(tmp.path(), &stray).unwrap();
+        assert!(!inner.exists(), "the mountable copy is removed");
+        assert!(
+            backup.join("notes.txt").is_file(),
+            "the enclosing folder's other files must survive"
+        );
+    }
+
+    #[test]
+    fn detects_ut4ac_hand_copy_under_engine_plugins() {
+        // Engine/Plugins/UT4AC double-mounts UT4AC (same assert class against
+        // /Script/UT4AC). The literal Engine/Plugins/NetcodePlus stays claimed
+        // by the fixed EnginePlugins kind — no double-flag.
+        let tmp = TempDir::new().unwrap();
+        let engine = tmp.path().join("Engine").join("Plugins");
+        let ut4ac = engine.join("UT4AC");
+        mk_dir(&ut4ac);
+        fs::write(ut4ac.join("UT4AC.uplugin"), b"{}").unwrap();
+        mk_dir(&engine.join("NetcodePlus"));
+
+        let strays = scan_strays(tmp.path());
+        let copies: Vec<_> = strays
+            .iter()
+            .filter(|s| s.kind == StrayKind::RenamedPluginCopy)
+            .map(|s| s.path.clone())
+            .collect();
+        assert_eq!(copies, vec![ut4ac.clone()]);
+        assert_eq!(
+            strays
+                .iter()
+                .filter(|s| s.kind == StrayKind::EnginePlugins)
+                .count(),
+            1,
+            "the fixed EnginePlugins kind still claims Engine/Plugins/NetcodePlus"
+        );
+    }
+
+    #[test]
+    fn engine_plugins_stock_tree_is_not_flagged() {
+        // A real engine tree: category dirs with ordinary Epic plugins. The walk
+        // must descend category levels, stop at each plugin's descriptor, and
+        // flag nothing.
+        let tmp = TempDir::new().unwrap();
+        let engine = tmp.path().join("Engine").join("Plugins");
+        let cam = engine.join("Runtime").join("AndroidCamera");
+        mk_dir(&cam);
+        fs::write(cam.join("AndroidCamera.uplugin"), b"{}").unwrap();
+        let paper = engine.join("2D").join("Paper2D");
+        mk_dir(&paper);
+        fs::write(paper.join("Paper2D.uplugin"), b"{}").unwrap();
+
+        assert!(scan_strays(tmp.path()).is_empty());
+    }
+
+    #[test]
+    fn ut4ac_leftovers_are_plugin_leftovers_not_renamed_copies() {
+        let tmp = TempDir::new().unwrap();
+        let plugins = game_plugins_dir(tmp.path());
+        // A moved-aside UT4AC build still contains its .uplugin — it must be
+        // claimed by PluginLeftover (and ONLY PluginLeftover; the sets stay
+        // disjoint so removal re-derivation is unambiguous).
+        let leftover = plugins.join(".UT4AC.old.1234");
+        mk_dir(&leftover);
+        fs::write(leftover.join("UT4AC.uplugin"), b"{}").unwrap();
+        let staging = plugins.join(".NetcodePlus.staging.7");
+        mk_dir(&staging);
+        fs::write(staging.join("NetcodePlus.uplugin"), b"{}").unwrap();
+
+        let strays = scan_strays(tmp.path());
+        let leftovers: Vec<_> = strays
+            .iter()
+            .filter(|s| s.kind == StrayKind::PluginLeftover)
+            .map(|s| s.path.clone())
+            .collect();
+        assert_eq!(leftovers.len(), 2);
+        assert!(leftovers.contains(&leftover));
+        assert!(leftovers.contains(&staging));
+        assert!(strays
+            .iter()
+            .all(|s| s.kind != StrayKind::RenamedPluginCopy));
+    }
+
+    #[test]
+    fn remove_renamed_copy_refuses_the_canonical_install() {
+        let tmp = TempDir::new().unwrap();
+        let plugins = game_plugins_dir(tmp.path());
+        let good = plugins.join("NetcodePlus");
+        mk_dir(&good);
+        fs::write(good.join("NetcodePlus.uplugin"), b"{}").unwrap();
+        let evil = StrayPlugin {
+            kind: StrayKind::RenamedPluginCopy,
+            path: good.clone(),
+        };
+        assert!(matches!(
+            remove_stray(tmp.path(), &evil),
+            Err(StrayRemoveError::NotAStray)
+        ));
+        assert!(good.is_dir(), "the canonical install must not be deleted");
+    }
+
+    #[test]
+    fn blocks_anticheat_install_covers_exactly_the_duplicate_load_kinds() {
+        for kind in [
+            StrayKind::EnginePlugins,
+            StrayKind::LooseInPluginsRoot,
+            StrayKind::PluginLeftover,
+            StrayKind::ProjectBinariesFile,
+            StrayKind::RenamedPluginCopy,
+        ] {
+            assert!(kind.blocks_anticheat_install(), "{kind:?} must block");
+        }
+        for kind in [StrayKind::NestedTooDeep, StrayKind::ContentPak] {
+            assert!(!kind.blocks_anticheat_install(), "{kind:?} must not block");
+        }
     }
 
     // The junction/symlink escalation the security review found: a Content/Paks

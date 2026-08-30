@@ -1580,7 +1580,9 @@ pub struct InstallStrays {
 /// the path — echoed back to `remove_stray_plugin` unchanged).
 #[derive(Debug, Serialize)]
 pub struct StrayReport {
-    /// `"engine_plugins"` | `"nested_too_deep"` | `"loose_in_plugins_root"`.
+    /// One of the kind strings from `stray_kind_str`: `"engine_plugins"`,
+    /// `"nested_too_deep"`, `"loose_in_plugins_root"`, `"content_pak"`,
+    /// `"plugin_leftover"`, `"project_binaries_file"`, `"renamed_plugin_copy"`.
     pub kind: String,
     /// Non-technical explanation to show the user.
     pub explanation: String,
@@ -1595,6 +1597,8 @@ fn stray_kind_str(k: ncp_host::StrayKind) -> &'static str {
         ncp_host::StrayKind::LooseInPluginsRoot => "loose_in_plugins_root",
         ncp_host::StrayKind::ContentPak => "content_pak",
         ncp_host::StrayKind::PluginLeftover => "plugin_leftover",
+        ncp_host::StrayKind::ProjectBinariesFile => "project_binaries_file",
+        ncp_host::StrayKind::RenamedPluginCopy => "renamed_plugin_copy",
     }
 }
 
@@ -1605,6 +1609,8 @@ fn stray_kind_from_str(s: &str) -> Option<ncp_host::StrayKind> {
         "loose_in_plugins_root" => Some(ncp_host::StrayKind::LooseInPluginsRoot),
         "content_pak" => Some(ncp_host::StrayKind::ContentPak),
         "plugin_leftover" => Some(ncp_host::StrayKind::PluginLeftover),
+        "project_binaries_file" => Some(ncp_host::StrayKind::ProjectBinariesFile),
+        "renamed_plugin_copy" => Some(ncp_host::StrayKind::RenamedPluginCopy),
         _ => None,
     }
 }
