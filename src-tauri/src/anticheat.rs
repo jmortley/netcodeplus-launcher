@@ -189,6 +189,29 @@ pub async fn anticheat_install(
     if crate::commands::shipping_client_running() {
         return Err("Close Unreal Tournament, then try again.".into());
     }
+    // Pre-flight: refuse while any stray that can double-load NetcodePlus/UT4AC
+    // (or shadow plugin discovery entirely) is present in this install. UT4AC's
+    // descriptor hard-depends on NetcodePlus, so mounting it forces a second
+    // NetcodePlus resolve — with a stale copy anywhere discoverable the game
+    // asserts at startup before the menu ("Objects have the same fully qualified
+    // name but different paths"), which players experience as "UT4AC broke my
+    // game" (the 2026-08-29 field crash). The stray warning card names the same
+    // paths and offers the guarded one-click fix; this check runs before any
+    // network fetch so the refusal is instant.
+    let blocking: Vec<String> = ncp_host::scan_strays(Path::new(&root))
+        .into_iter()
+        .filter(|s| s.kind.blocks_anticheat_install())
+        .map(|s| s.path.to_string_lossy().into_owned())
+        .collect();
+    if !blocking.is_empty() {
+        return Err(format!(
+            "UT4AC was not installed: leftover NetcodePlus/UT4AC files from an old \
+             install would make the game crash at launch once UT4AC loads. Use the \
+             \"Files are in the wrong place\" warning on the Home tab to fix this, \
+             then try again. Found:\n{}",
+            blocking.join("\n")
+        ));
+    }
     let (manifest, state, manifest_json, manifest_sig) = fetch_verify(&app).await?;
     let Some(entry) = manifest.anticheat.get(AC_ID).cloned() else {
         return Err("UT4AC is not currently offered by the update manifest.".into());
