@@ -5189,9 +5189,12 @@ async function renderAddons(): Promise<void> {
       .getElementById("get-openal-manual")
       ?.addEventListener("click", () => openExternal("https://github.com/main-exe/UT4-OpenAL/"));
     if (!hasOpenal && platformOs === "windows") void upgradeOpenalSection(root);
-    // Dormant until a signed manifest carries the anticheat block (Phase 3);
-    // Windows-only like the module itself.
-    if (platformOs === "windows") void upgradeAnticheatSection(root);
+    // Dormant until a signed manifest carries the anticheat block (Phase 3).
+    // Offered on every platform: a Linux install is the Win64 game in a
+    // Wine/Proton prefix, so the Win64 UT4AC module installs and loads there
+    // like any other plugin — and PUG servers now require it. The install
+    // machinery is the same in-prefix path NetcodePlus already uses.
+    void upgradeAnticheatSection(root);
   }
   void renderEditorInstall();
 }
