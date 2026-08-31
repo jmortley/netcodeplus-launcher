@@ -875,7 +875,19 @@ const statusCache: {
   paks: PakStatusResult | null;
   dotnetAvailable: boolean;
   dotnetOk: boolean;
-} = { plugin: null, launcher: null, paks: null, dotnetAvailable: false, dotnetOk: true };
+  // Non-null ONLY when the player previously installed UT4AC (a consent record
+  // exists) and the manifest offers something actionable (update_available /
+  // review_required) — drives the dashboard's UT4AC update row. Players who
+  // never consented are never checked against the network for this.
+  anticheat: AnticheatStatus | null;
+} = {
+  plugin: null,
+  launcher: null,
+  paks: null,
+  dotnetAvailable: false,
+  dotnetOk: true,
+  anticheat: null,
+};
 
 // Roots already run through verify_plugin this session — a present-but-unbaselined
 // install is checked once, never re-downloaded on every status refresh.
@@ -990,6 +1002,30 @@ async function loadStatusDataInner(): Promise<void> {
     statusCache.dotnetOk = gi.dotnet_ok;
   } catch (err) {
     console.error("game_installer_info failed:", err);
+  }
+  // UT4AC update row — only for a player who previously installed it. The
+  // consent probe is offline (anticheat_local_state); the manifest-backed
+  // status fetch runs only when a consent record exists, so a player who never
+  // opted in costs nothing here and is never prompted.
+  statusCache.anticheat = null;
+  const acRoot = state.installs[state.selInstall]?.install.root;
+  if (acRoot) {
+    try {
+      const local = await invoke<AnticheatLocalState>("anticheat_local_state", {
+        root: acRoot,
+      });
+      if (local.consented) {
+        const st = await invoke<AnticheatStatus>("anticheat_status", { root: acRoot });
+        if (
+          st.offered &&
+          (st.state === "update_available" || st.state === "review_required")
+        ) {
+          statusCache.anticheat = st;
+        }
+      }
+    } catch (err) {
+      console.error("anticheat status (dash) failed:", err);
+    }
   }
   void renderDashStatus();
   // Re-render the hero too: it renders once (green "installed") before this async
@@ -1612,6 +1648,26 @@ async function renderDashStatus(): Promise<void> {
     }
     lines.push(pakChoicesHtml(pk));
   }
+  // UT4AC row — rendered only for players with a prior install (see
+  // loadStatusDataInner's consent gate). Mirrors the NetcodePlus row: one
+  // statline + one inline action.
+  const ac = statusCache.anticheat;
+  if (ac && ac.state === "update_available") {
+    const acMb = (ac.size_bytes / 1e6).toFixed(0);
+    lines.push(
+      `<div class="statline"><span class="warn">↑</span><span>UT4AC update available — ${escape(
+        ac.installed_version ?? "?",
+      )} → ${escape(ac.version ?? "?")} (${acMb} MB), same monitoring scope you already approved.</span></div>
+      <button id="dash-ac-update-btn" type="button" class="btn btn-sm">Update UT4AC</button>
+      <div id="dash-ac-status" class="launch-status"></div>`,
+    );
+  } else if (ac && ac.state === "review_required") {
+    // A consent-revision bump needs the full disclosure re-read — that flow
+    // lives on the Add-ons card, so the dashboard only points there.
+    lines.push(
+      `<div class="statline"><span class="warn">⚠</span><span>UT4AC wants to monitor something new — review it in <button class="card-link" data-nav-to="addons" type="button">Add-ons</button> to resume updates.</span></div>`,
+    );
+  }
   const lu = statusCache.launcher;
   if (lu) {
     lines.push(
@@ -1669,6 +1725,11 @@ async function renderDashStatus(): Promise<void> {
       void doInstallPaks(document.getElementById("pak-status"));
     });
   }
+  if (ac && ac.state === "update_available" && root) {
+    document
+      .getElementById("dash-ac-update-btn")
+      ?.addEventListener("click", () => void doDashAnticheatUpdate(root, ac));
+  }
   const choices = el.querySelector<HTMLDetailsElement>("details.pak-choices");
   if (choices) {
     choices.addEventListener("toggle", () => {
@@ -1678,6 +1739,41 @@ async function renderDashStatus(): Promise<void> {
     el.querySelectorAll<HTMLInputElement>("input[data-pak]").forEach((cb) => {
       cb.addEventListener("change", () => void onPakChoiceToggle(cb));
     });
+  }
+}
+
+// One-click UT4AC update from the dashboard. Only ever rendered for a player
+// whose consent record matches the manifest's CURRENT revision
+// (update_available), so no re-consent dialog is shown — nothing new is being
+// agreed to, mirroring the NetcodePlus update button. If the disclosure
+// revision moves between render and click, the backend refuses with its
+// "review the updated one" message and the row's error line points the player
+// at the Add-ons flow.
+async function doDashAnticheatUpdate(root: string, st: AnticheatStatus): Promise<void> {
+  const btn = document.getElementById("dash-ac-update-btn") as HTMLButtonElement | null;
+  const s = document.getElementById("dash-ac-status");
+  if (btn) btn.disabled = true;
+  if (s) s.innerHTML = `<span class="src">Downloading and verifying UT4AC…</span>`;
+  try {
+    const after = await invoke<AnticheatStatus>("anticheat_install", {
+      root,
+      consentRev: st.consent_rev,
+    });
+    // Success: swap the row's action for a confirmation in place; the next
+    // status refresh drops the row entirely (state is installed_current now).
+    statusCache.anticheat =
+      after.offered && (after.state === "update_available" || after.state === "review_required")
+        ? after
+        : null;
+    if (btn) btn.remove();
+    if (s)
+      s.innerHTML = `<span class="ok">✓ UT4AC ${escape(after.installed_version ?? "")} installed.</span>`;
+    // Keep the Add-ons card in sync if it has been rendered this session.
+    void upgradeAnticheatSection(root);
+  } catch (err) {
+    if (btn) btn.disabled = false;
+    if (s) s.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    console.error("anticheat_install (dash) failed:", err);
   }
 }
 
