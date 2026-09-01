@@ -843,6 +843,146 @@ async function fixStray(root: string, stray: StrayReport, btn: HTMLButtonElement
   }
 }
 
+// ---- UT4AC shadow-module launch gate ---------------------------------------
+// The backend refuses launch_game / launch_game_elevated when a duplicate
+// UT4AC module elsewhere on the game's DLL search path would load instead of
+// the installed plugin (the 2026-08-31 "Entry Point Not Found" crash: a stale
+// UE4-UT4AC DLL in an old install's Engine\Binaries\Win64). The refusal is
+// the sentinel prefix + a JSON ShadowFinding array; render it as a repair
+// panel with the exact paths — never a generic launch-failure line.
+
+// Mirrors ncp_host::ShadowFinding.
+interface ShadowFinding {
+  basename: string;
+  path: string;
+  resolved_path: string;
+  location: string;
+  verdict: "identical" | "stale" | "unknown";
+  sha256: string;
+  size: number;
+  modified_unix: number | null;
+  reason: string;
+  blocks_launch: boolean;
+}
+
+const SHADOW_BLOCK_PREFIX = "UT4AC_SHADOW_BLOCK:";
+
+function shadowVerdictLabel(f: ShadowFinding): string {
+  if (f.verdict === "identical") return "identical copy";
+  if (f.verdict === "stale") return "OLD version";
+  return "unverifiable copy";
+}
+
+function shadowDetailLine(f: ShadowFinding): string {
+  const parts: string[] = [shadowVerdictLabel(f)];
+  if (f.size > 0) parts.push(`${(f.size / (1024 * 1024)).toFixed(1)} MB`);
+  if (f.modified_unix != null)
+    parts.push(`modified ${new Date(f.modified_unix * 1000).toLocaleDateString()}`);
+  if (f.sha256) parts.push(`sha256 ${f.sha256.slice(0, 12)}…`);
+  return parts.join(" · ");
+}
+
+// Render the launch-block panel into `status` and wire its repair buttons.
+// Returns true when `err` was a shadow-gate refusal (handled here); false lets
+// the caller fall through to its generic error handling. `retry` re-runs the
+// interrupted action after the user has repaired the files.
+function handleShadowBlock(
+  err: unknown,
+  status: HTMLElement | null,
+  executable: string,
+  retry: () => void,
+): boolean {
+  const msg = String(err);
+  const at = msg.indexOf(SHADOW_BLOCK_PREFIX);
+  if (at < 0) return false;
+  let findings: ShadowFinding[] = [];
+  try {
+    findings = JSON.parse(msg.slice(at + SHADOW_BLOCK_PREFIX.length)) as ShadowFinding[];
+  } catch {
+    // Unparseable payload — still never show the raw sentinel string.
+    findings = [];
+  }
+  const blocking = findings.filter((f) => f.blocks_launch);
+  const advisory = findings.filter((f) => !f.blocks_launch);
+  const summary =
+    "Launch blocked: a conflicting UT4AC file elsewhere on this PC would load " +
+    "instead of the installed anti-cheat and crash the game at startup.";
+  if (!status) {
+    // No inline slot in this flow — fall back to a plain dialog listing the paths.
+    void confirm(`${summary}\n\n${blocking.map((f) => f.path).join("\n")}`, {
+      title: "UT4AC file conflict",
+      kind: "warning",
+      okLabel: "OK",
+      cancelLabel: "Close",
+    });
+    return true;
+  }
+  const row = (f: ShadowFinding, i: number) => `<div class="stray-row">
+      <div>${escape(f.reason)}</div>
+      <div class="src">${escape(f.path)} <span class="muted">(${escape(shadowDetailLine(f))})</span></div>
+      <button class="shadow-fix" type="button" data-i="${i}">Remove file</button>
+      <button class="shadow-reveal" type="button" data-i="${i}">Show in folder</button>
+      <span class="stray-status" data-status="${i}"></span>
+    </div>`;
+  status.innerHTML = `
+    <div class="stray-card">
+      <div class="stray-title">⛔ ${escape(summary)}</div>
+      ${blocking.map((f, i) => row(f, i)).join("")}
+      ${
+        advisory.length > 0
+          ? `<div class="muted" style="margin-top:6px">Also found (not blocking this launch):</div>` +
+            advisory.map((f, i) => row(f, blocking.length + i)).join("")
+          : ""
+      }
+      <button class="shadow-recheck" type="button" style="margin-top:8px">I've fixed it — check again &amp; launch</button>
+    </div>`;
+  const all = [...blocking, ...advisory];
+  status.querySelectorAll<HTMLButtonElement>(".shadow-fix").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const f = all[Number(btn.dataset.i)];
+      if (f) void fixShadow(executable, f, btn);
+    });
+  });
+  status.querySelectorAll<HTMLButtonElement>(".shadow-reveal").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const f = all[Number(btn.dataset.i)];
+      if (f)
+        void invoke("reveal_in_folder", { path: f.path }).catch((e) =>
+          console.error("reveal_in_folder failed:", e),
+        );
+    });
+  });
+  status.querySelector<HTMLButtonElement>(".shadow-recheck")?.addEventListener("click", retry);
+  return true;
+}
+
+async function fixShadow(
+  executable: string,
+  f: ShadowFinding,
+  btn: HTMLButtonElement,
+): Promise<void> {
+  const ok = await confirm(
+    `${f.reason}\n\nRemove this file?\n\n${f.path}\n(${shadowDetailLine(f)})`,
+    { title: "Remove conflicting UT4AC file", kind: "warning" },
+  );
+  if (!ok) return;
+  const statusEl = btn.parentElement?.querySelector<HTMLElement>(
+    `.stray-status[data-status="${btn.dataset.i}"]`,
+  );
+  btn.disabled = true;
+  if (statusEl) statusEl.textContent = "Removing…";
+  try {
+    await invoke("remove_ut4ac_shadow", { executable, path: f.path });
+    if (statusEl) statusEl.innerHTML = `<span class="ok">✓ removed</span>`;
+  } catch (err) {
+    // Same doctrine as fixStray: never a bespoke elevated delete — hand off to
+    // Explorer (its own trusted admin prompt) via the reveal button next door.
+    if (statusEl) statusEl.innerHTML = `<span class="warn">${escape(String(err))}</span>`;
+    btn.disabled = false;
+    console.error("remove_ut4ac_shadow failed:", err);
+  }
+}
+
 function selectedProfileIndex(di: DetectedInstall): number {
   if (state.profileLabel) {
     const saved = di.profiles.findIndex((p) => p.label === state.profileLabel);
@@ -2240,6 +2380,7 @@ async function launch() {
       state.priority === "real_time" ? "real-time" : state.priority,
     )} priority${state.affinityHex ? `, affinity ${escape(state.affinityHex)}` : ""})</span>`;
   } catch (err) {
+    if (handleShadowBlock(err, status, di.install.executable, () => void launch())) return;
     const msg = String(err);
     if (msg.includes("740") || msg.toLowerCase().includes("elevation")) {
       status.innerHTML = `<span class="warn">Launch failed: Windows says the game needs administrator. It's likely set to "Run as administrator" — use the notice above to clear that flag (recommended), or launch as admin.</span>`;
@@ -2337,6 +2478,8 @@ async function doLaunchElevated(): Promise<void> {
     });
     if (status) status.innerHTML = `<span class="ok">Launching as administrator…</span>`;
   } catch (err) {
+    if (handleShadowBlock(err, status, di.install.executable, () => void doLaunchElevated()))
+      return;
     if (status) status.innerHTML = `<span class="warn">Elevated launch failed: ${escape(String(err))}</span>`;
     console.error("launch_game_elevated failed:", err);
   }
@@ -3508,6 +3651,7 @@ async function connectToNow(server: string, password: string, status: HTMLElemen
       });
       if (status) status.innerHTML = `<span class="ok">Launched — connecting to ${escape(server)}…</span>`;
     } catch (err) {
+      if (handleShadowBlock(err, status, di.install.executable, () => void doLaunch())) return;
       if (status) status.innerHTML = `<span class="warn">Launch failed: ${escape(String(err))}</span>`;
       console.error("connect launch failed:", err);
     }

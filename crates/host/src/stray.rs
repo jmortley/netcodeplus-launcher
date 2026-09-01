@@ -558,7 +558,8 @@ fn is_reparse_point(p: &Path) -> bool {
 /// fixed components onto `root`, so a genuine install yields an all-real chain;
 /// any junction/symlink in the chain means an attacker may be redirecting the
 /// delete out of the real install and the removal MUST be refused.
-fn path_crosses_reparse_point(root: &Path, target: &Path) -> bool {
+/// `pub(crate)`: [`crate::shadow`] applies the same rule to its delete targets.
+pub(crate) fn path_crosses_reparse_point(root: &Path, target: &Path) -> bool {
     let Ok(rel) = target.strip_prefix(root) else {
         return true; // target not lexically under root — treat as unsafe
     };

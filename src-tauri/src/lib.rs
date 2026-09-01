@@ -196,6 +196,8 @@ pub fn run() {
             commands::clear_game_requires_admin,
             commands::repair_client_caches,
             commands::launch_game_elevated,
+            commands::scan_ut4ac_shadows,
+            commands::remove_ut4ac_shadow,
             commands::is_game_running,
             commands::load_state,
             commands::save_launch_prefs,

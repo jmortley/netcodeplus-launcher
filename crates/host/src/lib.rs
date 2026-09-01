@@ -35,6 +35,7 @@ pub mod openal_install;
 pub mod pak_install;
 pub mod plugin_install;
 pub mod repair;
+pub mod shadow;
 pub mod shortcut;
 pub mod state;
 pub mod stray;
@@ -81,6 +82,11 @@ pub use crate::plugin_install::{
     remove_ut4ac, ut4ac_dir, PluginInstallError, AUTH_ENV_VAR,
 };
 pub use crate::repair::{clear_cache_dir, ems_dir, webcache_dir};
+pub use crate::shadow::{
+    known_other_roots, remove_ut4ac_shadow, sanitize_child_path, scan_ut4ac_shadows,
+    ut4ac_canonical_binaries_dir, ShadowFinding, ShadowLocation, ShadowRemoveError, ShadowVerdict,
+    UT4AC_MODULE_DLLS,
+};
 pub use crate::shortcut::{
     create_desktop_shortcut, create_desktop_shortcut_with, detect_outdated_launcher,
     is_stale_pending, repoint_launcher_shortcut_if_present, schedule_delete_on_reboot,

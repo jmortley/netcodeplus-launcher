@@ -508,12 +508,12 @@ pub(crate) fn ut4_content_paks_dir(root: &Path) -> PathBuf {
 /// AND the UT4 content-paks dir. The paks check is what separates UT4 from a
 /// bare UE4 build (or a half-extracted / server tree that has the exe but none
 /// of the shipped content).
-fn is_ut4_install_root(root: &Path) -> bool {
+pub(crate) fn is_ut4_install_root(root: &Path) -> bool {
     has_ue4_shipping_exe(root) && ut4_content_paks_dir(root).is_dir()
 }
 
 #[cfg(target_os = "windows")]
-fn candidate_roots() -> Vec<PathBuf> {
+pub(crate) fn candidate_roots() -> Vec<PathBuf> {
     let mut candidates = Vec::new();
 
     let env_anchored: &[(&str, &[&str])] = &[
@@ -541,7 +541,7 @@ fn candidate_roots() -> Vec<PathBuf> {
 }
 
 #[cfg(not(target_os = "windows"))]
-fn candidate_roots() -> Vec<PathBuf> {
+pub(crate) fn candidate_roots() -> Vec<PathBuf> {
     // Linux/Proton support is post-v1; non-Windows hosts get an empty
     // candidate list, so [`detect`] falls back to the picker.
     Vec::new()

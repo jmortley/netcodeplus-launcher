@@ -100,7 +100,16 @@ pub fn launch_game(
     // Extra environment for the child. Carries the login credential when the
     // installed plugin picks it up from there instead of the command line —
     // the command line is logged and put in crash reports, the environment is not.
-    let env: Vec<(String, String)> = env.unwrap_or_default().into_iter().collect();
+    let mut env: Vec<(String, String)> = env.unwrap_or_default().into_iter().collect();
+    // Pre-launch UT4AC shadow gate (the 2026-08-31 field crash: a stale
+    // UE4-UT4AC DLL in an old install's Engine\Binaries\Win64 out-resolved the
+    // canonical plugin and killed the game at boot). Refuses the launch while a
+    // conflicting module can still win DLL resolution, and strips other UT4
+    // installs' directories from the child PATH either way, so the exe, cwd,
+    // plugin folder and DLL-search environment all derive from one install.
+    if let Some(sanitized_path) = shadow_gate(Path::new(&executable))? {
+        env.push(("PATH".to_string(), sanitized_path.to_string_lossy().into_owned()));
+    }
     ncp_host::launch(
         Path::new(&executable),
         &args,
@@ -132,6 +141,84 @@ pub fn launch_game(
         _ => {} // "none" / unknown — leave the launcher open.
     }
     Ok(())
+}
+
+/// Marker prefix on the error string [`shadow_gate`] returns when launch must
+/// be refused. Everything after it is the JSON `ShadowFinding` array; the
+/// frontend detects the prefix and renders the block panel (exact paths +
+/// per-file repair actions) instead of a generic launch-failure line.
+pub(crate) const SHADOW_BLOCK_PREFIX: &str = "UT4AC_SHADOW_BLOCK:";
+
+/// Resolve the install root governing `executable` (ancestor walk — the same
+/// validation [`ncp_host::check_install`] applies to user-picked folders).
+/// `None` when the exe is not inside a complete UT4 install; the shadow scan
+/// then has nothing meaningful to check.
+fn shadow_install_root(executable: &Path) -> Option<std::path::PathBuf> {
+    // The mod-paks dir is irrelevant to root resolution; a placeholder keeps
+    // this callable from pure query paths.
+    ncp_host::check_install(executable, std::path::PathBuf::new()).map(|i| i.root)
+}
+
+/// Pre-launch UT4AC shadow-module gate. Scans every DLL-search location the
+/// child will actually receive (its own install's binaries/plugin dirs plus
+/// the inherited PATH) and the fixed locations of other known UT4 installs.
+///
+/// * Any **blocking** finding (a non-identical UT4AC module that can still win
+///   DLL resolution) refuses the launch with [`SHADOW_BLOCK_PREFIX`] + the
+///   full findings JSON — never a generic "module could not be loaded".
+/// * Otherwise returns the sanitised child `PATH` (other installs' directories
+///   stripped), or `None` when the inherited PATH is already clean.
+fn shadow_gate(executable: &Path) -> Result<Option<std::ffi::OsString>, String> {
+    let Some(root) = shadow_install_root(executable) else {
+        return Ok(None);
+    };
+    let others = ncp_host::known_other_roots(&root);
+    let path_env = std::env::var_os("PATH");
+    let findings = ncp_host::scan_ut4ac_shadows(&root, &others, path_env.as_deref());
+    if findings.iter().any(|f| f.blocks_launch) {
+        let payload = serde_json::to_string(&findings).unwrap_or_else(|_| "[]".to_string());
+        return Err(format!("{SHADOW_BLOCK_PREFIX}{payload}"));
+    }
+    Ok(path_env
+        .as_deref()
+        .and_then(|p| ncp_host::sanitize_child_path(p, &root, &others)))
+}
+
+/// Scan for duplicate UT4AC modules that can shadow the installed plugin for
+/// the install owning `executable` (see [`ncp_host::scan_ut4ac_shadows`]).
+/// Drives the launch-block panel's re-check; an exe outside a UT4 install
+/// yields an empty list.
+#[tauri::command]
+pub fn scan_ut4ac_shadows(executable: String) -> Vec<ncp_host::ShadowFinding> {
+    let Some(root) = shadow_install_root(Path::new(&executable)) else {
+        return Vec::new();
+    };
+    let others = ncp_host::known_other_roots(&root);
+    ncp_host::scan_ut4ac_shadows(&root, &others, std::env::var_os("PATH").as_deref())
+}
+
+/// Delete one flagged duplicate UT4AC module. The path is only an index into
+/// a fresh scan (recompute-don't-trust, like `remove_stray_plugin`): anything
+/// the current scan does not flag is refused untouched. A persistent
+/// access-denied is surfaced with a pointer at the reveal-in-folder fallback —
+/// the launcher never performs a privileged delete itself.
+#[tauri::command]
+pub fn remove_ut4ac_shadow(executable: String, path: String) -> Result<(), String> {
+    let root = shadow_install_root(Path::new(&executable))
+        .ok_or("that isn't a UT4 install — nothing to scan")?;
+    let others = ncp_host::known_other_roots(&root);
+    let path_env = std::env::var_os("PATH");
+    match ncp_host::remove_ut4ac_shadow(&root, &others, path_env.as_deref(), Path::new(&path)) {
+        Ok(()) => Ok(()),
+        Err(ncp_host::ShadowRemoveError::Io(e))
+            if e.kind() == std::io::ErrorKind::PermissionDenied =>
+        {
+            Err("Windows denied deleting it from here. Use \"Show in folder\" and \
+                 delete the file in Explorer — Windows will show its own admin prompt."
+                .to_string())
+        }
+        Err(e) => Err(e.to_string()),
+    }
 }
 
 /// Whether the game exe is flagged "Run as administrator" (the per-user compat
@@ -219,6 +306,10 @@ pub fn launch_game_elevated(
     if !exe.is_file() {
         return Err("the game executable was not found".into());
     }
+    // Same pre-launch UT4AC shadow gate as the normal launch path. (No PATH
+    // sanitisation here: the elevated child is created by the shell with a
+    // fresh elevated environment, not this process's.)
+    shadow_gate(&exe)?;
     std::thread::spawn(move || {
         let _ = ncp_host::run_elevated(&exe, &args);
     });
