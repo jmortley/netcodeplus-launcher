@@ -552,7 +552,8 @@ pub fn remove_ut4ac_shadow(
     match std::fs::remove_file(&finding.path) {
         Ok(()) => Ok(()),
         #[cfg(windows)]
-        #[allow(clippy::permissions_set_readonly_false)] // Windows attribute bit, not Unix mode bits
+        #[allow(clippy::permissions_set_readonly_false)]
+        // Windows attribute bit, not Unix mode bits
         Err(e) if e.kind() == std::io::ErrorKind::PermissionDenied => {
             // On Windows the FILE_ATTRIBUTE_READONLY bit (old backup tools set
             // it) also reports PermissionDenied on delete; clear it and retry
@@ -660,7 +661,11 @@ mod tests {
             .join("Binaries")
             .join("Win64");
         fs::create_dir_all(&nested).unwrap();
-        fs::write(nested.join(UT4AC_MODULE_DLLS[0]), b"old engine-plugins copy").unwrap();
+        fs::write(
+            nested.join(UT4AC_MODULE_DLLS[0]),
+            b"old engine-plugins copy",
+        )
+        .unwrap();
         let findings = scan_ut4ac_shadows(tmp.path(), &[], None);
         assert_eq!(findings.len(), 1);
         assert_eq!(findings[0].location, ShadowLocation::EnginePluginTree);
@@ -729,9 +734,8 @@ mod tests {
             engine_binaries_dir(tmp.path()),
         ])
         .unwrap();
-        let sanitized =
-            sanitize_child_path(&original, tmp.path(), &[other.path().to_path_buf()])
-                .expect("one entry must be stripped");
+        let sanitized = sanitize_child_path(&original, tmp.path(), &[other.path().to_path_buf()])
+            .expect("one entry must be stripped");
         let kept: Vec<PathBuf> = std::env::split_paths(&sanitized).collect();
         assert_eq!(
             kept,

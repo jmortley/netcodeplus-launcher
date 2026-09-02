@@ -108,7 +108,10 @@ pub fn launch_game(
     // installs' directories from the child PATH either way, so the exe, cwd,
     // plugin folder and DLL-search environment all derive from one install.
     if let Some(sanitized_path) = shadow_gate(Path::new(&executable))? {
-        env.push(("PATH".to_string(), sanitized_path.to_string_lossy().into_owned()));
+        env.push((
+            "PATH".to_string(),
+            sanitized_path.to_string_lossy().into_owned(),
+        ));
     }
     ncp_host::launch(
         Path::new(&executable),
@@ -213,9 +216,11 @@ pub fn remove_ut4ac_shadow(executable: String, path: String) -> Result<(), Strin
         Err(ncp_host::ShadowRemoveError::Io(e))
             if e.kind() == std::io::ErrorKind::PermissionDenied =>
         {
-            Err("Windows denied deleting it from here. Use \"Show in folder\" and \
+            Err(
+                "Windows denied deleting it from here. Use \"Show in folder\" and \
                  delete the file in Explorer — Windows will show its own admin prompt."
-                .to_string())
+                    .to_string(),
+            )
         }
         Err(e) => Err(e.to_string()),
     }
