@@ -512,21 +512,41 @@ pub struct ModPreset {
     ini: &'static str,
 }
 
-/// The shipped presets, in display order.
-static MOD_PRESETS: [ModPreset; 2] = [
+/// The shipped presets, in display order. All four captured 2026-09-01
+/// from the players' live configs and sanitized (no identity, hub-state,
+/// auto-screenshot, or plugin-bookkeeping keys).
+static MOD_PRESETS: [ModPreset; 4] = [
+    ModPreset {
+        id: "dueler-phantaci",
+        label: "Phantaci (duel / Wipeout)",
+        blurb: "phantaci's setup — bright Liandri enemies, Quake Champions \
+                hitsounds with predicted headshots, mint shock beam, LG \
+                hitscan, no gibs or ragdolls.",
+        ini: include_str!("presets/mod_dueler_phantaci.ini"),
+    },
     ModPreset {
         id: "ictf-tox",
-        label: "iCTF (Tox)",
-        blurb: "tOx-X's instagib CTF setup — team colours, hitsounds, \
-                invisible IG skin, kill sounds.",
+        label: "Tox (iCTF)",
+        blurb: "tOx-X's instagib CTF setup — magenta/blue forced Necris, \
+                invisible IG skin, hidden centered weapon, kill sounds, \
+                classic hitsounds.",
         ini: include_str!("presets/mod_ictf_tox.ini"),
     },
     ModPreset {
-        id: "dueler-phantaci",
-        label: "Dueler (Phantaci)",
-        blurb: "phantaci's duel setup — bright forced models, Quake \
-                hitsounds, minimal gibs and ragdolls.",
-        ini: include_str!("presets/mod_dueler_phantaci.ini"),
+        id: "ictf-reflex",
+        label: "Reflex (iCTF)",
+        blurb: "Reflex's instagib CTF setup — all guns hidden, cyan beams, \
+                sniper hitscan, black-on-white team contrast, quiet minimal \
+                hitsounds.",
+        ini: include_str!("presets/mod_ictf_reflex.ini"),
+    },
+    ModPreset {
+        id: "ictf-keizer",
+        label: "KeizeR (iCTF)",
+        blurb: "KeizeR's instagib CTF setup — Necroth enemies in yellow, \
+                Skaarj reds, green shock beam, sniper hitscan, high-pitch \
+                hitsounds, short ragdolls.",
+        ini: include_str!("presets/mod_ictf_keizer.ini"),
     },
 ];
 
