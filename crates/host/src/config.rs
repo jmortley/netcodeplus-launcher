@@ -127,6 +127,8 @@ const SEC_SYSTEM: &str = "SystemSettings";
 const HDR_SYSTEM: &str = "[SystemSettings]";
 const SEC_NCP: &str = "NetcodePlus";
 const HDR_NCP: &str = "[NetcodePlus]";
+const SEC_GC: &str = "/Script/Engine.GarbageCollectionSettings";
+const HDR_GC: &str = "[/Script/Engine.GarbageCollectionSettings]";
 
 /// The community master-server host every `[OnlineSubsystemMcp.*]` section
 /// must point `Domain` at for online play to work.
@@ -383,6 +385,21 @@ pub fn apply(ini: &Path, tweaks: &EngineTweaks, set_openal_audio: bool) -> Confi
         u8::from(tweaks.allow_async_loading),
     );
     ini_file.replace_body(SEC_SYSTEM, HDR_SYSTEM, &system_body);
+    // GC baseline (top-player configs, 2026-09): purge pending-kill objects
+    // continuously instead of on the ~60s timer (deletes the periodic GC
+    // frame spike) and cluster actors/Blueprints so each GC pass scans a
+    // smaller graph. Merged as individual keys — NOT a body replace — so a
+    // player's measured gc.MaxObjectsNotConsideredByGC / permanent-pool
+    // values survive: those are per-install numbers (the engine derives them
+    // from the init-log root-set line) the launcher must never clobber.
+    ini_file.set_key(
+        SEC_GC,
+        HDR_GC,
+        "gc.TimeBetweenPurgingPendingKillObjects",
+        "0",
+    );
+    ini_file.set_key(SEC_GC, HDR_GC, "gc.ActorClusteringEnabled", "True");
+    ini_file.set_key(SEC_GC, HDR_GC, "gc.BlueprintClusteringEnabled", "True");
     set_tweak_keys(&mut ini_file, tweaks);
     if set_openal_audio {
         ini_file.set_key(SEC_AUDIO, HDR_AUDIO, "AudioDeviceModuleName", "ALAudio");
@@ -1102,6 +1119,16 @@ Protocol=https
             HDR_SYSTEM,
             &format!("net.AllowAsyncLoading=0\n{SYSTEM_SETTINGS_REST}"),
         );
+        // Mirror apply()'s merged GC baseline (individual keys, never a body
+        // replace — measured per-install count keys must survive).
+        f.set_key(
+            SEC_GC,
+            HDR_GC,
+            "gc.TimeBetweenPurgingPendingKillObjects",
+            "0",
+        );
+        f.set_key(SEC_GC, HDR_GC, "gc.ActorClusteringEnabled", "True");
+        f.set_key(SEC_GC, HDR_GC, "gc.BlueprintClusteringEnabled", "True");
         f.set_key(SEC_ENGINE, HDR_ENGINE, "FrameRateCap", "360.000000");
         f.set_key(SEC_ENGINE, HDR_ENGINE, "bSmoothFrameRate", "False");
         f.set_key(SEC_ENGINE, HDR_ENGINE, "DisplayGamma", "3.000000");
@@ -1125,6 +1152,29 @@ Protocol=https
         assert!(out.contains("[OnlineSubsystemMcp.BaseServiceMcp]"));
         assert!(out.contains("Domain=master-ut4.timiimit.com"));
         assert!(out.contains("Paths=../../../Engine/Content"));
+    }
+
+    #[test]
+    fn gc_baseline_merges_and_preserves_measured_count_keys() {
+        // A player who followed the engine's own tuning note has per-install
+        // count keys in the GC section. Apply must add the portable trio
+        // WITHOUT clobbering those measurements.
+        let with_counts = "\
+[/Script/Engine.GarbageCollectionSettings]
+gc.MaxObjectsNotConsideredByGC=40457
+gc.SizeOfPermanentObjectPool=8783640
+";
+        let out = apply_to(with_counts, false);
+        assert!(out.contains("gc.MaxObjectsNotConsideredByGC=40457"));
+        assert!(out.contains("gc.SizeOfPermanentObjectPool=8783640"));
+        assert!(out.contains("gc.TimeBetweenPurgingPendingKillObjects=0"));
+        assert!(out.contains("gc.ActorClusteringEnabled=True"));
+        assert!(out.contains("gc.BlueprintClusteringEnabled=True"));
+
+        // And on a config with no GC section at all, the trio still lands.
+        let fresh = apply_to(SAMPLE, false);
+        assert!(fresh.contains("[/Script/Engine.GarbageCollectionSettings]"));
+        assert!(fresh.contains("gc.TimeBetweenPurgingPendingKillObjects=0"));
     }
 
     #[test]
