@@ -348,9 +348,36 @@ pub fn check_editor_install(picked: &Path) -> Result<EditorInstall, EditorError>
     })
 }
 
+/// True when `PROCESSOR_IDENTIFIER`-style text names an Intel CPU.
+/// Split out from [`editor_openssl_env`] so the parse is unit-testable.
+#[must_use]
+pub fn is_intel_processor_identifier(identifier: &str) -> bool {
+    identifier.contains("GenuineIntel")
+}
+
+/// The OpenSSL capability-mask workaround the frozen UT4 editor needs on
+/// modern Intel CPUs, or `None` on other hardware.
+///
+/// UE4.15's bundled OpenSSL 1.0.x crashes the editor at startup on Intel CPUs
+/// that report the SHA-extensions capability bit (Ice Lake / Rocket Lake and
+/// newer): the runtime CPU probe selects an asm path that build gets wrong
+/// (UE forums thread 502484). Epic fixed the store-distributed editor, but
+/// UT4's editor predates the fix and will never receive it. Setting
+/// `OPENSSL_ia32cap=:~0x20000000` before spawn masks that one capability bit —
+/// the community's proven .bat workaround, applied preemptively. AMD CPUs
+/// don't trip the bug, so we only set it for Intel; the variable affects
+/// nothing but OpenSSL's self-detection.
+#[must_use]
+pub fn editor_openssl_env() -> Option<(&'static str, &'static str)> {
+    let identifier = std::env::var("PROCESSOR_IDENTIFIER").unwrap_or_default();
+    is_intel_processor_identifier(&identifier).then_some(("OPENSSL_ia32cap", ":~0x20000000"))
+}
+
 /// Start the editor for `inst`: a plain, user-level spawn of [`EditorInstall::editor_exe`]
 /// with its [`EditorInstall::launch_args`], cwd set to the exe's folder. No
 /// elevation (the editor is a normal user program), mirroring `installer::launch_editor`.
+/// On Intel CPUs the [`editor_openssl_env`] workaround is applied so the editor
+/// doesn't crash in OpenSSL's capability probe at startup.
 ///
 /// # Errors
 ///
@@ -358,10 +385,12 @@ pub fn check_editor_install(picked: &Path) -> Result<EditorInstall, EditorError>
 /// cannot be started.
 pub fn launch_editor_install(inst: &EditorInstall) -> std::io::Result<()> {
     let work = inst.editor_exe.parent().unwrap_or(inst.root.as_path());
-    std::process::Command::new(&inst.editor_exe)
-        .args(&inst.launch_args)
-        .current_dir(work)
-        .spawn()?;
+    let mut command = std::process::Command::new(&inst.editor_exe);
+    command.args(&inst.launch_args).current_dir(work);
+    if let Some((key, value)) = editor_openssl_env() {
+        command.env(key, value);
+    }
+    command.spawn()?;
     debug!(root = %inst.root.display(), "launched editor install");
     Ok(())
 }
@@ -384,6 +413,17 @@ mod tests {
         let proj = root.join(GAME_NAME);
         fs::create_dir_all(&proj).unwrap();
         fs::write(proj.join("UnrealTournament.uproject"), b"{}").unwrap();
+    }
+
+    #[test]
+    fn intel_identifier_detection_matches_vendor_strings() {
+        assert!(is_intel_processor_identifier(
+            "Intel64 Family 6 Model 183 Stepping 1, GenuineIntel"
+        ));
+        assert!(!is_intel_processor_identifier(
+            "AMD64 Family 25 Model 33 Stepping 2, AuthenticAMD"
+        ));
+        assert!(!is_intel_processor_identifier(""));
     }
 
     #[test]

@@ -731,7 +731,9 @@ pub async fn install_editor(app: AppHandle) -> Result<InstallEditorResult, Strin
 /// the standard UT4 editor arguments ([`EDITOR_ARGS`] — bare UE4Editor.exe
 /// would open a project browser, not UT4). Acts only on the backend-recorded
 /// exe (never a frontend-supplied path). No elevation — the editor is a
-/// normal user-level program.
+/// normal user-level program. On Intel CPUs the OpenSSL capability-mask
+/// workaround is applied preemptively (`ncp_host::editor_openssl_env`) so the
+/// frozen editor doesn't crash at startup on SHA-extension hardware.
 #[tauri::command]
 pub fn launch_editor() -> Result<(), String> {
     let exe = EDITOR_EXE
@@ -746,9 +748,12 @@ pub fn launch_editor() -> Result<(), String> {
         .parent()
         .ok_or("the editor exe has no containing folder")?
         .to_path_buf();
-    std::process::Command::new(&exe)
-        .args(EDITOR_ARGS)
-        .current_dir(&work)
+    let mut command = std::process::Command::new(&exe);
+    command.args(EDITOR_ARGS).current_dir(&work);
+    if let Some((key, value)) = ncp_host::editor_openssl_env() {
+        command.env(key, value);
+    }
+    command
         .spawn()
         .map_err(|e| format!("couldn't start the editor: {e}"))?;
     Ok(())

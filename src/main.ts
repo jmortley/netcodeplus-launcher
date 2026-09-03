@@ -576,6 +576,9 @@ async function doInstallPlugin(force = false): Promise<void> {
       if (btn) btn.disabled = false;
       if (outcomes.length) {
         if (status) status.innerHTML = `<span class="ok">✓ NetcodePlus is already up to date.</span>`;
+        // Even with the plugin current, converge UT4AC — the update action means
+        // "bring my NetcodePlus stack current", and the pair ship together.
+        await updateAnticheatAlongside(status);
         // Re-render the hero (its button was left on "Updating…") and refresh the
         // status so an actually-current install flips the hero back to PLAY.
         renderHomeHero();
@@ -591,6 +594,9 @@ async function doInstallPlugin(force = false): Promise<void> {
     if (status) {
       status.innerHTML = `<span class="ok">✓ NetcodePlus installed in ${installed} install${installed === 1 ? "" : "s"}.</span>`;
     }
+    // A new NetcodePlus means a new UT4AC: anyone who has UT4AC installed gets
+    // BOTH updated in this one action — never a detour through Add-ons.
+    await updateAnticheatAlongside(status);
     // Success — re-detect so the install badges reflect the new state (preserving
     // a manually-picked install auto-detection can't find), then refresh the
     // status card: loadStatusData re-fetches plugin_status and re-renders
@@ -607,6 +613,48 @@ async function doInstallPlugin(force = false): Promise<void> {
     console.error("install_plugin failed:", err);
   } finally {
     installInFlight = false;
+  }
+}
+
+// A NetcodePlus release and a UT4AC release ship as a pair, so every plugin
+// update pulls UT4AC along IN THE SAME ACTION for anyone who has it installed —
+// no separate prompt, no trip to the Add-ons card. Same-revision updates (the
+// monitoring scope the user already approved) apply silently; a revision bump
+// shows the full consent dialog right here, because consent to unseen text is
+// never recorded (the backend refuses a stale rev regardless). Failures warn
+// but never fail the plugin update that already succeeded.
+async function updateAnticheatAlongside(status: HTMLElement | null): Promise<void> {
+  for (const di of state.installs) {
+    const root = di.install.root;
+    try {
+      const local = await invoke<AnticheatLocalState>("anticheat_local_state", { root });
+      if (!local.consented || !local.dir_present) continue;
+      const st = await invoke<AnticheatStatus>("anticheat_status", { root });
+      if (!st.offered) continue;
+      if (st.state === "update_available") {
+        if (status) status.innerHTML += ` <span class="src">Updating UT4AC…</span>`;
+        await invoke<AnticheatStatus>("anticheat_install", { root, consentRev: st.consent_rev });
+        if (status)
+          status.innerHTML = `<span class="ok">✓ NetcodePlus and UT4AC ${escape(st.version ?? "")} updated together.</span>`;
+      } else if (st.state === "review_required") {
+        // Scope changed — show the disclosure inline and update on approval.
+        const ok = await confirm(anticheatDisclosure(st), {
+          title: "UT4AC update — monitoring scope changed, review first",
+          kind: "warning",
+          okLabel: "I agree — update UT4AC",
+          cancelLabel: "Not now",
+        });
+        if (!ok) continue;
+        await invoke<AnticheatStatus>("anticheat_install", { root, consentRev: st.consent_rev });
+        if (status)
+          status.innerHTML = `<span class="ok">✓ NetcodePlus and UT4AC ${escape(st.version ?? "")} updated together.</span>`;
+      }
+      void upgradeAnticheatSection(root);
+    } catch (err) {
+      if (status)
+        status.innerHTML += ` <span class="warn">UT4AC update failed: ${escape(String(err))} — retry from Home.</span>`;
+      console.error("updateAnticheatAlongside failed:", err);
+    }
   }
 }
 
@@ -1965,7 +2013,7 @@ function renderDashAccount(): void {
 }
 
 // Settings tab (sidebar): power-user knobs — install selection, launch profile,
-// process priority, CPU affinity. (Performance config renders below it.)
+// process priority, CPU affinity. (Competitive config renders below it.)
 function renderAdvanced() {
   if (state.installs.length === 0) {
     advancedPanel.innerHTML = `<p>No UT4 install detected. Pick your <code>UnrealTournament</code> folder below.</p>`;
@@ -2331,9 +2379,10 @@ async function launch() {
     const avail = statusCache.plugin?.available_version;
     const verText = avail != null ? ` (build ${avail})` : "";
     const outdated = pluginInst.action === "update";
+    const acAlong = statusCache.anticheat != null ? " UT4AC updates alongside automatically." : "";
     const doUpdate = await confirm(
       outdated
-        ? `A newer NetcodePlus is available${verText} — you're on build ${pluginInst.installed_version ?? "?"}. Joining a NetcodePlus server on an old build can cause problems. Update before playing?`
+        ? `A newer NetcodePlus is available${verText} — you're on build ${pluginInst.installed_version ?? "?"}. Joining a NetcodePlus server on an old build can cause problems. Update before playing?${acAlong}`
         : `NetcodePlus isn't installed${verText} for this UT4 install — NetcodePlus servers require it. Install before playing?`,
       {
         title: outdated ? "NetcodePlus update available" : "NetcodePlus not installed",
@@ -6476,7 +6525,7 @@ async function renderModIni(flash?: { text: string; cls: "ok" | "warn" }) {
     )
     .join("");
   modiniPanel.innerHTML = `
-    <p>One-click <strong>NetcodePlus <code>Mod.ini</code> presets</strong> from top players — hitsounds, forced models and team colours, gib/ragdoll and visibility settings. A preset replaces only the sections it defines; your identity and any other tweaks are left untouched, and your original is backed up before the first apply. Close UT4 first — the game rewrites <code>Mod.ini</code> on exit.</p>
+    <p><strong><code>Mod.ini</code> presets</strong> — one-click NetcodePlus configs from top players: hitsounds, forced models and team colours, gib/ragdoll and visibility settings. A preset replaces only the sections it defines; your identity and any other tweaks are left untouched, and your original is backed up before the first apply. Close UT4 first — the game rewrites <code>Mod.ini</code> on exit.</p>
     ${readOnlyWarn}
     ${rows}
     <div class="discord-btns">
@@ -7168,7 +7217,7 @@ document.addEventListener("click", (e) => {
 // user who skips releases still sees each unseen item exactly once. NOTHING here
 // writes Engine.ini or game config without an explicit click — the
 // competitive-config "Apply" routes through `apply_engine_config`, which backs
-// up Engine.ini first (same path as the Settings → Performance config button).
+// up Engine.ini first (same path as the Settings → Competitive config button).
 // ===========================================================================
 
 interface OnboardingView {
@@ -7205,7 +7254,7 @@ const COMPETITIVE_CONFIG_BODY = `
   <p class="src">Your existing <code>Engine.ini</code> is <strong>backed up
   first</strong> and restorable in one click. Nothing changes unless you apply —
   skip if you prefer your current graphics. Playing Blitz/flag-run? You can keep
-  async loading on afterwards in <strong>Settings → Performance config</strong>.</p>`;
+  async loading on afterwards in <strong>Settings → Competitive config</strong>.</p>`;
 
 const DISCOVERY_ITEMS: DiscoveryItem[] = [
   {
@@ -7322,7 +7371,7 @@ async function applyCompetitiveConfigFromOnboarding(statusEl: HTMLElement | null
     const cfg = await invoke<{ ini_exists: boolean }>("engine_config_state");
     if (!cfg.ini_exists) {
       if (statusEl)
-        statusEl.innerHTML = `<span class="warn">No <code>Engine.ini</code> yet — launch UT4 once so it's created, then apply from Settings → Performance config.</span>`;
+        statusEl.innerHTML = `<span class="warn">No <code>Engine.ini</code> yet — launch UT4 once so it's created, then apply from Settings → Competitive config.</span>`;
       return;
     }
     await invoke("apply_engine_config", {
