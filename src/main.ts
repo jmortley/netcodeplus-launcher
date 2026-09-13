@@ -4944,14 +4944,35 @@ async function openPlayersPopover(anchor: HTMLElement, server: string): Promise<
         ids: missing,
       });
       for (const r of resolved) playerNames.set(r.id, r.name);
-    } catch {
-      /* leave the unresolved ids as short hashes */
+    } catch (err) {
+      // Moved on while resolving — don't clobber a newer popover.
+      if (el.dataset.for !== server || el.style.display === "none") return;
+      // An expired session is the usual cause. Say so rather than silently
+      // rendering raw account-id fragments, and let handleReloginError correct
+      // the Home card, which otherwise still reads "signed in as <name>".
+      const relogin = String(err).includes("RELOGIN_REQUIRED");
+      if (relogin) handleReloginError(err, null);
+      const why = relogin
+        ? "UT4 session expired — sign in again on the Home tab."
+        : "Names unavailable right now.";
+      el.innerHTML =
+        head +
+        `<div class="srv-pop-row src">${escape(why)}</div>` +
+        ids.map((id) => `<div class="srv-pop-row">${escape(id.slice(0, 8))}</div>`).join("");
+      placeSrvPopover(el, anchor);
+      return;
     }
   }
   // Moved on / hidden while resolving — don't clobber a newer popover.
   if (el.dataset.for !== server || el.style.display === "none") return;
   const names = ids.map((id) => playerNames.get(id) || id.slice(0, 8));
-  el.innerHTML = head + names.map((n) => `<div class="srv-pop-row">${escape(n)}</div>`).join("");
+  // The lookup can succeed and still know none of these accounts; that returns no
+  // error at all, so without this the popover just shows id fragments again.
+  const none = ids.every((id) => !playerNames.has(id));
+  el.innerHTML =
+    head +
+    (none ? `<div class="srv-pop-row src">Names unavailable right now.</div>` : "") +
+    names.map((n) => `<div class="srv-pop-row">${escape(n)}</div>`).join("");
   placeSrvPopover(el, anchor);
 }
 

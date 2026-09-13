@@ -301,6 +301,12 @@ pub async fn ut4_prepare_launch(app: tauri::AppHandle) -> Result<Ut4LaunchAuth, 
         .await
         .map_err(|e| match e {
             ncp_net::NetError::HttpStatus { status, .. } if (400..500).contains(&status) => {
+                // The server REJECTED this refresh token, so it is dead rather than
+                // merely absent. Drop it now: `ut4_auth_status` derives `logged_in`
+                // from token presence alone, so leaving it on file keeps the Home
+                // card reporting "signed in as X" while every token-backed action
+                // fails, and the next status poll overwrites any local correction.
+                clear_refresh();
                 RELOGIN.to_string()
             }
             other => other.to_string(),
@@ -399,6 +405,12 @@ pub async fn resolve_player_names(ids: Vec<String>) -> Result<Vec<PlayerName>, S
         .await
         .map_err(|e| match e {
             ncp_net::NetError::HttpStatus { status, .. } if (400..500).contains(&status) => {
+                // The server REJECTED this refresh token, so it is dead rather than
+                // merely absent. Drop it now: `ut4_auth_status` derives `logged_in`
+                // from token presence alone, so leaving it on file keeps the Home
+                // card reporting "signed in as X" while every token-backed action
+                // fails, and the next status poll overwrites any local correction.
+                clear_refresh();
                 RELOGIN.to_string()
             }
             other => other.to_string(),
