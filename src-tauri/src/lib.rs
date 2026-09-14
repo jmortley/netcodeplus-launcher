@@ -264,6 +264,8 @@ pub fn run() {
             commands::platform_info,
             presence::set_discord_presence,
             presence::set_discord_presence_enabled,
+            updates::manifest_changed,
+            updates::set_update_notifications_enabled,
             installer::game_installer_info,
             installer::default_download_dir,
             installer::download_game_installer,

@@ -166,6 +166,7 @@ interface LauncherState {
   utpugs_launcher_token: string | null;
   unrealpugs_launcher_token: string | null;
   discord_presence_enabled?: boolean;
+  update_notifications_enabled?: boolean;
   // Linux-only explicit Wine/Proton launch override; null/absent = auto-detect.
   linux_launch?: LinuxLaunch | null;
   // Linux-only: true = use GPU (DMABUF) webview rendering; false/absent = the
@@ -445,6 +446,10 @@ const state = {
   // Discord Rich Presence (default ON; mirrors discord_presence_enabled —
   // an explicit off from the Settings toggle is persisted and respected).
   discordPresence: true,
+  // Desktop notification when an update publishes while the launcher is open
+  // (default ON; mirrors update_notifications_enabled). Notification only — it
+  // never gates the PUG pre-join check, which exists to protect the other nine.
+  updateNotify: true,
 };
 
 function escape(value: string): string {
@@ -2082,6 +2087,9 @@ function renderAdvanced() {
       <label class="discord-rpc-toggle"><input id="discord-rpc" type="checkbox"${
         state.discordPresence ? " checked" : ""
       } /> Show my PUG status on Discord (Rich Presence)</label>
+      <label class="discord-rpc-toggle"><input id="update-notify" type="checkbox"${
+        state.updateNotify ? " checked" : ""
+      } /> Notify me when an update is available while the launcher is open</label>
     </div>
     ${platformOs === "linux" ? wineProtonPanel() : ""}`;
   wire();
@@ -2323,6 +2331,14 @@ function wire() {
       console.error("set_discord_presence_enabled failed:", err),
     );
     updateDiscordPresence();
+  });
+
+  const upd = document.getElementById("update-notify") as HTMLInputElement | null;
+  upd?.addEventListener("change", () => {
+    state.updateNotify = upd.checked;
+    void invoke("set_update_notifications_enabled", { enabled: upd.checked }).catch((err) =>
+      console.error("set_update_notifications_enabled failed:", err),
+    );
   });
 }
 
@@ -2990,6 +3006,7 @@ function applyPrefs(prefs: LauncherState) {
   state.utpugsToken = prefs.utpugs_launcher_token;
   state.unrealpugsToken = prefs.unrealpugs_launcher_token;
   state.discordPresence = prefs.discord_presence_enabled ?? true;
+  state.updateNotify = prefs.update_notifications_enabled ?? true;
   linuxLaunch = prefs.linux_launch ?? null;
   linuxGpuAccel = prefs.linux_gpu_accel ?? false;
   linuxGamingMode = prefs.linux_gaming_mode ?? false;
@@ -3306,12 +3323,12 @@ function selectedNcp(): { build: number | null; outdated: boolean; available: nu
 // player joins, the server version gate kicks them ~10s in, and the PUG is a man
 // short. A Join on an outdated install kicks off the one-click update instead; the
 // player Joins again once it's current. Returns true when the join is BLOCKED.
-function ncpBlocksJoin(status: HTMLElement | null): boolean {
+function ncpBlocksJoin(status: HTMLElement | null, verb = "Join"): boolean {
   const ncp = selectedNcp();
   if (!ncp.outdated) return false;
   const want = ncp.available ? ` (build ${ncp.available})` : "";
   if (status) {
-    status.innerHTML = `<span class="warn">NetcodePlus is out of date${escape(want)} — updating now; Join again once it finishes. Outdated clients get kicked from PUG servers.</span>`;
+    status.innerHTML = `<span class="warn">NetcodePlus is out of date${escape(want)} — updating now; ${escape(verb)} again once it finishes. Outdated clients get kicked from PUG servers.</span>`;
   }
   void doInstallPlugin(); // run the update; the re-Join proceeds when it's current
   return true;
@@ -3654,6 +3671,10 @@ async function connectTo(
   opts?: { requiresUt4ac?: boolean },
 ) {
   const requiresUt4ac = opts?.requiresUt4ac ?? isLivePugServer(server);
+  // A PUG server runs the version gate in kick mode, so connecting on a stale
+  // NetcodePlus drops you seconds in and leaves the match a man short — the same
+  // harm queueing was already protected from. Queue join blocked; connect did not.
+  if (requiresUt4ac && ncpBlocksJoin(status, "Connect")) return;
   if (requiresUt4ac) {
     const di = state.installs[state.selInstall];
     if (di && (await ut4acMissingLocally(di.install.root))) {
@@ -4211,6 +4232,11 @@ const POLL_ACTIVE_MS = 10000; // queued / readycheck / starting (even when hidde
 const POLL_IDLE_MS = 45000; // not in a queue, window visible
 const POLL_HIDDEN_IDLE_MS = 300000; // idle AND minimized
 const LIVE_POLL_MS = 180000; // HOME live-PUG banner
+// "Did anything publish?" cadence. A steady-state check is a conditional GET
+// that comes back 304, so this is cheap enough to run while minimized — which is
+// exactly when a desktop toast earns its keep.
+const MANIFEST_POLL_MS = 60000;
+const MANIFEST_POLL_HIDDEN_MS = 300000;
 const QUEUES_POLL_MS = 45000; // HOME "queue filling" nudge
 
 let pugLastFetch = 0;
@@ -5353,6 +5379,9 @@ let livePollTimer: number | undefined;
 // Key of the live set currently on screen, so the poll only re-renders the
 // banner when the set actually changes (and never clobbers an open picker).
 let lastLiveKey = "";
+let manifestLastCheck = 0;
+// Edge latch so a standing update doesn't re-toast every poll.
+let updateNotified = false;
 
 // Always-on (token-independent) poll of the bot's tokenless /live + /queues
 // endpoints — powers the HOME live banner and the "queue filling" nudge.
@@ -5361,8 +5390,14 @@ function startLivePolling() {
   liveLastFetch = Date.now();
   queuesLastFetch = Date.now();
   livePollTimer = window.setInterval(() => {
-    if (document.hidden) return; // banner + nudge don't poll while minimized
     const now = Date.now();
+    // Runs before the hidden early-out on purpose: an update that lands while the
+    // launcher sits minimized is the case this whole thing exists for.
+    if (now - manifestLastCheck >= (document.hidden ? MANIFEST_POLL_HIDDEN_MS : MANIFEST_POLL_MS)) {
+      manifestLastCheck = now;
+      void pollManifest();
+    }
+    if (document.hidden) return; // banner + nudge don't poll while minimized
     if (now - liveLastFetch >= LIVE_POLL_MS) {
       liveLastFetch = now;
       void pollLivePugs();
@@ -5372,6 +5407,47 @@ function startLivePolling() {
       void pollQueues();
     }
   }, POLL_TICK_MS);
+}
+
+// Ask the cheap question, and only on a yes do the real (signature-verified)
+// refresh. The probe returns no manifest content and cannot change what the
+// launcher believes; `loadStatusData` remains the only thing that does.
+async function pollManifest(): Promise<void> {
+  try {
+    if (!(await invoke<boolean>("manifest_changed"))) return;
+    await loadStatusData();
+    notifyUpdateAvailable();
+  } catch {
+    /* transient network — the next tick asks again */
+  }
+}
+
+// One toast per rising edge: fire when an update actually appears, stay quiet
+// until it has been taken and a later one shows up. Silenced by the Settings
+// toggle; the PUG pre-join gate is deliberately not silenceable.
+function notifyUpdateAvailable(): void {
+  const ncp = selectedNcp();
+  if (!ncp.outdated) {
+    updateNotified = false;
+    return;
+  }
+  if (updateNotified || !state.updateNotify) return;
+  updateNotified = true;
+  void (async () => {
+    try {
+      let granted = await isPermissionGranted();
+      if (!granted) granted = (await requestPermission()) === "granted";
+      if (!granted) return;
+      sendNotification({
+        title: "NetcodePlus update available",
+        body: ncp.available
+          ? `Build ${ncp.available} is out — open the launcher to update before you play.`
+          : "Open the launcher to update before you play.",
+      });
+    } catch (err) {
+      console.error("update notification failed:", err);
+    }
+  })();
 }
 
 // Refresh the live-PUG set for the HOME banner. Tokenless, read-only. A failure

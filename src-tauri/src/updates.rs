@@ -51,6 +51,63 @@ const MANIFEST_URL: &str =
 const MANIFEST_SIG_URL: &str =
     "https://github.com/jmortley/netcodeplus-launcher/releases/download/updates-latest/manifest.json.minisig";
 
+/// Last `ETag` seen for the manifest, so the open-launcher poll can ask the
+/// cheap question. Process-lifetime only: a restart just re-primes it.
+static MANIFEST_ETAG: std::sync::Mutex<Option<String>> = std::sync::Mutex::new(None);
+
+/// Has the published manifest changed since we last looked?
+///
+/// A conditional GET, so the steady-state answer costs a header exchange rather
+/// than the body. This is deliberately a HINT and returns no manifest content:
+/// the caller reacts by running the normal signature-verified refresh, which
+/// remains the only thing that may change what the launcher believes. That is
+/// also why a push channel would buy nothing here — an unsigned nudge could not
+/// be acted on directly either.
+///
+/// The first call of a session primes the validator and reports `false`: with
+/// nothing to compare against, "modified" is not news, and reporting it would
+/// fire a spurious update toast on every startup.
+#[tauri::command]
+pub async fn manifest_changed() -> Result<bool, String> {
+    let previous = MANIFEST_ETAG
+        .lock()
+        .map_err(|_| "manifest etag lock poisoned")?
+        .clone();
+    let client = ncp_net::Client::new().map_err(|e| e.to_string())?;
+    let outcome = ncp_net::fetch_text_conditional(
+        &client,
+        MANIFEST_URL,
+        previous.as_deref(),
+        ncp_net::DEFAULT_MAX_MANIFEST_BYTES,
+    )
+    .await
+    .map_err(|e| e.to_string())?;
+
+    match outcome {
+        ncp_net::Conditional::NotModified => Ok(false),
+        ncp_net::Conditional::Modified { etag, .. } => {
+            *MANIFEST_ETAG
+                .lock()
+                .map_err(|_| "manifest etag lock poisoned")? = etag;
+            Ok(previous.is_some())
+        }
+    }
+}
+
+/// Persist whether update notifications may be raised while the launcher is open.
+#[tauri::command]
+pub fn set_update_notifications_enabled(
+    app: tauri::AppHandle,
+    enabled: bool,
+) -> Result<(), String> {
+    let path = crate::commands::state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.update_notifications_enabled = enabled;
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
 /// Fetch the manifest + signature, verify against the trust root, and advance
 /// the persisted replay floor — the shared core of F1 and F2.
 ///

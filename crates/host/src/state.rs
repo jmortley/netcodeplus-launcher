@@ -142,6 +142,12 @@ pub struct LauncherState {
     /// their Discord profile. See `src-tauri/src/presence.rs`.
     #[serde(default = "default_presence_enabled")]
     pub discord_presence_enabled: bool,
+    /// Whether to raise a desktop notification when a new update is published
+    /// while the launcher is open. Default ON. Purely a notification preference:
+    /// it never gates the PUG pre-join update check, which protects the other
+    /// nine players and is not the user's to silence.
+    #[serde(default = "default_update_notifications_enabled")]
+    pub update_notifications_enabled: bool,
 
     /// UT4 master-server account username the user logged in with, used as the
     /// `-AUTH_LOGIN` value at launch and for the UI. NOT a secret — the refresh
@@ -350,6 +356,10 @@ fn default_presence_enabled() -> bool {
     true
 }
 
+fn default_update_notifications_enabled() -> bool {
+    true
+}
+
 fn default_window_action() -> String {
     "minimize".to_string()
 }
@@ -373,6 +383,7 @@ impl Default for LauncherState {
             utpugs_launcher_token: None,
             unrealpugs_launcher_token: None,
             discord_presence_enabled: default_presence_enabled(),
+            update_notifications_enabled: default_update_notifications_enabled(),
             ut4_username: None,
             ut4_display_name: None,
             ut4_account_id: None,

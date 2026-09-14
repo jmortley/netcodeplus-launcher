@@ -179,3 +179,48 @@ async fn read_bounded_utf8(
         url: url.to_string(),
     })
 }
+
+/// Outcome of a conditional GET.
+#[derive(Debug, Clone)]
+pub enum Conditional {
+    /// The server answered `304 Not Modified`: the caller's cached copy stands.
+    NotModified,
+    /// A fresh body, plus the validator to replay on the next request when the
+    /// server supplied one.
+    Modified { body: String, etag: Option<String> },
+}
+
+/// GET `url`, sending `If-None-Match` when `etag` is supplied, and treat `304`
+/// as a success rather than an HTTP-status error.
+///
+/// This exists so a poll can ask "has this changed?" for the price of a header
+/// exchange instead of a full body. It is a FRESHNESS HINT ONLY: a validator
+/// says nothing about authenticity, so callers must still fetch and verify the
+/// signature before acting on whatever changed.
+///
+/// # Errors
+///
+/// Same set as [`fetch_text`]; a `304` is not an error.
+pub async fn fetch_text_conditional(
+    client: &Client,
+    url: &str,
+    etag: Option<&str>,
+    max_bytes: u64,
+) -> Result<Conditional> {
+    let mut req = client.inner.get(url);
+    if let Some(tag) = etag {
+        req = req.header(reqwest::header::IF_NONE_MATCH, tag);
+    }
+    let response = req.send().await?;
+    if response.status() == reqwest::StatusCode::NOT_MODIFIED {
+        debug!(url, "conditional GET: not modified");
+        return Ok(Conditional::NotModified);
+    }
+    let etag = response
+        .headers()
+        .get(reqwest::header::ETAG)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_owned);
+    let body = read_bounded_utf8(response, url, max_bytes).await?;
+    Ok(Conditional::Modified { body, etag })
+}
