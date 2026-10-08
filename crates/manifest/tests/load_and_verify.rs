@@ -82,6 +82,7 @@ fn sample_manifest(now: DateTime<Utc>) -> Manifest {
         launcher_linux: None,
         editor_plugins: HashMap::new(),
         anticheat: HashMap::new(),
+        announcements: Vec::new(),
     }
 }
 

@@ -108,6 +108,88 @@ pub fn set_update_notifications_enabled(
     ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
 }
 
+/// One Home-tab notice for the UI, already filtered for this player. Carries no
+/// token or audience data: which communities a player has linked stays in Rust.
+#[derive(Debug, Clone, Serialize, PartialEq, Eq)]
+pub struct AnnouncementView {
+    pub id: String,
+    pub title: String,
+    pub body: String,
+}
+
+/// The `onboarding.seen` key recording that announcement `id` was dismissed.
+/// Namespaced so it can never collide with a discovery-card id.
+fn announcement_seen_key(id: &str) -> String {
+    format!("ann:{id}")
+}
+
+/// Audience tags for the PUG communities this player has linked (a non-blank
+/// launcher token). Tags match [`ncp_manifest::Announcement::audience`].
+fn linked_communities(state: &ncp_host::LauncherState) -> Vec<&'static str> {
+    let linked = |token: &Option<String>| token.as_deref().is_some_and(|t| !t.trim().is_empty());
+    let mut tags = Vec::new();
+    if linked(&state.launcher_token) {
+        tags.push("instagibnation");
+    }
+    if linked(&state.utpugs_launcher_token) {
+        tags.push("utpugs");
+    }
+    if linked(&state.unrealpugs_launcher_token) {
+        tags.push("unrealpugs");
+    }
+    tags
+}
+
+/// Announcements to show now: unexpired, not dismissed, and either for everyone
+/// (empty audience) or for a community this player has linked.
+fn select_announcements(
+    all: &[ncp_manifest::Announcement],
+    state: &ncp_host::LauncherState,
+    now: chrono::DateTime<chrono::Utc>,
+) -> Vec<AnnouncementView> {
+    let linked = linked_communities(state);
+    all.iter()
+        .filter(|a| !a.id.trim().is_empty())
+        .filter(|a| a.expires_at.is_none_or(|end| now < end))
+        .filter(|a| {
+            !state
+                .onboarding
+                .seen
+                .contains(&announcement_seen_key(&a.id))
+        })
+        .filter(|a| {
+            a.audience.is_empty() || a.audience.iter().any(|tag| linked.contains(&tag.as_str()))
+        })
+        .map(|a| AnnouncementView {
+            id: a.id.clone(),
+            title: a.title.clone(),
+            body: a.body.clone(),
+        })
+        .collect()
+}
+
+/// Home-tab notices from the signed manifest that apply to this player.
+#[tauri::command]
+pub async fn pending_announcements(app: AppHandle) -> Result<Vec<AnnouncementView>, String> {
+    let (manifest, state, _, _) = fetch_verify(&app).await?;
+    Ok(select_announcements(
+        &manifest.announcements,
+        &state,
+        chrono::Utc::now(),
+    ))
+}
+
+/// Remember that the player dismissed announcement `id`; it never shows again.
+#[tauri::command]
+pub fn dismiss_announcement(app: tauri::AppHandle, id: String) -> Result<(), String> {
+    let path = crate::commands::state_path(&app)?;
+    let mut state = ncp_host::state::read(&path)
+        .map_err(|e| e.to_string())?
+        .unwrap_or_default();
+    state.onboarding.mark_seen(vec![announcement_seen_key(&id)]);
+    ncp_host::state::write(&path, &state).map_err(|e| e.to_string())
+}
+
 /// Fetch the manifest + signature, verify against the trust root, and advance
 /// the persisted replay floor — the shared core of F1 and F2.
 ///
@@ -2029,4 +2111,80 @@ pub async fn download_and_apply_launcher_update(app: AppHandle) -> Result<(), St
 
     app.exit(0);
     Ok(())
+}
+
+#[cfg(test)]
+mod announcement_tests {
+    use super::{announcement_seen_key, select_announcements};
+    use chrono::{TimeZone, Utc};
+
+    fn ann(id: &str, audience: &[&str], expires: Option<i64>) -> ncp_manifest::Announcement {
+        ncp_manifest::Announcement {
+            id: id.into(),
+            title: format!("title {id}"),
+            body: "body".into(),
+            audience: audience.iter().map(|s| s.to_string()).collect(),
+            expires_at: expires.map(|secs| Utc.timestamp_opt(secs, 0).unwrap()),
+        }
+    }
+
+    fn ids(state: &ncp_host::LauncherState, all: &[ncp_manifest::Announcement]) -> Vec<String> {
+        let now = Utc.timestamp_opt(1_000_000, 0).unwrap();
+        select_announcements(all, state, now)
+            .into_iter()
+            .map(|a| a.id)
+            .collect()
+    }
+
+    #[test]
+    fn empty_audience_reaches_everyone() {
+        let state = ncp_host::LauncherState::default();
+        assert_eq!(ids(&state, &[ann("all", &[], None)]), vec!["all"]);
+    }
+
+    #[test]
+    fn pug_audience_needs_a_linked_token_for_a_listed_community() {
+        let pugs = [ann("pugs", &["instagibnation", "utpugs"], None)];
+        let mut state = ncp_host::LauncherState::default();
+        assert!(ids(&state, &pugs).is_empty(), "no tokens: hidden");
+
+        state.launcher_token = Some("   ".into());
+        assert!(ids(&state, &pugs).is_empty(), "blank token is not linked");
+
+        state.unrealpugs_launcher_token = Some("tok".into());
+        assert!(ids(&state, &pugs).is_empty(), "unlisted community: hidden");
+
+        state.launcher_token = Some("tok".into());
+        assert_eq!(ids(&state, &pugs), vec!["pugs"], "Instagib Nation token");
+
+        let state = ncp_host::LauncherState {
+            utpugs_launcher_token: Some("tok".into()),
+            ..Default::default()
+        };
+        assert_eq!(ids(&state, &pugs), vec!["pugs"], "UTPugs token");
+    }
+
+    #[test]
+    fn unknown_tags_never_match() {
+        let state = ncp_host::LauncherState {
+            launcher_token: Some("tok".into()),
+            ..Default::default()
+        };
+        assert!(ids(&state, &[ann("future", &["some-new-community"], None)]).is_empty());
+    }
+
+    #[test]
+    fn expired_dismissed_and_idless_notices_are_hidden() {
+        let mut state = ncp_host::LauncherState::default();
+        let all = [
+            ann("old", &[], Some(999_999)),
+            ann("live", &[], Some(1_000_001)),
+            ann("seen", &[], None),
+            ann("  ", &[], None),
+        ];
+        state
+            .onboarding
+            .mark_seen(vec![announcement_seen_key("seen")]);
+        assert_eq!(ids(&state, &all), vec!["live"]);
+    }
 }

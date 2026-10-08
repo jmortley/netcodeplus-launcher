@@ -313,6 +313,13 @@ interface NewsItem {
   date: string;
 }
 
+/** A Home-tab notice from the signed manifest, already filtered in Rust. */
+interface AnnouncementView {
+  id: string;
+  title: string;
+  body: string;
+}
+
 interface PugStatus {
   state: "idle" | "queued" | "readycheck" | "starting" | "live";
   players?: number;
@@ -372,6 +379,7 @@ const configPanel = document.getElementById("config-panel")!;
 const joinwaitPanel = document.getElementById("joinwait-panel")!;
 const modiniPanel = document.getElementById("modini-panel")!;
 const newsPanel = document.getElementById("news-panel")!;
+const announcePanel = document.getElementById("announce-panel")!;
 const serversPanel = document.getElementById("servers-panel")!;
 
 // A registered UT4 editor install (mirrors ncp_host::editor::EditorInstall).
@@ -3126,6 +3134,7 @@ async function loadAll() {
     void renderLauncherUpdate();
     void renderLauncherCleanup();
     void renderNews();
+    void renderAnnouncements();
     void renderGameInstall();
     void loadStatusData();
     renderCommunityLinks();
@@ -3388,6 +3397,7 @@ async function saveLauncherToken(token: string | null) {
     console.error("save_launcher_token failed:", err);
   }
   renderPug();
+  void renderAnnouncements();
   renderHomeReadycheck(); // clears the HOME banner when the token (and status) is dropped
   updateDiscordPresence();
   if (token) {
@@ -4033,6 +4043,7 @@ async function saveUtpugsToken(token: string | null) {
     console.error("save_utpugs_token failed:", err);
   }
   renderUtpugs();
+  void renderAnnouncements();
   renderHomeReadycheck(); // clears the HOME banner if it was showing a UTPugs readycheck
   updateDiscordPresence();
   if (token) {
@@ -4363,6 +4374,7 @@ async function saveUnrealpugsToken(token: string | null) {
     console.error("save_unrealpugs_token failed:", err);
   }
   renderUnrealpugs();
+  void renderAnnouncements();
   updateDiscordPresence();
   if (token) {
     void pollUnrealpugsStatus();
@@ -5417,6 +5429,7 @@ async function pollManifest(): Promise<void> {
     if (!(await invoke<boolean>("manifest_changed"))) return;
     await loadStatusData();
     notifyUpdateAvailable();
+    void renderAnnouncements();
   } catch {
     /* transient network — the next tick asks again */
   }
@@ -6891,6 +6904,43 @@ async function doDismissCleanup(): Promise<void> {
 }
 
 // ---- news (shown on the Home dashboard) ------------------------------------
+
+// Notices from the signed manifest, already filtered in Rust for this player's
+// linked PUG communities. Plain text only: escaped, a blank line starts a new
+// paragraph. A transient fetch failure keeps whatever is already shown.
+async function renderAnnouncements(): Promise<void> {
+  let items: AnnouncementView[];
+  try {
+    items = await invoke<AnnouncementView[]>("pending_announcements");
+  } catch (err) {
+    console.error("pending_announcements failed:", err);
+    return;
+  }
+  if (!Array.isArray(items) || items.length === 0) {
+    announcePanel.innerHTML = "";
+    return;
+  }
+  announcePanel.innerHTML = items
+    .map(
+      (a) => `<article class="news announce">
+        <div class="news-item-head"><strong>${escape(a.title)}</strong>
+          <button type="button" class="link-btn announce-dismiss" data-ann-dismiss="${escape(a.id)}">Dismiss</button></div>
+        <div class="announce-body">${a.body
+          .split(/\n\s*\n/)
+          .map((p) => `<p>${escape(p.trim())}</p>`)
+          .join("")}</div>
+      </article>`,
+    )
+    .join("");
+  announcePanel.querySelectorAll<HTMLElement>("[data-ann-dismiss]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      btn.closest("article")?.remove();
+      void invoke("dismiss_announcement", { id: btn.dataset.annDismiss ?? "" }).catch((err) =>
+        console.error("dismiss_announcement failed:", err),
+      );
+    });
+  });
+}
 
 async function renderNews() {
   let items: NewsItem[];

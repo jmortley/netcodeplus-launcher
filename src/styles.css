@@ -820,6 +820,21 @@ main {
   white-space: pre-wrap;
 }
 
+/* Targeted notices from the signed manifest (same box as News, distinct accent). */
+.announce {
+  background: rgba(16, 185, 129, 0.08);
+  border-color: rgba(16, 185, 129, 0.35);
+}
+.announce-dismiss {
+  margin-left: auto;
+  font-size: 0.8rem;
+}
+.announce-body p {
+  margin: 0.35rem 0 0;
+  font-size: 0.9rem;
+  color: #cfd3da;
+}
+
 /* =========================================================================
    APP-SHELL REDESIGN (ui-redesign branch) — flat dark, sidebar + custom top
    bar. Overrides the old centered-card layout; component styles above are
@@ -1168,6 +1183,9 @@ body {
   color: #b45309;
 }
 :root[data-theme="light"] .news-body {
+  color: #44505f;
+}
+:root[data-theme="light"] .announce-body p {
   color: #44505f;
 }
 :root[data-theme="light"] .news-date {

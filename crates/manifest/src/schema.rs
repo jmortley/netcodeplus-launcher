@@ -134,6 +134,39 @@ pub struct Manifest {
     /// card (the editor-plugins dormant-activation trick).
     #[serde(default, skip_serializing_if = "HashMap::is_empty")]
     pub anticheat: HashMap<String, AnticheatEntry>,
+
+    /// Short notices for the Home tab, optionally limited to players linked to
+    /// particular PUG communities (see [`Announcement::audience`]). Additive like
+    /// the blocks above — `#[serde(default)]` → empty, so every manifest shipped
+    /// so far parses, and pre-1.9 launchers ignore the key (nothing here derives
+    /// `deny_unknown_fields`). The text lives in the signed manifest rather than
+    /// in the launcher's public source, so a notice can change or disappear with
+    /// the next publish.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub announcements: Vec<Announcement>,
+}
+
+/// A Home-tab notice carried by the signed [`Manifest`].
+///
+/// Rendered as plain text — escaped, with a blank line starting a new paragraph.
+/// The signature makes it trustworthy, but the launcher still never interprets
+/// it as markup. Dismissal is remembered per [`Self::id`], so keep an id stable
+/// while editing a notice and use a new id for a genuinely new one.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Announcement {
+    /// Stable identifier; once dismissed, this id never shows again.
+    pub id: String,
+    pub title: String,
+    pub body: String,
+    /// PUG communities whose linked players see this notice: `"instagibnation"`,
+    /// `"utpugs"`, `"unrealpugs"`. Empty = every player. A player qualifies when
+    /// they have a launcher token for ANY listed community; a tag this launcher
+    /// doesn't know never matches, so new tags are safe to publish.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub audience: Vec<String>,
+    /// Stop showing after this instant. `None` = until dismissed or removed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub expires_at: Option<DateTime<Utc>>,
 }
 
 /// The latest launcher build advertised by a [`Manifest`].
@@ -680,6 +713,45 @@ mod tests {
         );
         let reparsed: Manifest = serde_json::from_str(&serde_json::to_string(&m).unwrap()).unwrap();
         assert_eq!(reparsed, m);
+    }
+
+    #[test]
+    fn announcements_parse_and_default_to_empty() {
+        // Absent key (every manifest before 1.9) -> empty list.
+        let bare = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-10-07T00:00:00Z",
+            "expires_at": "2027-07-02T00:00:00Z",
+            "sequence": 85,
+            "min_launcher_version": "0.1.0",
+            "channels": {}
+        }"#;
+        let m: Manifest = serde_json::from_str(bare).unwrap();
+        assert!(m.announcements.is_empty());
+
+        // Full and minimal entries; an unknown per-entry key is tolerated too.
+        let with = r#"{
+            "schema_version": 1,
+            "generated_at": "2026-10-07T00:00:00Z",
+            "expires_at": "2027-07-02T00:00:00Z",
+            "sequence": 85,
+            "min_launcher_version": "0.1.0",
+            "channels": {},
+            "announcements": [
+                {"id": "a", "title": "T", "body": "B", "audience": ["instagibnation", "utpugs"],
+                 "expires_at": "2026-12-31T00:00:00Z", "future_key": 1},
+                {"id": "b", "title": "T2", "body": "B2"}
+            ]
+        }"#;
+        let m: Manifest = serde_json::from_str(with).unwrap();
+        assert_eq!(m.announcements.len(), 2);
+        assert_eq!(
+            m.announcements[0].audience,
+            vec!["instagibnation", "utpugs"]
+        );
+        assert!(m.announcements[0].expires_at.is_some());
+        assert!(m.announcements[1].audience.is_empty());
+        assert!(m.announcements[1].expires_at.is_none());
     }
 
     #[test]
