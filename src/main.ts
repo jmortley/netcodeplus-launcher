@@ -1303,6 +1303,10 @@ function renderTopbarPlay(): void {
     : `<svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><path d="M8 5v14l11-7z" fill="currentColor" /></svg>PLAY`;
 }
 
+// First NetcodePlus build with the -ncpaimtrain launch switch (and its `aimtrain`
+// practice). The hero's AIM TRAINER button only shows from this build up.
+const AIM_TRAINER_MIN_BUILD = 329;
+
 function renderHomeHero() {
   renderTopbarPlay();
   if (state.installs.length === 0) {
@@ -1336,6 +1340,14 @@ function renderHomeHero() {
   const primaryBtn = pluginOutdated
     ? `<button id="hero-update-btn" type="button" class="launch-primary launch-update">⬆&nbsp;&nbsp;UPDATE NETCODEPLUS</button>`
     : `<button id="launch-btn" type="button" class="launch-primary">▶&nbsp;&nbsp;PLAY</button>`;
+  // Only on a current build that knows -ncpaimtrain: an older one ignores the switch
+  // and just opens the menu, and an outdated one gets UPDATE instead of PLAY anyway.
+  const aimTrainerBtn =
+    !pluginOutdated && (pluginInst?.installed_version ?? 0) >= AIM_TRAINER_MIN_BUILD
+      ? `<button id="aim-trainer-btn" type="button" class="launch-secondary" title="Opens NetcodePlus aim practice once you're signed in">` +
+        `<svg viewBox="0 0 24 24" class="ico" aria-hidden="true"><circle cx="12" cy="12" r="7" fill="none" stroke="currentColor" stroke-width="2" /><circle cx="12" cy="12" r="2" fill="currentColor" /><path d="M12 2v5M12 17v5M2 12h5M17 12h5" stroke="currentColor" stroke-width="2" /></svg>` +
+        `AIM TRAINER</button>`
+      : "";
   homeHero.className = "";
   homeHero.innerHTML = `
     <div class="play-hero">
@@ -1344,6 +1356,7 @@ function renderHomeHero() {
         <div class="play-sub">${netcodeplusBadge(di.netcodeplus, di.install.root, pluginOutdated, pluginAvail)}</div>
         <div class="hero-cta">
           ${primaryBtn}
+          ${aimTrainerBtn}
           <span class="hero-meta">${escape(di.install.root)}</span>
         </div>
       </div>
@@ -1361,6 +1374,10 @@ function renderHomeHero() {
     (document.getElementById("launch-btn") as HTMLButtonElement | null)?.addEventListener(
       "click",
       () => void launch(),
+    );
+    (document.getElementById("aim-trainer-btn") as HTMLButtonElement | null)?.addEventListener(
+      "click",
+      () => void launch({ aimTrainer: true }),
     );
   }
   void renderAdminWarning();
@@ -2362,7 +2379,10 @@ function persist() {
   }).catch((err) => console.error("save_launch_prefs failed:", err));
 }
 
-async function launch() {
+// `aimTrainer` (the hero's AIM TRAINER button) adds -ncpaimtrain: NetcodePlus waits
+// for sign-in and the cloud profile exactly as it does for a Join, then opens its
+// local aim practice from the main menu.
+async function launch(opts: { aimTrainer?: boolean } = {}) {
   // A dash "Update paks" install in progress holds DownloadedPaks open and must
   // finish before the game mounts those paks — launching now would race it and
   // lock the paks it hasn't placed yet. Refuse and let it finish, then press Play
@@ -2386,7 +2406,11 @@ async function launch() {
     console.error("is_game_running failed:", err);
   }
   if (gameRunning) {
-    const go = await confirm("UT4 is already running. Launch another instance anyway?", {
+    // A second instance can't reach the running game's menu, but its console can.
+    const runningMsg = opts.aimTrainer
+      ? "UT4 is already running. To practice there, go back to its main menu and type aimtrain in the console (~ key). Launch another instance anyway?"
+      : "UT4 is already running. Launch another instance anyway?";
+    const go = await confirm(runningMsg, {
       title: "UT4 already running",
       kind: "warning",
       okLabel: "Launch anyway",
@@ -2442,18 +2466,19 @@ async function launch() {
   try {
     await invoke("launch_game", {
       executable: di.install.executable,
-      args: [...profile.args, ...auth.args],
+      args: [...profile.args, ...auth.args, ...(opts.aimTrainer ? ["-ncpaimtrain"] : [])],
       priority: state.priority,
       affinityMaskHex: state.affinityHex || null,
       windowAction: state.launchWindowAction,
       env: auth.env,
     });
     persist();
+    const aimNote = opts.aimTrainer ? " — the aim trainer opens once you're signed in" : "";
     status.innerHTML = `<span class="ok">Launched: ${escape(profile.label)} (${escape(
       state.priority === "real_time" ? "real-time" : state.priority,
-    )} priority${state.affinityHex ? `, affinity ${escape(state.affinityHex)}` : ""})</span>`;
+    )} priority${state.affinityHex ? `, affinity ${escape(state.affinityHex)}` : ""})${aimNote}</span>`;
   } catch (err) {
-    if (handleShadowBlock(err, status, di.install.executable, () => void launch())) return;
+    if (handleShadowBlock(err, status, di.install.executable, () => void launch(opts))) return;
     const msg = String(err);
     if (msg.includes("740") || msg.toLowerCase().includes("elevation")) {
       status.innerHTML = `<span class="warn">Launch failed: Windows says the game needs administrator. It's likely set to "Run as administrator" — use the notice above to clear that flag (recommended), or launch as admin.</span>`;
@@ -4638,6 +4663,8 @@ const HUB_PAK_LABELS: Record<string, string> = {
   ncwepmut: "Weapons",
   ncstockweapons: "Stock Weapons",
   mutannouncers: "Announcers",
+  mutclutch: "Clutch",
+  mutsactf: "SACTF",
 };
 
 // Normalize a hub name so UTCC's list matches the live server browser (strip

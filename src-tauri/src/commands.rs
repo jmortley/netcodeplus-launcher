@@ -737,7 +737,7 @@ pub async fn list_servers() -> Result<String, String> {
         .map_err(|e| e.to_string())
 }
 
-/// The 6 NetcodePlus content paks on UT Custom Content, as
+/// The NetcodePlus content paks whose per-hub versions the Servers tab shows, as
 /// `(manifest-key, UTCC content id)` pairs. Order is stable so the
 /// aggregation is deterministic; the manifest key is what the frontend keys on.
 const HUB_PAK_CONTENT: &[(&str, u32)] = &[
@@ -747,6 +747,9 @@ const HUB_PAK_CONTENT: &[(&str, u32)] = &[
     ("instagibncp", 2037),
     ("sdom", 2040),
     ("ncwepmut", 2042),
+    // UTCC page title "MutSniperCTF"; SACTF hubs run it, and the 329 aim
+    // trainer's SACTF scenarios load its SACTFSniper.
+    ("mutsactf", 2060),
 ];
 
 /// A UTCC content payload is a few hundred KB of JSON at most; cap generously.
@@ -896,7 +899,7 @@ pub async fn hub_pak_versions() -> Result<String, String> {
                 fold_utcc_content(&body, pak_key, &mut latest, &mut hubs);
             }
             // A single pak's fetch failing skips only that pak — never the whole
-            // command. Only an all-six failure is an error (below).
+            // command. Only every pak failing is an error (below).
             Err(_) => continue,
         }
     }

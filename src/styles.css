@@ -1239,6 +1239,31 @@ body {
   margin: 0;
   min-width: 12rem;
 }
+/* AIM TRAINER beside PLAY. Like .hero-meta it sits on the dark hero image in
+   both themes, so fixed light-on-glass tones; deliberately quieter than PLAY. */
+.hero-cta .launch-secondary {
+  margin: 0;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 1rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  padding: 0.8rem 1.4rem;
+  border-radius: 6px;
+  color: #e8eefc;
+  background: rgba(15, 23, 42, 0.55);
+  border: 1px solid rgba(147, 197, 253, 0.55);
+  box-shadow: 0 2px 12px rgba(0, 0, 0, 0.35);
+  transition: background 0.15s ease, border-color 0.15s ease, transform 0.05s ease;
+}
+.hero-cta .launch-secondary:hover {
+  background: rgba(30, 41, 59, 0.8);
+  border-color: rgba(147, 197, 253, 0.95);
+}
+.hero-cta .launch-secondary:active {
+  transform: translateY(1px);
+}
 .hero-meta {
   /* On the dark hero image in both themes, so a fixed light tone + shadow. */
   color: #cdd3dd;
